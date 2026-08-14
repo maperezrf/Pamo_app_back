@@ -1,0 +1,81 @@
+from django.contrib.auth import get_user_model, login, logout
+from django.http import JsonResponse
+from django.middleware.csrf import get_token
+from django.views.decorators.csrf import ensure_csrf_cookie
+from django.views.decorators.http import require_GET
+from google.auth.transport import requests as google_requests
+from google.oauth2 import id_token
+from rest_framework.permissions import AllowAny, IsAuthenticated
+from rest_framework.response import Response
+from rest_framework.views import APIView
+
+from config.constants import GOOGLE_CLIENT_ID
+
+from .models import AllowedEmail
+from .permissions import RoleRequiredMixin
+
+User = get_user_model()
+
+
+@require_GET
+@ensure_csrf_cookie
+def csrf(request):
+    get_token(request)
+    return JsonResponse({"detail": "ok"})
+
+
+class GoogleLoginAPI(APIView):
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        credential = request.data.get("credential")
+        if not credential:
+            return Response({"authorized": False, "reason": "missing_credential"}, status=400)
+
+        try:
+            payload = id_token.verify_oauth2_token(
+                credential, google_requests.Request(), GOOGLE_CLIENT_ID)
+        except ValueError:
+            return Response({"authorized": False, "reason": "invalid_token"}, status=400)
+
+        if not payload.get("email_verified"):
+            return Response({"authorized": False, "reason": "email_not_verified"}, status=403)
+
+        email = payload["email"].strip().lower()
+        if not AllowedEmail.objects.filter(email=email).exists():
+            return Response({"authorized": False, "reason": "not_allowed"}, status=403)
+
+        user, _ = User.objects.get_or_create(
+            username=email,
+            defaults={"email": email, "first_name": payload.get("given_name", "")},
+        )
+        login(request, user)
+
+        return Response({
+            "authorized": True,
+            "user": {"email": user.email, "name": payload.get("name", user.email)},
+        })
+
+
+class MeAPI(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        return Response({"email": request.user.email, "username": request.user.username})
+
+
+class LogoutAPI(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        logout(request)
+        return Response({"detail": "logged_out"})
+
+
+class PingAdminAPI(RoleRequiredMixin, APIView):
+    """Endpoint de prueba para verificar el mixin de roles de punta a punta.
+    Borrar (o dejar de referencia) una vez existan endpoints reales."""
+    allowed_roles = ["Admin"]
+
+    def get(self, request):
+        return Response({"is_admin": True})
