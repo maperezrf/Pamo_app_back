@@ -3,12 +3,17 @@ Django settings for config project.
 """
 
 from pathlib import Path
+
+import dj_database_url
+
 from config.constants import *
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-ALLOWED_HOSTS = ["localhost", "127.0.0.1"]
+# ALLOWED_HOSTS / CORS_ALLOWED_ORIGINS / CSRF_TRUSTED_ORIGINS ya llegan
+# resueltos desde config.constants (import * de arriba) -- fuente única,
+# nunca hardcodeados acá.
 
 
 # Application definition
@@ -29,6 +34,7 @@ INSTALLED_APPS = [
 MIDDLEWARE = [
     'corsheaders.middleware.CorsMiddleware',
     'django.middleware.security.SecurityMiddleware',
+    'whitenoise.middleware.WhiteNoiseMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
@@ -58,14 +64,19 @@ WSGI_APPLICATION = 'config.wsgi.application'
 
 
 # Database
-# Arranca en SQLite para desarrollo local sin fricción. Cambiar a Postgres
-# más adelante es solo tocar este bloque (igual que en pamo_web).
-DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': BASE_DIR / 'db.sqlite3',
+# Sin DATABASE_URL (desarrollo local): SQLite, sin fricción para levantar el
+# proyecto. Con DATABASE_URL seteada (Railway): Postgres del proyecto.
+if DATABASE_URL:
+    DATABASES = {
+        'default': dj_database_url.parse(DATABASE_URL, conn_max_age=600),
     }
-}
+else:
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django.db.backends.sqlite3',
+            'NAME': BASE_DIR / 'db.sqlite3',
+        }
+    }
 
 
 # Password validation
@@ -100,6 +111,8 @@ USE_TZ = True
 # Static files (CSS, JavaScript, Images)
 
 STATIC_URL = 'static/'
+STATIC_ROOT = BASE_DIR / 'staticfiles'
+STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
 
 # Default primary key field type
 
@@ -120,14 +133,18 @@ REST_FRAMEWORK = {
 }
 
 
-# CORS / cookies de sesión entre el frontend (Vite, localhost:5173) y esta API
-FRONTEND_URL = "http://localhost:5173"
-
-CORS_ALLOWED_ORIGINS = [
-    FRONTEND_URL,
-]
+# CORS / cookies de sesión entre el frontend y esta API.
+# ALLOWED_HOSTS / CORS_ALLOWED_ORIGINS / CSRF_TRUSTED_ORIGINS vienen de
+# config.constants (env var, comma-separated) -- ver arriba.
 CORS_ALLOW_CREDENTIALS = True
 
-CSRF_TRUSTED_ORIGINS = [
-    FRONTEND_URL,
-]
+# En producción, backend y frontend quedan en subdominios distintos
+# (*.up.railway.app) -- dominios distintos exigen SameSite=None + Secure
+# para que la cookie de sesión viaje entre ellos (ver GOVERNANCE.md backend
+# §12 / frontend §7). En desarrollo local (DEBUG=True, http) se deja el
+# default de Django para no romper la sesión sin HTTPS.
+if not DEBUG:
+    SESSION_COOKIE_SECURE = True
+    CSRF_COOKIE_SECURE = True
+    SESSION_COOKIE_SAMESITE = "None"
+    CSRF_COOKIE_SAMESITE = "None"
