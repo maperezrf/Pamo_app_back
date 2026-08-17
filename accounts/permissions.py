@@ -1,4 +1,8 @@
+import hmac
+
 from rest_framework.permissions import BasePermission
+
+from config.constants import MCP_API_KEY
 
 
 class HasRole(BasePermission):
@@ -23,3 +27,22 @@ class RoleRequiredMixin:
 
     permission_classes = [HasRole]
     allowed_roles = []
+
+
+class HasValidApiKey(BasePermission):
+    """Autoriza a un consumidor máquina-a-máquina interno (ej. servidor MCP)
+    que no tiene sesión de Django ni pertenece a un Group -- ver
+    `GOVERNANCE.md` §4.4. Compara el header `X-API-Key` contra el secreto
+    único en `config/constants.py`, en tiempo constante."""
+
+    def has_permission(self, request, view):
+        api_key = request.headers.get("X-API-Key", "")
+        return bool(api_key) and hmac.compare_digest(api_key, MCP_API_KEY)
+
+
+class ApiKeyRequiredMixin:
+    """Mixin para APIView consumidas por un cliente interno máquina-a-máquina
+    (no un usuario con sesión, no un webhook de proveedor externo) -- ver
+    `GOVERNANCE.md` §4.4."""
+
+    permission_classes = [HasValidApiKey]

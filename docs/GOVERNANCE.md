@@ -88,6 +88,7 @@ otro repo en el mismo ciclo de trabajo.
 | Facturación | `facturacion` | `/api/facturacion/` | Facturas, remisiones contables, integración Siigo | Pendiente |
 | Contraentrega (COD) | `contraentrega` | `/api/contraentrega/` | Elegibilidad y gestión de pago contra entrega | Pendiente |
 | Configuración e Integraciones | `configuracion` | `/api/configuracion/` | Estado de conexiones externas, ambientes, secretos (solo estado, nunca el valor) | Pendiente |
+| Feature Tracking y Migraciones | `feature_tracking` | `/api/tracking/` | Registro de features, estado, dependencias, validación de migraciones y cambios de ambiente | Activa |
 
 Esta tabla es un punto de partida, no un techo: se edita libremente a medida
 que el negocio lo necesite. Lo que no se vale es crear una app fuera de esta
@@ -299,6 +300,45 @@ Reglas:
    real es la verificación de firma, no la URL — alcanza con una ruta
    convencional (`/api/pedidos/webhooks/shopify/orders/`).
 
+### 4.4 Clientes máquina-a-máquina internos (API key)
+
+Un tercer caso, distinto de los dos anteriores: un consumidor **interno**
+propio (ej. un servidor MCP, un futuro script o cron interno) que no es un
+usuario humano con sesión de Django (§4.2) ni un proveedor externo con
+verificación de firma (§4.3). No se fuerza a inventar un usuario de servicio
+para reusar `RoleRequiredMixin`, ni se reutiliza el patrón de webhooks —
+se usa un mecanismo propio y único:
+
+- **Mecanismo único**: header `X-API-Key`, comparado en tiempo constante
+  (`hmac.compare_digest`) contra un secreto declarado en
+  `config/constants.py` (nunca hardcodeado, nunca `os.environ` directo) —
+  mismo principio de fuente única del §2.4.
+- **Implementación**: `HasValidApiKey` (permission) + `ApiKeyRequiredMixin`
+  (mixin para `APIView`), ambos en `accounts/permissions.py`, mismo lugar y
+  misma forma que `HasRole`/`RoleRequiredMixin` — no se crea un mecanismo de
+  permisos paralelo por cada consumidor nuevo, se reusa este mixin:
+
+  ```python
+  from accounts.permissions import ApiKeyRequiredMixin
+
+  class MiEndpointParaMCP(ApiKeyRequiredMixin, APIView):
+      def get(self, request):
+          ...
+  ```
+- Todo `APIView` de este tipo declara `ApiKeyRequiredMixin` de forma
+  explícita, igual de obligatorio que `allowed_roles` en §4.2 — nunca se deja
+  un endpoint de este tipo sin declarar el mecanismo de auth.
+- Un secreto por consumidor si en el futuro hay más de un cliente
+  máquina-a-máquina con distintos niveles de confianza (no seguir
+  compartiendo un único `MCP_API_KEY` entre consumidores que no deberían
+  tener el mismo acceso) — a resolver cuando aparezca el segundo consumidor,
+  no de más ahora.
+- No reemplaza el patrón de webhooks del §4.3 (que verifica la firma propia
+  del proveedor, no una key estática que nosotros mismos emitimos) ni el de
+  endpoints públicos del §4.2 (pensado para un humano sin sesión vía
+  URL/token no adivinable) — son tres mecanismos distintos para tres
+  situaciones distintas.
+
 ## 5. Conexiones con terceros: el pool de integraciones
 
 ### 5.1 Qué va aquí y qué no
@@ -469,6 +509,20 @@ Celery es para lo que es genuinamente asíncrono, largo, o programado.
 
 ## 11. Flujo de cambios (Git / PR)
 
+> **La IA no está autorizada a hacer cambios directamente en `main` ni en la
+> rama de producción, bajo ninguna circunstancia.** Todo cambio generado por
+> IA (o por un humano) se hace en una rama propia y se sube como Pull
+> Request — nunca `git push` directo a `main`/producción, nunca un merge sin
+> abrir PR. La aprobación de ese PR la da siempre un humano; la IA puede
+> proponer el cambio, describirlo, incluso auto-revisar su propio diff, pero
+> no puede ser quien lo apruebe ni quien lo mergea.
+>
+> Esto no es solo una convención de este documento: la rama de producción
+> está protegida en GitHub (branch protection / rulesets — restricción de
+> quién puede hacer push/merge) para que ni con permisos de escritura se
+> pueda mergear directo. La única vía de entrada a producción es un PR
+> aprobado por una persona habilitada.
+
 1. Confirmar rama, working tree limpio y que no hay trabajo concurrente sin
    commitear antes de empezar.
 2. Trabajar fuera de `main`; commits pequeños y reversibles.
@@ -479,10 +533,157 @@ Celery es para lo que es genuinamente asíncrono, largo, o programado.
 4. PR con descripción de qué cambia y por qué (no solo qué archivos toca),
    **incluyendo el contrato de cualquier endpoint nuevo o modificado**
    (§12) para que quien trabaje en `pamo_app_front` pueda consumirlo sin
-   leer el código Python, y aprobación humana antes de merge.
+   leer el código Python, y **aprobación humana obligatoria antes de
+   merge** — sin excepción para cambios generados por IA.
 5. Migraciones: revisar compatibilidad hacia atrás, aplicar `makemigrations`
    y confirmar el diff generado antes de commitear.
 6. Ningún secreto en código, commits, logs ni descripciones de PR.
+
+## 11.bis Flujo de features entre ambientes: prototype → QA → producción
+
+Todo el ciclo de vida de un feature —desde que se mergea a la rama
+`prototype` hasta que llega a producción o se descarta— queda registrado en
+el área **Feature Tracking y Migraciones** (`feature_tracking`, §3.2). Esto
+es distinto del contrato de estados de trabajos en segundo plano (§9): ahí
+se sigue el progreso de una tarea puntual (una importación, un job); acá se
+sigue el ciclo de vida de un cambio de código a través de los ambientes.
+
+### Registro automático al mergear a `prototype`
+
+Cuando un PR se mergea a la rama `prototype`, GitHub dispara un webhook que
+crea el registro del feature con estado inicial `prototipo` — nadie lo hace
+a mano. Sigue el mismo patrón de webhooks del §4.3: verificación de firma en
+`integrations/github.py`, endpoint en `feature_tracking/webhooks.py`,
+procesamiento idempotente (un re-delivery del mismo evento no crea un
+segundo registro).
+
+```python
+# feature_tracking/webhooks.py
+from integrations.github import GitHubClient
+from .functions.registrar_feature import registrar_feature_desde_merge
+
+class PrototypeMergeWebhook(APIView):
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        if not GitHubClient().verify_webhook_signature(
+            request.body, request.headers.get("X-Hub-Signature-256")
+        ):
+            return Response(status=401)
+        registrar_feature_desde_merge.delay(request.data)
+        return Response(status=200)
+```
+
+Nota de nombres: la rama se llama `prototype` (identificador técnico, en
+inglés, como cualquier nombre de rama) pero el **estado** que queda guardado
+es `prototipo` — dato de negocio, en español, mismo criterio que el §2.6.
+
+### Estados posibles
+
+```
+prototipo → qa → producción
+    ↓         ↓        ↓
+       descartado
+```
+
+- **`prototipo`**: se crea automáticamente al mergear a `prototype`. Es el
+  único estado que no requiere decisión humana — es un registro, no una
+  aprobación.
+- **`qa`**: alguien con rol de QA decide promover el feature. Requiere que
+  la validación de dependencias (ver abajo) pase primero.
+- **`producción`**: se registra automáticamente cuando el PR correspondiente
+  se mergea a la rama de producción — y ese merge ya pasó por la aprobación
+  humana obligatoria del §11, así que el tracking no vuelve a pedir una
+  aprobación aparte, solo deja constancia del hecho (mismo mecanismo de
+  webhook que el registro inicial).
+- **`descartado`**: un feature llega acá desde cualquier estado anterior,
+  nunca se borra el registro (ver "Revert" más abajo).
+
+### Cuándo se puede cambiar de estado
+
+| Transición | Quién decide | Validación previa |
+|---|---|---|
+| — → `prototipo` | Nadie (automático) | Firma del webhook válida |
+| `prototipo` → `qa` | Humano con rol de QA | Ninguna dependencia sin resolver (regla siguiente) |
+| `qa` → `producción` | Automático, ligado al merge ya aprobado en §11 | El PR de producción fue aprobado por un humano |
+| cualquiera → `descartado` | Automático si se detecta un `revert`; humano si lo marca manualmente | Motivo obligatorio |
+
+### Regla dura: no se puede pasar a QA con una dependencia en prototipo
+
+Un feature **no puede** cambiar a estado `qa` si depende de otro feature que
+todavía está en `prototipo`. La validación es automática — el intento de
+cambio de estado se rechaza, no es una convención que dependa de que
+alguien se acuerde de chequearlo a mano:
+
+```python
+# feature_tracking/functions/cambiar_estado_feature.py
+def cambiar_estado_feature(feature, estado_nuevo, actor, motivo=""):
+    if estado_nuevo == "qa":
+        bloqueado_por = feature.dependencias.exclude(
+            depende_de__estado__in=["qa", "produccion"]
+        )
+        if bloqueado_por.exists():
+            raise FeatureBloqueadoPorDependencia(bloqueado_por)
+    ...
+    registrar_historial(feature, estado_nuevo, actor, motivo)
+```
+
+Motivo: promover a QA un feature cuya dependencia todavía es un prototipo
+(inestable, sin revisar) traslada esa inestabilidad a QA sin que quede
+explícito por qué algo falla ahí — la dependencia sin resolver es la causa
+más probable, y esta regla evita tener que investigarlo caso por caso.
+
+### Cómo se registran las dependencias
+
+Cada feature puede declarar de qué otros features depende (ej.: "el webhook
+de envío depende de la conexión API con el proveedor de logística"):
+
+- **Automático cuando es detectable**: si la descripción del PR incluye la
+  convención `Depende-de: #<número-de-PR-o-feature>`, el webhook la parsea al
+  registrar el feature y crea la relación.
+- **Manual cuando no**: si la dependencia no se declaró en el PR, quien
+  gestiona Feature Tracking la agrega después (vía `/admin/` o el endpoint
+  correspondiente en `feature_tracking/views.py`) — no queda perdida, pero
+  tampoco bloquea el registro inicial del feature.
+
+```python
+# feature_tracking/models.py (boceto)
+class Feature(models.Model):
+    ESTADOS = [
+        ("prototipo", "Prototipo"),
+        ("qa", "QA"),
+        ("produccion", "Producción"),
+        ("descartado", "Descartado"),
+    ]
+    nombre = models.CharField(max_length=200)
+    area = models.CharField(max_length=100)  # referencia a §3.2
+    estado = models.CharField(max_length=20, choices=ESTADOS, default="prototipo")
+    pr_url = models.URLField()
+    commit_sha = models.CharField(max_length=40)
+
+class FeatureDependencia(models.Model):
+    feature = models.ForeignKey(Feature, related_name="dependencias", on_delete=models.CASCADE)
+    depende_de = models.ForeignKey(Feature, related_name="requerido_por", on_delete=models.PROTECT)
+
+class FeatureCambioEstado(models.Model):
+    feature = models.ForeignKey(Feature, related_name="historial", on_delete=models.CASCADE)
+    estado_anterior = models.CharField(max_length=20)
+    estado_nuevo = models.CharField(max_length=20)
+    actor = models.CharField(max_length=200)  # "webhook:github" o el usuario humano
+    motivo = models.TextField(blank=True)
+    fecha = models.DateTimeField(auto_now_add=True)
+```
+
+### Revert: se descarta, nunca se borra
+
+Si un cambio se revierte (`git revert`) en cualquier ambiente, el feature
+correspondiente pasa a estado `descartado` — **el registro no se elimina**.
+El historial (`FeatureCambioEstado`) conserva la secuencia completa
+(`prototipo` → `qa` → `descartado`, por ejemplo), con el motivo del revert.
+Esto es lo mismo que el principio de "cambios aditivos" del §2.2 aplicado al
+propio sistema de tracking: perder el historial de un feature descartado
+sería tan grave como perder el historial de un dato de negocio real —
+saber *que algo se intentó y se revirtió* es información operativa válida.
 
 ## 12. Contrato con el frontend
 
@@ -511,6 +712,9 @@ que el frontend necesita saber se documenta explícitamente:
 
 ## 13. Checklist antes de cerrar cualquier tarea
 
+- [ ] El cambio quedó en una rama propia, nunca commiteado/pusheado directo
+      a `main` o producción, y sigue como PR pendiente de aprobación
+      humana (§11) — sin excepción por haber sido generado por IA.
 - [ ] La funcionalidad quedó en el área correcta (§3) — si se creó una app
       nueva, la tabla del §3.2 quedó actualizada (y replicada en el repo de
       frontend).
@@ -532,6 +736,15 @@ que el frontend necesita saber se documenta explícitamente:
 - [ ] Si se agregó un webhook (§4.3): vive en `webhooks.py` del área dueña
       del recurso, verifica firma vía `integrations/<proveedor>.py`,
       responde rápido y encola el procesamiento en Celery, y es idempotente.
+- [ ] Si el endpoint es para un consumidor máquina-a-máquina interno (no
+      webhook, no usuario con sesión): usa `ApiKeyRequiredMixin` (§4.4), no
+      `RoleRequiredMixin` ni un mecanismo de auth nuevo.
+- [ ] Si es una migración o feature nuevo: se registró en el módulo de
+      tracking con estado inicial "prototipo" (§11.bis).
+- [ ] Si depende de otro feature: la dependencia quedó documentada en el
+      sistema de tracking (§11.bis).
+- [ ] Si se descarta: se marcó como descartado en el tracking, nunca se
+      elimina del historial (§11.bis).
 
 ## 14. Cómo evoluciona este documento
 
