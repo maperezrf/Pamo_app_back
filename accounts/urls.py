@@ -9,5 +9,6 @@ urlpatterns = [
     path('google/', views.GoogleLoginAPI.as_view(), name='google_login'),
     path('me/', views.MeAPI.as_view(), name='me'),
     path('logout/', views.LogoutAPI.as_view(), name='logout'),
+    path('menu/', views.MenuAPI.as_view(), name='menu'),
     path('ping-admin/', views.PingAdminAPI.as_view(), name='ping_admin'),
 ]
