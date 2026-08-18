@@ -11,6 +11,7 @@ from rest_framework.views import APIView
 
 from config.constants import GOOGLE_CLIENT_ID
 
+from .functions.build_menu import build_menu_for_user
 from .models import AllowedEmail
 from .permissions import RoleRequiredMixin
 
@@ -70,6 +71,16 @@ class LogoutAPI(APIView):
     def post(self, request):
         logout(request)
         return Response({"detail": "logged_out"})
+
+
+class MenuAPI(APIView):
+    """Árbol de módulos/submódulos de navegación, filtrado por los roles
+    del usuario logueado -- ver accounts/menu_config.py."""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        return Response(build_menu_for_user(request.user))
 
 
 class PingAdminAPI(RoleRequiredMixin, APIView):
