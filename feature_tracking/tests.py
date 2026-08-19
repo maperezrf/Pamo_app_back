@@ -2,12 +2,16 @@ import hashlib
 import hmac
 import json
 
+from django.contrib.auth import get_user_model
+from django.contrib.auth.models import Group
 from django.test import TestCase, override_settings
 from django.urls import reverse
 
 from config.constants import GITHUB_WEBHOOK_SECRET, MCP_API_KEY
 
 from .models import GovernancePrototipo
+
+User = get_user_model()
 
 
 def firmar_payload(payload_bytes):
@@ -65,6 +69,49 @@ class GovernancePrototipoAPITests(TestCase):
         self.assertEqual(response.status_code, 200)
         prototipo.refresh_from_db()
         self.assertEqual(prototipo.estado, "archivado")
+
+
+class GovernancePrototipoAdminListAPITests(TestCase):
+    def setUp(self):
+        self.admin_list_url = reverse('feature_tracking:prototipo_admin_list')
+        self.admin_group, _ = Group.objects.get_or_create(name="Admin")
+        GovernancePrototipo.objects.create(
+            nombre="Prototipo visible",
+            descripcion="Descripción",
+            estado="activo",
+            ambiente="desarrollo",
+            url_github="https://github.com/org/repo",
+            creado_por="tester@pamo.com",
+        )
+
+    def test_anonimo_no_autorizado(self):
+        response = self.client.get(self.admin_list_url)
+        self.assertEqual(response.status_code, 403)
+
+    def test_usuario_sin_rol_admin_rechazado(self):
+        user = User.objects.create_user(username="sin-rol@pamo.test")
+        self.client.force_login(user)
+
+        response = self.client.get(self.admin_list_url)
+        self.assertEqual(response.status_code, 403)
+
+    def test_usuario_con_rol_admin_ve_la_lista(self):
+        user = User.objects.create_user(username="admin@pamo.test")
+        user.groups.add(self.admin_group)
+        self.client.force_login(user)
+
+        response = self.client.get(self.admin_list_url)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.json()), 1)
+
+    def test_mcp_con_api_key_valida_ve_la_lista(self):
+        response = self.client.get(self.admin_list_url, HTTP_X_API_KEY=MCP_API_KEY)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.json()), 1)
+
+    def test_api_key_invalida_rechazada(self):
+        response = self.client.get(self.admin_list_url, HTTP_X_API_KEY="clave-incorrecta")
+        self.assertEqual(response.status_code, 403)
 
 
 @override_settings(ALLOWED_HOSTS=["*"])

@@ -56,3 +56,22 @@ class ApiKeyRequiredMixin:
     `GOVERNANCE.md` §4.4."""
 
     permission_classes = [HasValidApiKey]
+
+
+class HasRoleOrApiKey(BasePermission):
+    """Autoriza si hay sesión de Django con alguno de `view.allowed_roles`
+    (`HasRole`), o si la request trae la API key interna (`HasValidApiKey`)
+    -- para un endpoint de lectura que sirve tanto al frontend (usuario con
+    rol) como al servidor MCP (máquina-a-máquina), sin sesión."""
+
+    def has_permission(self, request, view):
+        return HasRole().has_permission(request, view) or HasValidApiKey().has_permission(request, view)
+
+
+class RoleOrApiKeyRequiredMixin:
+    """Mixin para APIView de lectura consumida tanto por un usuario con rol
+    (sesión de Django) como por el servidor MCP (API key). Declarar
+    `allowed_roles = ["Admin"]` igual que en `RoleRequiredMixin`."""
+
+    permission_classes = [HasRoleOrApiKey]
+    allowed_roles = []

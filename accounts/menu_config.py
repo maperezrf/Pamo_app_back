@@ -15,4 +15,11 @@ MENU = [
         "roles": [],
         "submodulos": [],
     },
+    {
+        "key": "prototipos",
+        "label": "Prototipos",
+        "path": "/prototipos",
+        "roles": ["Admin"],
+        "submodulos": [],
+    },
 ]
