@@ -21,8 +21,12 @@ User = get_user_model()
 @require_GET
 @ensure_csrf_cookie
 def csrf(request):
-    get_token(request)
-    return JsonResponse({"detail": "ok"})
+    # El token va también en el body (no solo en la cookie) porque en
+    # producción frontend y backend quedan en hosts distintos
+    # (*.up.railway.app): el JS del frontend no puede leer una cookie de
+    # otro dominio, así que la única forma de que arme el header
+    # X-CSRFToken es leyendo este valor de la respuesta.
+    return JsonResponse({"detail": "ok", "csrftoken": get_token(request)})
 
 
 class GoogleLoginAPI(APIView):
