@@ -1,0 +1,14 @@
+# Config de Codex a nivel de proyecto para este repo (backend).
+# Se carga solo si el usuario marca esta carpeta como "trusted" en Codex.
+
+# Sin AGENTS.md en este repo: usar el CLAUDE.md existente como instrucciones
+# de proyecto (mismo archivo que usa Claude Code, una sola fuente de verdad).
+project_doc_fallback_filenames = ["CLAUDE.md"]
+
+# MCP de gobierno del proyecto Pamo — expone los lineamientos obligatorios
+# (obtener_mapa_documentacion, obtener_lineamientos_generales,
+# obtener_lineamientos_backend, obtener_lineamientos_git, etc.) que
+# CLAUDE.md exige consultar antes de escribir código.
+[mcp_servers.governance-pamo]
+url = "https://governancemcppamo-production.up.railway.app/mcp"
+bearer_token_env_var = "GOVERNANCE_PAMO_TOKEN"
