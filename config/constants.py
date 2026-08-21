@@ -13,6 +13,10 @@ GITHUB_WEBHOOK_SECRET = config("GITHUB_WEBHOOK_SECRET")
 # API KEY para consumidores máquina-a-máquina internos (ej. servidor MCP)
 MCP_API_KEY = config("MCP_API_KEY")
 
+# ESCRITURAS EXTERNAS — doble compuerta, desactivadas por defecto.
+EXTERNAL_WRITES_ENABLED = config("EXTERNAL_WRITES_ENABLED", default=False, cast=bool)
+SIIGO_INVOICE_WRITES_ENABLED = config("SIIGO_INVOICE_WRITES_ENABLED", default=False, cast=bool)
+
 # DATABASE
 # Vacío en desarrollo local (se usa SQLite). En Railway apunta al Postgres
 # del proyecto -- ver config/settings.py.
