@@ -22,4 +22,18 @@ MENU = [
         "roles": ["Admin"],
         "submodulos": [],
     },
+    {
+        "key": "remisiones",
+        "label": "Remisiones",
+        "path": "/remisiones",
+        "roles": ["Admin", "Operaciones", "Logistica"],
+        "submodulos": [],
+    },
+    {
+        "key": "facturacion-remisiones",
+        "label": "Facturación de remisiones",
+        "path": "/contabilidad/remisiones",
+        "roles": ["Admin", "Facturacion"],
+        "submodulos": [],
+    },
 ]
