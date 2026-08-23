@@ -29,6 +29,7 @@ INSTALLED_APPS = [
     'corsheaders',
     'accounts',
     'feature_tracking',
+    'facturacion',
 ]
 
 MIDDLEWARE = [
