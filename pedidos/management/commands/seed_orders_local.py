@@ -25,12 +25,16 @@ class Command(BaseCommand):
     help = "Crea datos sanitizados e idempotentes para revisar Pedidos en local."
 
     def handle(self, *args, **options):
-        group, _ = Group.objects.get_or_create(name="Operaciones")
+        operations_group, _ = Group.objects.get_or_create(name="Operaciones")
+        catalog_group, _ = Group.objects.get_or_create(name="Catalogo")
         user, _ = User.objects.get_or_create(
             username="operador.local@pamo.test",
             defaults={"email": "operador.local@pamo.test", "first_name": "Operador"},
         )
-        user.groups.add(group)
+        # La copia integrada necesita ver Pedidos y Catalogo sin elevar el
+        # usuario de demostracion a Admin. Estos grupos solo se crean en la
+        # base local sanitizada mediante este comando explicito.
+        user.groups.add(operations_group, catalog_group)
 
         locations = {}
         for external_id, name, reference in (
