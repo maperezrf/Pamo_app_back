@@ -19,6 +19,8 @@
       "ORDERS_EXTERNAL_READS_ENABLED=False",
       "ORDERS_EXTERNAL_WRITES_ENABLED=False",
       "LOCAL_DEMO_AUTH_ENABLED=True",
+      "SESSION_COOKIE_NAME=pamo_app_integration_session",
+      "CSRF_COOKIE_NAME=pamo_app_integration_csrf",
       "/Users/mauricioperez/Documents/PAMO_APP/Pamo_app_back/.venv/bin/python",
       "manage.py",
       "test",
@@ -30,11 +32,11 @@
   ],
   "url_checks": [
     {
-      "url": "http://127.0.0.1:8013/health/",
+      "url": "http://localhost:8013/health/",
       "allowed_status": [200]
     },
     {
-      "url": "http://127.0.0.1:8013/api/auth/csrf/",
+      "url": "http://localhost:8013/api/auth/csrf/",
       "allowed_status": [200]
     }
   ]

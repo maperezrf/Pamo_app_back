@@ -7,8 +7,8 @@ APP que ya contiene Catalogo multicanal. No reemplaza los prototipos separados
 ni publica cambios en Beta o Produccion.
 
 - Rama: `integration/pamo-app-local-20260827`
-- Backend integrado: `http://127.0.0.1:8013`
-- Frontend integrado: `http://127.0.0.1:5176`
+- Backend integrado: `http://localhost:8013`
+- Frontend integrado: `http://localhost:5176`
 - Persistencia: copia SQLite local independiente
 - Integraciones externas: desactivadas
 - Escrituras externas: `externalWrites=0`
@@ -43,8 +43,10 @@ Backend, desde este worktree:
   SHOPIFY_READS_ENABLED=False ORDERS_LOCAL_MODE=True \
   ORDERS_EXTERNAL_READS_ENABLED=False ORDERS_EXTERNAL_WRITES_ENABLED=False \
   LOCAL_DEMO_AUTH_ENABLED=True \
-  CORS_ALLOWED_ORIGINS=http://127.0.0.1:5176 \
-  CSRF_TRUSTED_ORIGINS=http://127.0.0.1:5176 \
+  SESSION_COOKIE_NAME=pamo_app_integration_session \
+  CSRF_COOKIE_NAME=pamo_app_integration_csrf \
+  CORS_ALLOWED_ORIGINS=http://localhost:5176,http://127.0.0.1:5176 \
+  CSRF_TRUSTED_ORIGINS=http://localhost:5176,http://127.0.0.1:5176 \
   /Users/mauricioperez/Documents/PAMO_APP/Pamo_app_back/.venv/bin/python \
   manage.py runserver 127.0.0.1:8013
 ```
@@ -52,7 +54,7 @@ Backend, desde este worktree:
 Frontend, desde su worktree integrado:
 
 ```bash
-/usr/bin/env VITE_API_BASE_URL=http://127.0.0.1:8013 \
+/usr/bin/env VITE_API_BASE_URL=http://localhost:8013 \
   VITE_LOCAL_DEMO_AUTH=true npm run dev -- --host 127.0.0.1 --port 5176
 ```
 
@@ -66,4 +68,3 @@ Antes de considerar una integracion remota deben aprobarse:
 4. responsive movil y ausencia de errores inesperados en consola/red;
 5. confirmacion de `externalWrites=0`;
 6. aprobacion separada para push, PR, Beta o Produccion.
-

@@ -42,6 +42,13 @@ CSRF_TRUSTED_ORIGINS = config(
     cast=Csv(),
 )
 
+# AISLAMIENTO ENTRE PROTOTIPOS LOCALES
+# Los navegadores comparten cookies por host, no por puerto. Estos nombres son
+# configurables para que una copia local integrada no invalide la sesion de
+# otro prototipo que tambien use 127.0.0.1 o localhost.
+SESSION_COOKIE_NAME = config("SESSION_COOKIE_NAME", default="sessionid")
+CSRF_COOKIE_NAME = config("CSRF_COOKIE_NAME", default="csrftoken")
+
 # PEDIDOS LOCAL CONTROLADO
 # Las lecturas y escrituras externas nacen apagadas. El modo demo local sólo
 # puede abrir sesión cuando DEBUG=True; views.py vuelve a comprobar ambas
