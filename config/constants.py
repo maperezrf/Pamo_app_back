@@ -16,6 +16,7 @@ MCP_API_KEY = config("MCP_API_KEY")
 # Integraciones y escrituras fallan cerradas. Las lecturas puntuales se
 # habilitan solo durante un proceso explícito de sincronización.
 EXTERNAL_WRITES_ENABLED = config("EXTERNAL_WRITES_ENABLED", default=False, cast=bool)
+SIIGO_INVOICE_WRITES_ENABLED = config("SIIGO_INVOICE_WRITES_ENABLED", default=False, cast=bool)
 
 # Siigo de solo lectura; vacías en desarrollo cuando no se sincroniza.
 SIIGO_USERNAME = config("SIIGO_USERNAME", default="")
@@ -24,6 +25,9 @@ SIIGO_PARTNER_ID = config("SIIGO_PARTNER_ID", default="")
 SIIGO_LIVE_READS_ENABLED = config("SIIGO_LIVE_READS_ENABLED", default=False, cast=bool)
 # Si Siigo ofrece varias opciones activas, estos identificadores evitan que el
 # sistema escoja al azar. Permanecen vacíos hasta validar la cuenta objetivo.
+SIIGO_INVOICE_DOCUMENT_ID = config("SIIGO_INVOICE_DOCUMENT_ID", default="")
+SIIGO_PAYMENT_TYPE_ID = config("SIIGO_PAYMENT_TYPE_ID", default="")
+SIIGO_DEFAULT_SELLER_ID = config("SIIGO_DEFAULT_SELLER_ID", default="")
 
 # Lectura estructurada de facturas de proveedor. En local funciona primero el
 # lector determinista de PDF; sin clave, imágenes/Excel fallan de forma segura
