@@ -10,7 +10,11 @@ from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 from django.utils import timezone
 
-from config.constants import ORDERS_EXTERNAL_READS_ENABLED, ORDERS_EXTERNAL_WRITES_ENABLED
+from config.constants import (
+    ORDERS_EXTERNAL_READS_ENABLED,
+    ORDERS_EXTERNAL_WRITES_ENABLED,
+    ORDERS_PDF_FROM,
+)
 from integrations.orders.base import ExternalReadFailed
 from integrations.orders.canonical import PamoCanonicalOrdersProvider
 from pedidos.functions.canonical_import import apply_canonical_snapshot, apply_integration_readiness
@@ -42,6 +46,10 @@ class Command(BaseCommand):
             raise CommandError("Las fechas deben usar YYYY-MM-DD.") from error
         if to_date < from_date or to_date - from_date > timedelta(days=93):
             raise CommandError("El rango debe ser positivo y no superar 93 días.")
+        try:
+            pdf_floor = max(from_date, date.fromisoformat(ORDERS_PDF_FROM))
+        except ValueError as error:
+            raise CommandError("ORDERS_PDF_FROM debe usar YYYY-MM-DD.") from error
         workers = min(max(options["workers"], 1), 10)
         base_url = environ.get("PAMO_CANONICAL_API_BASE_URL", "").strip()
         api_token = environ.get("PAMO_API_TOKEN", "").strip()
@@ -69,7 +77,13 @@ class Command(BaseCommand):
                 "SOME_LABELS_UNAVAILABLE" if envia_details.get("unavailable") else envia_status.last_error_code
             )
             envia_status.save()
-            self.stdout.write(self.style.SUCCESS("Estado de integraciones actualizado; externalWrites=0."))
+            availability = self._update_document_availability(pdf_floor, to_date)
+            self.stdout.write(
+                self.style.SUCCESS(
+                    f"Estado de integraciones actualizado; PDF disponibles={availability['available']}, "
+                    f"PDF pendientes={availability['missing']}, externalWrites=0."
+                )
+            )
             return
 
         if options["labels_only"]:
@@ -133,6 +147,7 @@ class Command(BaseCommand):
             from_date=from_date.isoformat(),
             to_date=to_date.isoformat(),
         )
+        availability = self._update_document_availability(pdf_floor, to_date)
 
         label_counts = {"cached": 0, "already_cached": 0, "unavailable": 0}
         if options["download_labels"]:
@@ -150,10 +165,50 @@ class Command(BaseCommand):
                 f"eventos_nuevos={counts.get('events_created', 0)}, "
                 f"etiquetas_cache={label_counts['cached']}, "
                 f"etiquetas_no_disponibles={label_counts['unavailable']}, "
+                f"pdf_disponibles={availability['available']}, "
+                f"pdf_pendientes={availability['missing']}, "
                 f"codigos={label_counts.get('unavailable_by_code', {})}, "
                 "externalWrites=0."
             )
         )
+
+    def _update_document_availability(self, from_date, to_date):
+        shipments = Shipment.objects.filter(
+            order__in=operational_orders(),
+            order__placed_at__date__gte=from_date,
+            order__placed_at__date__lte=to_date,
+        ).select_related("document")
+        available = 0
+        tracked = 0
+        missing = 0
+        for shipment in shipments.iterator(chunk_size=500):
+            if not shipment.tracking_number:
+                continue
+            tracked += 1
+            snapshot = shipment.source_snapshot if isinstance(shipment.source_snapshot, dict) else {}
+            remote_documents = snapshot.get("remote_documents")
+            has_document = hasattr(shipment, "document") or (
+                isinstance(remote_documents, list) and bool(remote_documents)
+            )
+            if has_document:
+                available += 1
+            else:
+                missing += 1
+        status, _ = IntegrationStatus.objects.get_or_create(provider="pamo_canonical")
+        details = dict(status.details or {})
+        details.update(
+            {
+                "pdfAvailable": available,
+                "pdfMissing": missing,
+                "trackedShipments": tracked,
+                "pdfFrom": from_date.isoformat(),
+                "pdfTo": to_date.isoformat(),
+                "externalWrites": 0,
+            }
+        )
+        status.details = details
+        status.save(update_fields=["details", "updated_at"])
+        return {"available": available, "missing": missing, "tracked": tracked}
 
     def _cache_labels(self, provider, shipments, workers):
         candidates = []

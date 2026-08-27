@@ -41,6 +41,32 @@ class CanonicalProviderTests(TestCase):
         self.assertEqual(calls[0][1]["headers"]["Authorization"], "Bearer secret-not-logged")
         self.assertFalse(calls[0][1]["allow_redirects"])
 
+    def test_provider_uploads_a_manual_pdf_to_the_canonical_private_store(self):
+        calls = []
+
+        def fake_post(url, **kwargs):
+            calls.append((url, kwargs))
+            return FakeResponse({"document": {"id": "document-1", "source": "manual_upload"}})
+
+        provider = PamoCanonicalOrdersProvider(
+            base_url="https://api.example.test",
+            api_token="secret-not-logged",
+            enabled=True,
+            post_callable=fake_post,
+        )
+        payload = provider.upload_shipment_document(
+            "shipment-1",
+            content=b"%PDF-1.4\nqa",
+            mime_type="application/pdf",
+            filename="guia.pdf",
+            actor="qa@pamo.test",
+        )
+
+        self.assertEqual(payload["document"]["source"], "manual_upload")
+        self.assertTrue(calls[0][0].endswith("/v1/orders/logistics/shipments/shipment-1/document"))
+        self.assertEqual(calls[0][1]["headers"]["X-Pamo-Actor"], "qa@pamo.test")
+        self.assertEqual(calls[0][1]["json"]["mimeType"], "application/pdf")
+
 
 class CanonicalImportTests(TestCase):
     def setUp(self):

@@ -26,7 +26,7 @@ User = get_user_model()
 
 class OrdersAPITests(TestCase):
     def setUp(self):
-        group = Group.objects.create(name="Operaciones")
+        group, _ = Group.objects.get_or_create(name="Operaciones")
         self.user = User.objects.create_user(
             username="qa.orders@pamo.test", email="qa.orders@pamo.test"
         )
@@ -189,6 +189,30 @@ class OrdersAPITests(TestCase):
         self.assertEqual(missing["total"], 2)
         self.assertEqual(untracked["total"], 1)
         self.assertEqual(combined["total"], 2)
+
+    def test_pdf_pending_filter_uses_canonical_document_metadata(self):
+        self.shipment_a.tracking_number = "GUIA-A"
+        self.shipment_b.tracking_number = "GUIA-B"
+        self.shipment_a.save()
+        self.shipment_b.save()
+        self.login()
+
+        pending = self.client.get("/api/pedidos/?guide=pdf_missing").json()
+        self.assertEqual(pending["total"], 1)
+
+        for shipment in (self.shipment_a, self.shipment_b):
+            shipment.source_snapshot = {
+                "canonical_shipment_id": str(shipment.id),
+                "remote_documents": [{"source": "envia", "original_filename": "guia.pdf"}],
+            }
+            shipment.save()
+
+        complete = self.client.get("/api/pedidos/?guide=pdf_missing").json()
+        regular = self.client.get("/api/pedidos/").json()
+        overview = self.client.get("/api/pedidos/overview/").json()
+        self.assertEqual(complete["total"], 0)
+        self.assertEqual(regular["orders"][0]["pdf_available"], [True, True])
+        self.assertEqual(overview["without_pdf"], 0)
 
     def test_manual_warehouse_override_is_audited_and_versioned(self):
         self.login()

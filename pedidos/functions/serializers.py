@@ -5,7 +5,18 @@ def decimal_value(value):
     return None if value is None else str(value)
 
 
+def remote_documents(shipment):
+    snapshot = shipment.source_snapshot if isinstance(shipment.source_snapshot, dict) else {}
+    documents = snapshot.get("remote_documents")
+    return documents if isinstance(documents, list) else []
+
+
+def shipment_has_document(shipment):
+    return hasattr(shipment, "document") or bool(remote_documents(shipment))
+
+
 def shipment_dict(shipment, *, detailed=False):
+    has_document = shipment_has_document(shipment)
     data = {
         "id": str(shipment.id),
         "order_id": str(shipment.order_id),
@@ -28,8 +39,13 @@ def shipment_dict(shipment, *, detailed=False):
         "customer_context": shipment.customer_context or None,
         "messaging_state": shipment.messaging_state,
         "version": shipment.version,
-        "has_document": hasattr(shipment, "document"),
-        "document_url": f"/api/pedidos/shipments/{shipment.id}/document/" if hasattr(shipment, "document") else None,
+        "has_document": has_document,
+        "document_url": f"/api/pedidos/shipments/{shipment.id}/document/" if has_document else None,
+        "document_source": (
+            "local_manual" if hasattr(shipment, "document") else
+            (remote_documents(shipment)[0].get("source") or "canonical")
+            if remote_documents(shipment) else None
+        ),
     }
     if detailed:
         data["items"] = [
@@ -92,6 +108,7 @@ def order_row(order):
         "logistics_state": logistics_states,
         "incident_category": incident_categories,
         "messaging_state": [item.messaging_state for item in shipments],
+        "pdf_available": [shipment_has_document(item) for item in shipments],
         "state": order.state,
         "version": max((item.version for item in shipments), default=1),
     }

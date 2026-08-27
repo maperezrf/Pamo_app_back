@@ -1,3 +1,4 @@
+from base64 import b64encode
 from dataclasses import dataclass
 from urllib.parse import urljoin, urlparse
 
@@ -25,6 +26,7 @@ class PamoCanonicalOrdersProvider(ReadOnlyOrdersProvider):
         api_token,
         enabled=False,
         request_callable=None,
+        post_callable=None,
         timeout=(8, 45),
     ):
         super().__init__(enabled=enabled)
@@ -37,19 +39,40 @@ class PamoCanonicalOrdersProvider(ReadOnlyOrdersProvider):
         self.base_url = str(base_url).rstrip("/") + "/"
         self.api_token = str(api_token or "").strip()
         self.request_callable = request_callable or requests.get
+        self.post_callable = post_callable or requests.post
         self.timeout = timeout
 
-    def _request(self, path, *, params=None, binary=False, maximum_bytes=12_000_000):
+    def _request(
+        self,
+        path,
+        *,
+        params=None,
+        binary=False,
+        maximum_bytes=12_000_000,
+        method="GET",
+        json_body=None,
+        actor=None,
+    ):
         if not self.enabled:
             raise ExternalReadDisabled("La lectura canónica está deshabilitada en local")
         if not self.api_token:
             raise ExternalReadFailed(self.provider, "CANONICAL_TOKEN_MISSING")
-        response = self.request_callable(
+        headers = {"Authorization": f"Bearer {self.api_token}"}
+        if actor:
+            headers["X-Pamo-Actor"] = str(actor)[:240]
+        caller = self.post_callable if method == "POST" else self.request_callable
+        request_options = {
+            "headers": headers,
+            "timeout": self.timeout,
+            "allow_redirects": False,
+        }
+        if params is not None:
+            request_options["params"] = params
+        if json_body is not None:
+            request_options["json"] = json_body
+        response = caller(
             urljoin(self.base_url, path.lstrip("/")),
-            params=params,
-            headers={"Authorization": f"Bearer {self.api_token}"},
-            timeout=self.timeout,
-            allow_redirects=False,
+            **request_options,
         )
         if response.status_code < 200 or response.status_code >= 300:
             raise ExternalReadFailed(
@@ -99,3 +122,23 @@ class PamoCanonicalOrdersProvider(ReadOnlyOrdersProvider):
             if candidate:
                 filename = candidate[:200]
         return CanonicalDocument(content=content, mime_type=mime_type, filename=filename)
+
+    def upload_shipment_document(
+        self,
+        canonical_shipment_id,
+        *,
+        content,
+        mime_type,
+        filename,
+        actor,
+    ):
+        return self._request(
+            f"/v1/orders/logistics/shipments/{canonical_shipment_id}/document",
+            method="POST",
+            actor=actor,
+            json_body={
+                "contentBase64": b64encode(content).decode("ascii"),
+                "mimeType": mime_type,
+                "fileName": filename,
+            },
+        )

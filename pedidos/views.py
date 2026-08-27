@@ -5,7 +5,7 @@ from urllib.parse import urlparse
 
 from django.db import transaction
 from django.db.models import Count, Q
-from django.http import FileResponse
+from django.http import FileResponse, HttpResponse
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.parsers import FormParser, MultiPartParser
@@ -18,7 +18,11 @@ from config.constants import (
     ORDERS_EXTERNAL_WRITES_ENABLED,
     ORDERS_GUIDE_MAX_BYTES,
     ORDERS_LOCAL_MODE,
+    PAMO_API_TOKEN,
+    PAMO_CANONICAL_API_BASE_URL,
 )
+from integrations.orders.base import ExternalReadFailed
+from integrations.orders.canonical import PamoCanonicalOrdersProvider
 
 from .functions.messaging import prepare_manual_followups
 from .functions.querysets import operational_orders
@@ -64,6 +68,36 @@ def parse_positive_int(value, default, maximum=200):
     return min(max(parsed, 1), maximum)
 
 
+def canonical_shipment_id(shipment):
+    snapshot = shipment.source_snapshot if isinstance(shipment.source_snapshot, dict) else {}
+    return str(snapshot.get("canonical_shipment_id") or "").strip()
+
+
+def canonical_provider():
+    return PamoCanonicalOrdersProvider(
+        base_url=PAMO_CANONICAL_API_BASE_URL,
+        api_token=PAMO_API_TOKEN,
+        enabled=ORDERS_EXTERNAL_READS_ENABLED,
+    )
+
+
+def missing_pdf_query():
+    return Q(shipments__document__isnull=True) & (
+        Q(shipments__source_snapshot__remote_documents__isnull=True)
+        | Q(shipments__source_snapshot__remote_documents=[])
+    )
+
+
+def valid_guide_signature(content, mime_type):
+    if mime_type == "application/pdf":
+        return content.startswith(b"%PDF-")
+    if mime_type == "image/jpeg":
+        return content.startswith(b"\xff\xd8\xff")
+    if mime_type == "image/png":
+        return content.startswith(b"\x89PNG\r\n\x1a\n")
+    return False
+
+
 class OrdersOverviewAPI(RoleRequiredMixin, APIView):
     allowed_roles = OPERATOR_ROLES
 
@@ -78,11 +112,13 @@ class OrdersOverviewAPI(RoleRequiredMixin, APIView):
             shipments__tracking_number__gt="",
             shipments__logistics_state="guide_without_tracking",
         ).distinct().count()
+        without_pdf = orders.filter(missing_pdf_query()).distinct().count()
         return Response(
             {
                 "total": total,
                 "without_guide": without_guide,
                 "guide_without_tracking": guide_without_tracking,
+                "without_pdf": without_pdf,
                 "in_transit": shipments.filter(logistics_state="in_transit").count(),
                 "delivered": shipments.filter(logistics_state="delivered").count(),
                 "exceptions": shipments.exclude(incident_category="").count(),
@@ -169,6 +205,8 @@ class OrdersListAPI(RoleRequiredMixin, APIView):
                     shipments__logistics_state="guide_without_tracking",
                 )
             )
+        elif guide_filter == "pdf_missing":
+            queryset = queryset.filter(missing_pdf_query())
 
         queryset = queryset.distinct()
         total = queryset.count()
@@ -176,6 +214,7 @@ class OrdersListAPI(RoleRequiredMixin, APIView):
         page_size = parse_positive_int(request.query_params.get("page_size"), 25, 100)
         start = (page - 1) * page_size
         rows = [order_row(order) for order in queryset[start : start + page_size]]
+        canonical_status = IntegrationStatus.objects.filter(provider="pamo_canonical").first()
         return Response(
             {
                 "orders": rows,
@@ -184,6 +223,11 @@ class OrdersListAPI(RoleRequiredMixin, APIView):
                 "total": total,
                 "externalWrites": 0,
                 "localMode": ORDERS_LOCAL_MODE,
+                "lastSuccessfulAt": (
+                    canonical_status.last_success_at.isoformat()
+                    if canonical_status and canonical_status.last_success_at
+                    else None
+                ),
             }
         )
 
@@ -419,15 +463,37 @@ class ShipmentDocumentAPI(RoleRequiredMixin, APIView):
     parser_classes = [MultiPartParser, FormParser]
 
     def get(self, request, shipment_id):
-        document = ShipmentDocument.objects.filter(shipment_id=shipment_id).first()
-        if not document:
-            return Response({"detail": "Este despacho no tiene una guía cargada."}, status=404)
-        response = FileResponse(
-            document.file.open("rb"),
-            content_type=document.mime_type,
-            filename=document.original_name,
-        )
-        response["Content-Disposition"] = f'inline; filename="{document.original_name}"'
+        shipment = Shipment.objects.filter(id=shipment_id).first()
+        if not shipment:
+            return Response({"detail": "Despacho no encontrado."}, status=404)
+        document = ShipmentDocument.objects.filter(shipment=shipment).first()
+        if document:
+            response = FileResponse(
+                document.file.open("rb"),
+                content_type=document.mime_type,
+                filename=document.original_name,
+            )
+            response["Content-Disposition"] = f'inline; filename="{document.original_name}"'
+            response["Cache-Control"] = "private, no-store"
+            return response
+        remote_id = canonical_shipment_id(shipment)
+        if not remote_id or not ORDERS_EXTERNAL_READS_ENABLED:
+            return Response({"detail": "Este despacho no tiene una guía disponible."}, status=404)
+        provider = canonical_provider()
+        try:
+            try:
+                remote = provider.shipment_document(remote_id, prefer_manual=True)
+            except ExternalReadFailed as error:
+                if error.code != "CANONICAL_HTTP_404":
+                    raise
+                remote = provider.shipment_document(remote_id)
+        except ExternalReadFailed as error:
+            return Response(
+                {"detail": "La guía todavía no está disponible en la fuente canónica.", "code": error.code},
+                status=404 if error.status_code == 404 else 502,
+            )
+        response = HttpResponse(remote.content, content_type=remote.mime_type)
+        response["Content-Disposition"] = f'inline; filename="{remote.filename}"'
         response["Cache-Control"] = "private, no-store"
         return response
 
@@ -444,10 +510,66 @@ class ShipmentDocumentAPI(RoleRequiredMixin, APIView):
             return Response({"file": ["Solo se permiten PDF, JPG y PNG."]}, status=400)
         if uploaded.size > ORDERS_GUIDE_MAX_BYTES:
             return Response({"file": ["La guía supera el tamaño máximo permitido."]}, status=400)
-        digest = hashlib.sha256()
-        for chunk in uploaded.chunks():
-            digest.update(chunk)
+        content = uploaded.read()
         uploaded.seek(0)
+        if not valid_guide_signature(content, uploaded.content_type):
+            return Response({"file": ["El contenido no coincide con el tipo de archivo."]}, status=400)
+        digest = hashlib.sha256()
+        digest.update(content)
+        uploaded.seek(0)
+
+        remote_id = canonical_shipment_id(shipment)
+        if not ORDERS_LOCAL_MODE:
+            if not remote_id or not ORDERS_EXTERNAL_READS_ENABLED:
+                return Response(
+                    {"detail": "La fuente canónica del despacho no está disponible."},
+                    status=409,
+                )
+            try:
+                payload = canonical_provider().upload_shipment_document(
+                    remote_id,
+                    content=content,
+                    mime_type=uploaded.content_type,
+                    filename=Path(uploaded.name).name,
+                    actor=actor_name(request),
+                )
+            except ExternalReadFailed as error:
+                return Response(
+                    {"detail": "No fue posible conservar la guía en el almacenamiento canónico.", "code": error.code},
+                    status=502,
+                )
+            snapshot = dict(shipment.source_snapshot or {})
+            current_documents = snapshot.get("remote_documents")
+            current_documents = current_documents if isinstance(current_documents, list) else []
+            remote_document = payload.get("document") if isinstance(payload, dict) else None
+            snapshot["remote_documents"] = [remote_document or {
+                "source": "manual_upload",
+                "original_filename": Path(uploaded.name).name,
+            }, *current_documents]
+            shipment.source_snapshot = snapshot
+            shipment.version += 1
+            shipment.save(update_fields=["source_snapshot", "version", "updated_at"])
+            LogisticsAudit.objects.create(
+                shipment=shipment,
+                field="document",
+                previous_value="",
+                new_value=Path(uploaded.name).name,
+                actor=actor_name(request),
+                source="manual",
+                detail="Documento privado conservado en la fuente canónica.",
+            )
+            return Response(
+                {
+                    "document": {
+                        "name": Path(uploaded.name).name,
+                        "mime_type": uploaded.content_type,
+                        "size_bytes": uploaded.size,
+                        "url": f"/api/pedidos/shipments/{shipment.id}/document/",
+                    },
+                    "externalWrites": 0,
+                },
+                status=201,
+            )
 
         previous = ShipmentDocument.objects.filter(shipment=shipment).first()
         if previous:
@@ -619,8 +741,8 @@ class SavedFiltersAPI(RoleRequiredMixin, APIView):
 
     def post(self, request):
         name = str(request.data.get("name", "")).strip()
-        filters = request.data.get("filters", [])
-        if not name or not isinstance(filters, list):
+        filters = request.data.get("filters", {})
+        if not name or not isinstance(filters, dict):
             return Response({"detail": "Nombre y filtros son obligatorios."}, status=400)
         item, created = SavedFilter.objects.update_or_create(
             owner=request.user,
