@@ -1,0 +1,3 @@
+SKU,GTIN,Descripción,Proveedor,Peso empacado,Unidad peso,Largo paquete,Ancho paquete,Alto paquete,Unidad dimensiones,Cantidad bultos,Fecha verificación,Responsable,Tipo de fuente,Fuente / referencia,Evidencia / foto (URL),Observaciones
+SKU: 9514B-E-103,GTIN: 7709254448462,DEMO flujo local,Barú,9.9,KG,50,50,25,CM,1,2026-08-25,QA local,DEMO_NO_CONFIRMADO,DEMO sintético sin evidencia comercial,,NO CONFIRMADO; no usar para cotizar ni Shopify
+SKU: 062,GTIN: 7709060179239,DEMO flujo local,Barú,8.8,KG,48,48,24,CM,1,2026-08-25,QA local,DEMO_NO_CONFIRMADO,DEMO sintético sin evidencia comercial,,NO CONFIRMADO; no usar para cotizar ni Shopify

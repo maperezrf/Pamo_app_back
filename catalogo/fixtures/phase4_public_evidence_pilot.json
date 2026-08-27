@@ -1,0 +1,70 @@
+{
+  "purpose": "Sanitized public evidence pilot; local import only",
+  "searched_at": "2026-08-25T00:00:00-05:00",
+  "search_policy": "Exact SKU, GTIN or MPN only. Similar products never become confirmed package data.",
+  "records": [
+    {
+      "sku": "9514B-E-103",
+      "field": "LENGTH",
+      "scope": "PRODUCT",
+      "value": "36.5",
+      "unit": "CM",
+      "source_type": "PUBLIC_RETAIL_EXACT",
+      "source_reference": "Mercado Libre Colombia product page",
+      "source_url": "https://www.mercadolibre.com.co/lavamanos-de-sobreponer-redondo-oro-rosa-365365125cm/up/MCOU2882676159",
+      "identifier_type": "MPN",
+      "identifier_value": "9514B-E-103",
+      "evidence_excerpt": "Modelo 9514B-E-103 BRU; lavamanos 36,5 x 36,5 x 12,5 cm.",
+      "selector": "public-page:model-and-title",
+      "confidence": "0.82",
+      "observed_at": "2026-08-25T00:00:00-05:00"
+    },
+    {
+      "sku": "9514B-E-103",
+      "field": "WIDTH",
+      "scope": "PRODUCT",
+      "value": "36.5",
+      "unit": "CM",
+      "source_type": "PUBLIC_RETAIL_EXACT",
+      "source_reference": "Mercado Libre Colombia product page",
+      "source_url": "https://www.mercadolibre.com.co/lavamanos-de-sobreponer-redondo-oro-rosa-365365125cm/up/MCOU2882676159",
+      "identifier_type": "MPN",
+      "identifier_value": "9514B-E-103",
+      "evidence_excerpt": "Modelo 9514B-E-103 BRU; lavamanos 36,5 x 36,5 x 12,5 cm.",
+      "selector": "public-page:model-and-title",
+      "confidence": "0.82",
+      "observed_at": "2026-08-25T00:00:00-05:00"
+    },
+    {
+      "sku": "9514B-E-103",
+      "field": "HEIGHT",
+      "scope": "PRODUCT",
+      "value": "12.5",
+      "unit": "CM",
+      "source_type": "PUBLIC_RETAIL_EXACT",
+      "source_reference": "Mercado Libre Colombia product page",
+      "source_url": "https://www.mercadolibre.com.co/lavamanos-de-sobreponer-redondo-oro-rosa-365365125cm/up/MCOU2882676159",
+      "identifier_type": "MPN",
+      "identifier_value": "9514B-E-103",
+      "evidence_excerpt": "Modelo 9514B-E-103 BRU; lavamanos 36,5 x 36,5 x 12,5 cm.",
+      "selector": "public-page:model-and-title",
+      "confidence": "0.82",
+      "observed_at": "2026-08-25T00:00:00-05:00"
+    }
+  ],
+  "rejected_or_not_imported": [
+    {
+      "sku": "062",
+      "reason": "Homecenter showed a matching title and product measurements but no strong SKU/GTIN/MPN match and no package dimensions."
+    },
+    {
+      "sku": "214",
+      "reason": "Only the own Pamo page was found; it confirms product dimensions, not package dimensions or weight."
+    },
+    {
+      "scope": "remaining pilot SKUs",
+      "reason": "Exact GTIN searches returned no accessible public result with package measurements. Values remain UNKNOWN."
+    }
+  ],
+  "externalWrites": 0
+}

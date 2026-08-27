@@ -16,6 +16,12 @@ MCP_API_KEY = config("MCP_API_KEY")
 # ESCRITURAS EXTERNAS — doble compuerta, desactivadas por defecto.
 EXTERNAL_WRITES_ENABLED = config("EXTERNAL_WRITES_ENABLED", default=False, cast=bool)
 SIIGO_INVOICE_WRITES_ENABLED = config("SIIGO_INVOICE_WRITES_ENABLED", default=False, cast=bool)
+SHOPIFY_READS_ENABLED = config("SHOPIFY_READS_ENABLED", default=False, cast=bool)
+
+# Credenciales usadas solo por los comandos explícitos de lectura Siigo.
+SIIGO_USERNAME = config("SIIGO_USERNAME", default="")
+SIIGO_ACCESS_KEY = config("SIIGO_ACCESS_KEY", default="")
+SIIGO_PARTNER_ID = config("SIIGO_PARTNER_ID", default="")
 
 # DATABASE
 # Vacío en desarrollo local (se usa SQLite). En Railway apunta al Postgres
