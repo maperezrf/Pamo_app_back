@@ -21,6 +21,7 @@ from config.constants import (
 )
 
 from .functions.messaging import prepare_manual_followups
+from .functions.querysets import operational_orders
 from .functions.serializers import order_detail, order_row, shipment_dict, whatsapp_url
 from .models import (
     IntegrationStatus,
@@ -67,16 +68,21 @@ class OrdersOverviewAPI(RoleRequiredMixin, APIView):
     allowed_roles = OPERATOR_ROLES
 
     def get(self, request):
-        orders = Order.objects.all()
-        shipments = Shipment.objects.all()
+        orders = operational_orders()
+        shipments = Shipment.objects.filter(order__in=orders)
         total = orders.count()
+        without_guide = orders.filter(
+            Q(shipments__isnull=True) | Q(shipments__tracking_number="")
+        ).distinct().count()
+        guide_without_tracking = orders.filter(
+            shipments__tracking_number__gt="",
+            shipments__logistics_state="guide_without_tracking",
+        ).distinct().count()
         return Response(
             {
                 "total": total,
-                "without_guide": shipments.filter(tracking_number="").count(),
-                "guide_without_tracking": shipments.filter(
-                    tracking_number__gt="", logistics_state="guide_without_tracking"
-                ).count(),
+                "without_guide": without_guide,
+                "guide_without_tracking": guide_without_tracking,
                 "in_transit": shipments.filter(logistics_state="in_transit").count(),
                 "delivered": shipments.filter(logistics_state="delivered").count(),
                 "exceptions": shipments.exclude(incident_category="").count(),
@@ -96,12 +102,11 @@ class OrdersListAPI(RoleRequiredMixin, APIView):
 
     def get(self, request):
         queryset = (
-            Order.objects.prefetch_related(
+            operational_orders().prefetch_related(
                 "items",
                 "shipments__warehouse",
                 "shipments__document",
             )
-            .all()
         )
         search = request.query_params.get("search", "").strip()
         if search:
@@ -134,7 +139,9 @@ class OrdersListAPI(RoleRequiredMixin, APIView):
 
         guide_filter = request.query_params.get("guide", "").strip()
         if guide_filter == "missing":
-            queryset = queryset.filter(shipments__tracking_number="")
+            queryset = queryset.filter(
+                Q(shipments__isnull=True) | Q(shipments__tracking_number="")
+            )
         elif guide_filter == "present":
             queryset = queryset.filter(shipments__tracking_number__gt="")
         elif guide_filter == "present_without_tracking":
@@ -144,7 +151,8 @@ class OrdersListAPI(RoleRequiredMixin, APIView):
             )
         elif guide_filter == "missing_or_without_tracking":
             queryset = queryset.filter(
-                Q(shipments__tracking_number="")
+                Q(shipments__isnull=True)
+                | Q(shipments__tracking_number="")
                 | Q(
                     shipments__tracking_number__gt="",
                     shipments__logistics_state="guide_without_tracking",
@@ -218,7 +226,7 @@ class FilterOptionsAPI(RoleRequiredMixin, APIView):
                     WarehouseLocation.objects.filter(active=True).values_list("name", flat=True)
                 ),
                 "channels": list(
-                    Order.objects.order_by("channel")
+                    operational_orders().order_by("channel")
                     .values_list("channel", flat=True)
                     .distinct()
                 ),
@@ -238,7 +246,14 @@ class IntegrationsAPI(RoleRequiredMixin, APIView):
     def get(self, request):
         statuses = {item.provider: item for item in IntegrationStatus.objects.all()}
         providers = []
-        for provider in ("shopify", "mercado_libre", "falabella", "sodimac", "envia"):
+        for provider in (
+            "pamo_canonical",
+            "shopify",
+            "mercado_libre",
+            "falabella",
+            "sodimac",
+            "envia",
+        ):
             item = statuses.get(provider)
             providers.append(
                 {

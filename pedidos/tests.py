@@ -130,6 +130,14 @@ class OrdersAPITests(TestCase):
         self.shipment_b.tracking_number = "GUIA-1"
         self.shipment_b.logistics_state = "guide_without_tracking"
         self.shipment_b.save()
+        Order.objects.create(
+            channel="shopify",
+            external_id="qa-shopify-without-shipment",
+            visible_id="19334",
+            placed_at=timezone.now(),
+            customer_name="Pedido sin despacho QA",
+            grand_total=Decimal("50000"),
+        )
         self.login()
 
         missing = self.client.get("/api/pedidos/?guide=missing").json()
@@ -140,9 +148,9 @@ class OrdersAPITests(TestCase):
             "/api/pedidos/?guide=missing_or_without_tracking"
         ).json()
 
-        self.assertEqual(missing["total"], 1)
+        self.assertEqual(missing["total"], 2)
         self.assertEqual(untracked["total"], 1)
-        self.assertEqual(combined["total"], 1)
+        self.assertEqual(combined["total"], 2)
 
     def test_manual_warehouse_override_is_audited_and_versioned(self):
         self.login()
