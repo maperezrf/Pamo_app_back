@@ -1,0 +1,15 @@
+{
+  "quotes": [
+    {
+      "carrier": "TRANSPORTADORA_FIXTURE",
+      "service": "DOMICILIO_ESTANDAR",
+      "amount": "18400",
+      "currency": "COP",
+      "estimated_days": 3
+    }
+  ],
+  "fixture": true,
+  "binding": false,
+  "guide_created": false,
+  "externalWrites": 0
+}
