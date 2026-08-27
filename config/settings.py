@@ -30,6 +30,7 @@ INSTALLED_APPS = [
     'accounts',
     'feature_tracking',
     'facturacion',
+    'pedidos',
 ]
 
 MIDDLEWARE = [
@@ -114,6 +115,11 @@ USE_TZ = True
 STATIC_URL = 'static/'
 STATIC_ROOT = BASE_DIR / 'staticfiles'
 STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
+
+# Los documentos de guía son privados: no se declara MEDIA_URL ni se sirven
+# desde Django static. Sólo salen por un endpoint autenticado de Pedidos.
+PRIVATE_UPLOAD_ROOT = BASE_DIR / 'private_uploads'
+MEDIA_ROOT = PRIVATE_UPLOAD_ROOT
 
 # Default primary key field type
 
