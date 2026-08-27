@@ -173,3 +173,25 @@ class CanonicalImportTests(TestCase):
         )
         self.assertEqual(operational_orders().count(), 1)
         self.assertEqual(operational_orders().first().external_id, "real")
+
+    def test_shopify_sodimac_marker_sets_business_origin_without_changing_source(self):
+        payload, details = self.snapshot()
+        detail = details[self.order_id]
+        detail["customer_email"] = "recepcion.sodimac@example.test"
+        detail["source_snapshot"] = {"email": "recepcion.sodimac@example.test"}
+
+        apply_canonical_snapshot(
+            export_payload=payload,
+            details=details,
+            from_date="2026-08-08",
+            to_date="2026-08-27",
+        )
+
+        order = Order.objects.get(external_id="shopify-order-1")
+        self.assertEqual(order.channel, "shopify")
+        self.assertEqual(order.source_snapshot["business_origin"], "sodimac")
+        self.assertEqual(order.source_snapshot["business_origin_via"], "shopify")
+        self.assertEqual(
+            order.source_snapshot["business_origin_confidence"],
+            "explicit_source_email_marker",
+        )
