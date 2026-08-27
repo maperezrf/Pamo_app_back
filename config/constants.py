@@ -13,9 +13,28 @@ GITHUB_WEBHOOK_SECRET = config("GITHUB_WEBHOOK_SECRET")
 # API KEY para consumidores máquina-a-máquina internos (ej. servidor MCP)
 MCP_API_KEY = config("MCP_API_KEY")
 
-# ESCRITURAS EXTERNAS — doble compuerta, desactivadas por defecto.
+# Integraciones y escrituras fallan cerradas. Las lecturas puntuales se
+# habilitan solo durante un proceso explícito de sincronización.
 EXTERNAL_WRITES_ENABLED = config("EXTERNAL_WRITES_ENABLED", default=False, cast=bool)
-SIIGO_INVOICE_WRITES_ENABLED = config("SIIGO_INVOICE_WRITES_ENABLED", default=False, cast=bool)
+
+# Siigo de solo lectura; vacías en desarrollo cuando no se sincroniza.
+SIIGO_USERNAME = config("SIIGO_USERNAME", default="")
+SIIGO_ACCESS_KEY = config("SIIGO_ACCESS_KEY", default="")
+SIIGO_PARTNER_ID = config("SIIGO_PARTNER_ID", default="")
+SIIGO_LIVE_READS_ENABLED = config("SIIGO_LIVE_READS_ENABLED", default=False, cast=bool)
+# Si Siigo ofrece varias opciones activas, estos identificadores evitan que el
+# sistema escoja al azar. Permanecen vacíos hasta validar la cuenta objetivo.
+
+# Lectura estructurada de facturas de proveedor. En local funciona primero el
+# lector determinista de PDF; sin clave, imágenes/Excel fallan de forma segura
+# y permiten continuar manualmente.
+OPENAI_API_KEY = config("OPENAI_API_KEY", default="")
+REMITTANCE_AI_MODEL = config("REMITTANCE_AI_MODEL", default="gpt-5.6-luna")
+REMITTANCE_SUPPLIER_INVOICE_DAILY_LIMIT = config(
+    "REMITTANCE_SUPPLIER_INVOICE_DAILY_LIMIT",
+    default=5,
+    cast=int,
+)
 
 # DATABASE
 # Vacío en desarrollo local (se usa SQLite). En Railway apunta al Postgres

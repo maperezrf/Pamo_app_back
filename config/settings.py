@@ -115,10 +115,13 @@ STATIC_URL = 'static/'
 STATIC_ROOT = BASE_DIR / 'staticfiles'
 STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
 
+# Los adjuntos de facturas de proveedor son privados y se sirven únicamente
+# desde endpoints autenticados; no se expone MEDIA_URL.
+MEDIA_ROOT = BASE_DIR / 'private_uploads'
+
 # Default primary key field type
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
-
 
 # Django REST Framework
 # Defaults explícitos a propósito: cada APIView nueva parte de "requiere

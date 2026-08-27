@@ -20,7 +20,14 @@ MENU = [
         "label": "Prototipos",
         "path": "/prototipos",
         "roles": ["Admin"],
-        "submodulos": [],
+        "submodulos": [
+            {
+                "key": "remisiones",
+                "label": "Remisiones",
+                "path": "/prototipos/remisiones",
+                "roles": ["Admin", "Operaciones", "Logistica"],
+            },
+        ],
     },
     {
         "key": "remisiones",
