@@ -29,4 +29,24 @@ MENU = [
         "roles": ["Admin", "Comercial", "Catalogo"],
         "submodulos": [],
     },
+    {
+        "key": "ventas",
+        "label": "Ventas",
+        "path": "/ventas",
+        "roles": ["Admin", "Operaciones", "Logistica", "Lider Comercial", "Gerencia"],
+        "submodulos": [
+            {
+                "key": "pedidos-dashboard",
+                "label": "Dashboard de pedidos",
+                "path": "/ventas",
+                "roles": [],
+            },
+            {
+                "key": "pedidos",
+                "label": "Pedidos",
+                "path": "/ventas/pedidos",
+                "roles": [],
+            },
+        ],
+    },
 ]

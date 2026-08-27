@@ -41,3 +41,19 @@ CSRF_TRUSTED_ORIGINS = config(
     default="http://localhost:5173,http://127.0.0.1:5173",
     cast=Csv(),
 )
+
+# PEDIDOS LOCAL CONTROLADO
+# Las lecturas y escrituras externas nacen apagadas. El modo demo local sólo
+# puede abrir sesión cuando DEBUG=True; views.py vuelve a comprobar ambas
+# condiciones para que esta puerta no pueda habilitarse en Producción.
+ORDERS_LOCAL_MODE = config("ORDERS_LOCAL_MODE", default=True, cast=bool)
+ORDERS_EXTERNAL_READS_ENABLED = config(
+    "ORDERS_EXTERNAL_READS_ENABLED", default=False, cast=bool
+)
+ORDERS_EXTERNAL_WRITES_ENABLED = config(
+    "ORDERS_EXTERNAL_WRITES_ENABLED", default=False, cast=bool
+)
+ORDERS_GUIDE_MAX_BYTES = config(
+    "ORDERS_GUIDE_MAX_BYTES", default=10 * 1024 * 1024, cast=int
+)
+LOCAL_DEMO_AUTH_ENABLED = config("LOCAL_DEMO_AUTH_ENABLED", default=False, cast=bool)

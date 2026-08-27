@@ -1,0 +1,34 @@
+{
+  "repo": ".",
+  "profile": "orders",
+  "environment": "local-controlado",
+  "service": "pamo-app-orders-local-api",
+  "test_commands": [
+    [
+      "/usr/bin/env",
+      "SECRET_KEY=qa-local-only",
+      "DEBUG=True",
+      "GOOGLE_CLIENT_ID=qa.invalid.apps.googleusercontent.com",
+      "GITHUB_WEBHOOK_SECRET=qa-disabled",
+      "MCP_API_KEY=qa-disabled",
+      "DATABASE_URL=",
+      "ORDERS_LOCAL_MODE=True",
+      "ORDERS_EXTERNAL_READS_ENABLED=False",
+      "ORDERS_EXTERNAL_WRITES_ENABLED=False",
+      "LOCAL_DEMO_AUTH_ENABLED=True",
+      "/Users/mauricioperez/Documents/PAMO_APP/Pamo_app_back/.venv/bin/python",
+      "manage.py",
+      "test",
+      "pedidos",
+      "accounts",
+      "feature_tracking"
+    ]
+  ],
+  "url_checks": [
+    {
+      "url": "http://127.0.0.1:8012/api/auth/csrf/",
+      "allowed_status": [200]
+    }
+  ]
+}
+
