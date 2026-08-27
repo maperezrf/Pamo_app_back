@@ -30,6 +30,7 @@ INSTALLED_APPS = [
     'accounts',
     'feature_tracking',
     'facturacion',
+    'catalogo',
 ]
 
 MIDDLEWARE = [
@@ -118,6 +119,16 @@ STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
 # Default primary key field type
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+
+# El catálogo usa snapshots persistidos y una caché local corta.
+CACHES = {
+    "default": {
+        "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+        "LOCATION": "pamo-catalog-local",
+        "TIMEOUT": 60,
+        "OPTIONS": {"MAX_ENTRIES": 1000},
+    }
+}
 
 
 # Django REST Framework

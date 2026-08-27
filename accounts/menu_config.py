@@ -36,4 +36,11 @@ MENU = [
         "roles": ["Admin", "Facturacion"],
         "submodulos": [],
     },
+    {
+        "key": "catalogo-multicanal",
+        "label": "Catálogo multicanal",
+        "path": "/catalogo-multicanal",
+        "roles": ["Admin", "Comercial", "Catalogo"],
+        "submodulos": [],
+    },
 ]
