@@ -165,7 +165,12 @@ class ChannelSnapshotSerializer(serializers.ModelSerializer):
         return {"score": None, "status": None, "basis": "NOT_AVAILABLE", "verified_channel_metric": False}
 
     def get_payload(self, snapshot):
-        return enrich_commercial_payload(snapshot.channel, snapshot.price, snapshot.payload)
+        return enrich_commercial_payload(
+            snapshot.channel,
+            snapshot.price,
+            snapshot.payload,
+            cost=snapshot.cost,
+        )
 
 
 class ExternalChannelProductSnapshotSerializer(serializers.ModelSerializer):

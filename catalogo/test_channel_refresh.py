@@ -83,3 +83,31 @@ class ShopifyRefreshCommandTests(TestCase):
         product.refresh_from_db()
         self.assertEqual(product.status, "ACTIVE")
         self.assertTrue(ProductVariant.objects.filter(sku="KEEP-ME").exists())
+
+    def test_full_refresh_does_not_apply_updated_since_filter(self):
+        IntegrationReadStatus.objects.create(
+            system="SHOPIFY", capability="marketplace_catalog_snapshot", status="AVAILABLE",
+            message="Anterior", observed_at=timezone.now(), last_success_at=timezone.now(), external_writes=0,
+        )
+        payload = {
+            "data": {"productVariants": {"nodes": [{
+                "id": "gid://shopify/ProductVariant/full-refresh",
+                "sku": "FULL-REFRESH",
+                "price": "100000",
+                "inventoryItem": {"unitCost": {"amount": "50000", "currencyCode": "COP"}},
+                "product": {
+                    "id": "gid://shopify/Product/full-refresh",
+                    "title": "Producto actualización completa",
+                    "status": "ACTIVE",
+                },
+            }], "pageInfo": {"hasNextPage": False, "endCursor": None}}},
+            "pages": 1, "complete": True, "incremental": False, "externalWrites": 0,
+        }
+        with patch(
+            "catalogo.management.commands.refresh_shopify_snapshot.subprocess.run",
+            return_value=SimpleNamespace(returncode=0, stdout=json.dumps(payload), stderr=""),
+        ) as runner:
+            call_command("refresh_shopify_snapshot", "--full")
+
+        remote_command = runner.call_args.args[0]
+        self.assertNotIn("--updated-since", remote_command)

@@ -305,6 +305,60 @@ class CatalogPaginationAndFilterTests(APITestCase):
         self.assertEqual(options.data["options"], ["Barú", "Otro"])
         self.assertEqual(options.data["external_writes"], 0)
 
+    def test_shopify_status_column_filter_never_mixes_active_and_draft(self):
+        MasterProduct.objects.filter(shopify_product_id__gt="").update(status="ACTIVE")
+        draft_variant = ProductVariant.objects.get(sku="SKU-000")
+        draft_variant.product.status = "DRAFT"
+        draft_variant.product.save(update_fields=["status"])
+        cache.clear()
+
+        active = self.client.get(
+            "/api/catalogo/workspace/",
+            {
+                "column_filters": json.dumps({"SHOPIFY__status": ["ACTIVE"]}),
+                "fresh": "1",
+            },
+        )
+        draft = self.client.get(
+            "/api/catalogo/workspace/",
+            {
+                "column_filters": json.dumps({"SHOPIFY__status": ["DRAFT"]}),
+                "fresh": "1",
+            },
+        )
+        active_page_two = self.client.get(
+            "/api/catalogo/workspace/",
+            {
+                "page": 2,
+                "page_size": 50,
+                "column_filters": json.dumps({"SHOPIFY__status": ["ACTIVE"]}),
+                "fresh": "1",
+            },
+        )
+        status_options = self.client.get(
+            "/api/catalogo/workspace/column-options/?column=SHOPIFY__status",
+        )
+
+        self.assertEqual(active.status_code, 200)
+        self.assertEqual(active.data["pagination"]["total"], 100)
+        self.assertEqual(active.data["pagination"]["pages"], 2)
+        self.assertTrue(
+            all(product["status"] == "ACTIVE" for product in active.data["products"]),
+        )
+        self.assertEqual(active_page_two.status_code, 200)
+        self.assertEqual(active_page_two.data["pagination"]["page"], 2)
+        self.assertEqual(len(active_page_two.data["products"]), 50)
+        self.assertTrue(
+            all(product["status"] == "ACTIVE" for product in active_page_two.data["products"]),
+        )
+        self.assertEqual(draft.status_code, 200)
+        self.assertEqual(draft.data["pagination"]["total"], 1)
+        self.assertEqual(draft.data["products"][0]["status"], "DRAFT")
+        self.assertEqual(draft.data["products"][0]["variants"][0]["sku"], "SKU-000")
+        self.assertEqual(status_options.status_code, 200)
+        self.assertEqual(status_options.data["options"], ["ACTIVE", "DRAFT"])
+        self.assertEqual(status_options.data["external_writes"], 0)
+
     def test_siigo_report_runs_from_shopify_master_toward_siigo(self):
         variant = ProductVariant.objects.filter(
             shopify_variant_id__gt="",
@@ -466,6 +520,25 @@ class ShopifySnapshotImporterTests(TestCase):
         self.assertEqual(snapshot.cost, Decimal("119000"))
         self.assertEqual(snapshot.inventory_available, Decimal("10"))
         self.assertTrue(snapshot.payload["inventoryLocationsPartial"])
+
+    def test_missing_live_unit_cost_clears_stale_shopify_cost(self):
+        self.run_import()
+        payload = self.payload()
+        raw_variant = payload["data"]["productVariants"]["nodes"][0]
+        raw_variant["inventoryItem"]["unitCost"] = None
+        with patch("sys.stdin", StringIO(json.dumps(payload))):
+            call_command("import_shopify_snapshot", stdout=StringIO())
+
+        variant = ProductVariant.objects.get(sku="SHOP-1")
+        observation = CostObservation.objects.get(
+            variant=variant,
+            source=CostObservation.Source.SHOPIFY,
+            evidence_reference="Shopify Admin GraphQL inventoryItem.unitCost",
+        )
+        snapshot = ChannelSnapshot.objects.get(variant=variant, channel="SHOPIFY")
+        self.assertIsNone(variant.provider_cost)
+        self.assertIsNone(observation.raw_cost)
+        self.assertIsNone(snapshot.cost)
 
 
 class EnviaSnapshotImporterTests(TestCase):

@@ -8,6 +8,7 @@ import uuid
 from datetime import datetime, timezone
 
 from django.conf import settings
+from django.core.cache import cache
 from django.db import close_old_connections
 
 
@@ -23,10 +24,10 @@ _STATE = {
 }
 
 LIVE_STAGES = [
-    ("SHOPIFY", "Shopify", "refresh_shopify_snapshot", 1000),
-    ("SIIGO", "Siigo", "refresh_siigo_snapshot", 1000),
-    ("MERCADO_LIBRE", "Mercado Libre", "refresh_mercadolibre_snapshot", 500),
-    ("FALABELLA", "Falabella", "refresh_falabella_snapshot", 700),
+    ("SHOPIFY", "Shopify", ("refresh_shopify_snapshot", "--full"), 1000),
+    ("SIIGO", "Siigo", ("refresh_siigo_snapshot",), 1000),
+    ("MERCADO_LIBRE", "Mercado Libre", ("refresh_mercadolibre_snapshot",), 500),
+    ("FALABELLA", "Falabella", ("refresh_falabella_snapshot",), 700),
 ]
 MANUAL_STAGES = [
     ("SODIMAC", "Sodimac / Homecenter", "Se conserva el último archivo importado; no existe lector API en vivo."),
@@ -63,12 +64,12 @@ def _update_channel(code, **values):
                 break
 
 
-def _run_command(command_name, timeout):
+def _run_command(command_parts, timeout):
     environment = os.environ.copy()
     environment["RAILWAY_CALLER"] = "skill:use-railway@1.3.7"
     environment["RAILWAY_AGENT_SESSION"] = "railway-skill-catalog-refresh-20260826"
     completed = subprocess.run(
-        [sys.executable, "manage.py", command_name],
+        [sys.executable, "manage.py", *command_parts],
         cwd=settings.BASE_DIR,
         text=True,
         capture_output=True,
@@ -100,6 +101,7 @@ def _worker(run_id):
                     message = f"{message} {detail}"
                 _update_channel(code, status="FAILED", finished_at=_now(), message=message)
             else:
+                cache.clear()
                 _update_channel(code, status="SUCCEEDED", finished_at=_now(), message=message)
         _replace_state(
             status="PARTIAL" if failures else "SUCCEEDED",

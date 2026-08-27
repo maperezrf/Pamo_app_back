@@ -503,9 +503,54 @@ def parse_catalog_column_filters(request):
 def apply_catalog_column_filters(queryset, column_filters):
     if not column_filters:
         return queryset
+
+    # Base catalog values already live in indexed relational fields. Avoid the
+    # full derived catalog projection for these common filters: that projection
+    # also calculates costs, shipping and channel metrics for every variant.
+    remaining_filters = dict(column_filters)
+    shopify_states = remaining_filters.pop("SHOPIFY__status", None)
+    if shopify_states:
+        queryset = queryset.filter(product__status__in=shopify_states)
+
+    providers = remaining_filters.pop("provider", None)
+    if providers:
+        queryset = queryset.filter(product__vendor__in=providers)
+
+    product_names = remaining_filters.pop("product", None)
+    if product_names:
+        queryset = queryset.filter(product__title__in=product_names)
+
+    sku_values = remaining_filters.pop("sku", None)
+    if sku_values:
+        real_skus = [value for value in sku_values if value != "SKU pendiente"]
+        sku_query = Q(sku__in=real_skus)
+        if "SKU pendiente" in sku_values:
+            sku_query |= Q(sku="") | Q(sku__isnull=True)
+        queryset = queryset.filter(sku_query)
+
+    photo_values = set(remaining_filters.pop("photo", None) or [])
+    if photo_values == {"Con imagen"}:
+        queryset = queryset.filter(product__images__source_url__gt="")
+    elif photo_values == {"Sin imagen"}:
+        queryset = queryset.exclude(product__images__source_url__gt="")
+
+    siigo_values = set(remaining_filters.pop("siigo", None) or [])
+    if siigo_values and siigo_values != {"CREADO", "FALTA CREAR"}:
+        siigo_exact = Q(
+            siigo_snapshots__match_status=SiigoProductSnapshot.MatchStatus.EXACT_SHOPIFY,
+            siigo_snapshots__matched_variant__isnull=False,
+        )
+        if siigo_values == {"CREADO"}:
+            queryset = queryset.filter(siigo_exact)
+        elif siigo_values == {"FALTA CREAR"}:
+            queryset = queryset.exclude(siigo_exact)
+
+    if not remaining_filters:
+        return queryset
+
     index = catalog_column_index()
     candidate_ids = {str(value) for value in queryset.values_list("id", flat=True)}
-    for key, selected_values in column_filters.items():
+    for key, selected_values in remaining_filters.items():
         selected = set(selected_values)
         candidate_ids = {
             variant_id for variant_id in candidate_ids
@@ -1050,6 +1095,56 @@ class CatalogColumnOptionsAPI(APIView):
         column = request.query_params.get("column", "")
         if column not in CATALOG_COLUMN_KEYS:
             return Response({"detail": "Columna no soportada."}, status=400)
+
+        base_variants = shopify_master_variants()
+        direct_options = None
+        if column == "SHOPIFY__status":
+            direct_options = base_variants.exclude(
+                product__status="",
+            ).values_list("product__status", flat=True).distinct()
+        elif column == "provider":
+            direct_options = base_variants.exclude(
+                product__vendor="",
+            ).values_list("product__vendor", flat=True).distinct()
+        elif column == "product":
+            direct_options = base_variants.exclude(
+                product__title="",
+            ).values_list("product__title", flat=True).distinct()
+        elif column == "sku":
+            direct_options = list(base_variants.exclude(sku="").values_list("sku", flat=True).distinct())
+            if base_variants.filter(Q(sku="") | Q(sku__isnull=True)).exists():
+                direct_options.append("SKU pendiente")
+        elif column == "photo":
+            direct_options = []
+            if base_variants.filter(product__images__source_url__gt="").exists():
+                direct_options.append("Con imagen")
+            if base_variants.exclude(product__images__source_url__gt="").exists():
+                direct_options.append("Sin imagen")
+        elif column == "siigo":
+            linked_ids = SiigoProductSnapshot.objects.filter(
+                match_status=SiigoProductSnapshot.MatchStatus.EXACT_SHOPIFY,
+                matched_variant__isnull=False,
+            ).values("matched_variant_id")
+            direct_options = []
+            if base_variants.filter(id__in=linked_ids).exists():
+                direct_options.append("CREADO")
+            if base_variants.exclude(id__in=linked_ids).exists():
+                direct_options.append("FALTA CREAR")
+
+        if direct_options is not None:
+            options = sorted(
+                {str(value) for value in direct_options if value is not None},
+                key=lambda value: value.casefold(),
+            )
+            return Response({
+                "column": column,
+                "options": options,
+                "total_options": len(options),
+                "catalog_variants": base_variants.count(),
+                "scope": "ALL_SHOPIFY_VARIANTS",
+                "external_writes": 0,
+            })
+
         index = catalog_column_index()
         options = sorted(
             {row["values"][column] for row in index.values()},

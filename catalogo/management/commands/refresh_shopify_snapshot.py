@@ -25,6 +25,12 @@ class Command(BaseCommand):
         parser.add_argument("--environment", default=os.getenv("PAMO_CATALOG_RAILWAY_ENVIRONMENT", DEFAULT_ENVIRONMENT))
         parser.add_argument("--service", default=os.getenv("PAMO_CATALOG_RAILWAY_SERVICE", DEFAULT_SERVICE))
         parser.add_argument("--timeout", type=int, default=900)
+        parser.add_argument(
+            "--full",
+            action="store_true",
+            help="Lee todas las variantes; necesario para captar cambios exclusivos de inventoryItem.unitCost.",
+        )
+        parser.add_argument("--page-size", type=int, default=25)
 
     def handle(self, *args, **options):
         if connection.vendor != "sqlite":
@@ -43,9 +49,10 @@ class Command(BaseCommand):
             "--service", options["service"],
             "--no-local", "--",
             sys.executable, "manage.py", "export_shopify_snapshot",
-            "--page-size", "10", "--max-variants", "50000",
+            "--page-size", str(max(1, min(options["page_size"], 100))),
+            "--max-variants", "50000",
         ]
-        if updated_since:
+        if updated_since and not options["full"]:
             command.extend(["--updated-since", updated_since])
         environment = os.environ.copy()
         environment["RAILWAY_CALLER"] = "skill:use-railway@1.3.7"

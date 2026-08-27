@@ -154,16 +154,15 @@ class Command(BaseCommand):
                 imported_variants += 1
                 field_counts["compare_at_price"] += int(compare_at is not None)
                 field_counts["variant_unit_cost"] += int(unit_cost is not None)
-                if unit_cost is not None:
-                    CostObservation.objects.update_or_create(
-                        variant=variant, source=CostObservation.Source.SHOPIFY,
-                        evidence_reference="Shopify Admin GraphQL inventoryItem.unitCost",
-                        defaults={"raw_cost": unit_cost, "derived_net_cost": None,
-                                  "currency": unit_cost_payload.get("currencyCode", "COP") if isinstance(unit_cost_payload, dict) else "COP",
-                                  "tax_treatment": ProviderConfig.TaxTreatment.PENDING, "tax_rate": None,
-                                  "observed_at": observed(raw_variant.get("updatedAt")),
-                                  "payload_fingerprint": fingerprint({"variant": variant_id, "unitCost": str(unit_cost)})},
-                    )
+                CostObservation.objects.update_or_create(
+                    variant=variant, source=CostObservation.Source.SHOPIFY,
+                    evidence_reference="Shopify Admin GraphQL inventoryItem.unitCost",
+                    defaults={"raw_cost": unit_cost, "derived_net_cost": None,
+                              "currency": unit_cost_payload.get("currencyCode", "COP") if isinstance(unit_cost_payload, dict) else "COP",
+                              "tax_treatment": ProviderConfig.TaxTreatment.PENDING, "tax_rate": None,
+                              "observed_at": timezone.now(),
+                              "payload_fingerprint": fingerprint({"variant": variant_id, "unitCost": str(unit_cost)})},
+                )
                 InventoryLevel.objects.filter(variant=variant).delete()
                 InventorySourceSnapshot.objects.filter(variant=variant, source_name__startswith="Shopify").delete()
                 availability = []
