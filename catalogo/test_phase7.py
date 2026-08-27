@@ -5,7 +5,14 @@ from django.test import TestCase
 from django.utils import timezone
 
 from .models import LogisticsQuoteSnapshot
-from .phase7 import build_historical_profiles, protected_margin_preview
+from .phase7 import (
+    average_shipping_for_variant,
+    build_average_shipping_reference,
+    build_historical_profiles,
+    protected_margin_preview,
+    shipping_tariff_band,
+)
+from .models import MasterProduct, ProductVariant
 
 
 class Phase7LocalLogisticsTests(TestCase):
@@ -46,3 +53,29 @@ class Phase7LocalLogisticsTests(TestCase):
         self.assertEqual(payload["external_writes"], 0)
         self.assertFalse(payload["execution_allowed_external"])
         self.assertEqual(payload["siigo_architecture_decision"]["status"], "FUTURE_SEPARATE_MODULE")
+
+    def test_average_shipping_is_frequency_weighted_trimmed_and_informational(self):
+        for index in range(20):
+            LogisticsQuoteSnapshot.objects.create(
+                provider="ENVIA", basis="REALIZED_GUIDE", status="AVAILABLE",
+                destination={"city": "Bogotá"}, weight_kg="1",
+                dimensions={"length_cm": 20, "width_cm": 15, "height_cm": 15},
+                carrier="estandar", amount=10000 if index < 19 else 100000,
+                currency="COP", evidence_reference="fixture average",
+                observed_at=timezone.now(), fingerprint=f"average-{index}", external_writes=0,
+            )
+        reference = build_average_shipping_reference()
+        self.assertEqual(reference["classification"], "ESTIMATED_INFORMATIONAL_ONLY")
+        self.assertEqual(reference["amount"], Decimal("11500"))
+        self.assertEqual(reference["sample_size"], 24)
+        self.assertEqual(reference["volumetric_divisor_reference"], 5000)
+
+    def test_unknown_package_uses_global_history_without_faking_measurements(self):
+        variant = ProductVariant.objects.create(
+            product=MasterProduct.objects.create(title="Sin medidas"), sku="NO-DIMS",
+        )
+        result = average_shipping_for_variant(variant, build_average_shipping_reference())
+        self.assertEqual(result["tariff_band"], "SIN_DATOS")
+        self.assertEqual(result["package_basis"], "GLOBAL_HISTORY_FALLBACK")
+        self.assertTrue(result["uses_global_fallback"])
+        self.assertEqual(shipping_tariff_band(None, {}), "SIN_DATOS")

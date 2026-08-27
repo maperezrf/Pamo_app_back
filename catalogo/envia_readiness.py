@@ -3,6 +3,7 @@ from collections import defaultdict
 from django.utils import timezone
 
 from .models import LogisticsQuoteSnapshot, PhysicalEvidenceCandidate, PhysicalEvidenceDecision
+from .phase7 import average_shipping_for_variant, build_average_shipping_reference
 
 
 REQUIRED_PACKAGE_FIELDS = {
@@ -130,7 +131,7 @@ def serialize_variant_envia_readiness(variant):
     }
 
 
-def serialize_variant_shipping_intelligence(variant, external_snapshots=None):
+def serialize_variant_shipping_intelligence(variant, external_snapshots=None, average_reference=None):
     """Unifica cotización transportadora y costos de marketplace sin mezclarlos.
 
     ``reference`` es el mejor dato operativo disponible para el vendedor, pero
@@ -194,6 +195,10 @@ def serialize_variant_shipping_intelligence(variant, external_snapshots=None):
             "errors": shipping.get("errors") or [],
         }
 
+    average_reference = average_shipping_for_variant(
+        variant,
+        average_reference or build_average_shipping_reference(),
+    )
     reference = None
     if envia.get("current_quote_amount") is not None:
         reference = {
@@ -225,6 +230,7 @@ def serialize_variant_shipping_intelligence(variant, external_snapshots=None):
     return {
         "status": status,
         "reference": reference,
+        "average_shipping": average_reference,
         "carrier_quote": {
             "provider": "ENVIA",
             "amount": envia.get("current_quote_amount"),
@@ -240,9 +246,9 @@ def serialize_variant_shipping_intelligence(variant, external_snapshots=None):
         "channels": channels,
         "missing_package_fields": envia.get("missing_fields") or [],
         "recommended_metric": {
-            "name": "P75_BY_ROUTE_PACKAGE_WAREHOUSE",
-            "available": False,
-            "reason": "Requiere historial vinculado por SKU, bodega de origen, zona destino, paquete y servicio; no se usa un promedio global.",
+            "name": "REALIZED_GUIDE_FREQUENCY_WEIGHTED_TRIMMED_MEAN",
+            "available": average_reference is not None,
+            "reason": "Referencia informativa ponderada por las guías históricas; no reemplaza la cotización por destino ni entra al costo del producto.",
         },
         "policy": "SEPARATE_CARRIER_BUYER_SELLER_AND_REALIZED_COSTS",
     }

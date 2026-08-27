@@ -6,7 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from django.core.cache import cache
-from django.core.management import call_command
+from django.core.management import call_command, CommandError
 from django.test import TestCase, override_settings
 from django.utils import timezone
 from rest_framework.test import APITestCase
@@ -486,6 +486,63 @@ class EnviaSnapshotImporterTests(TestCase):
         self.assertEqual(quote.amount, Decimal("16500"))
         self.assertEqual(quote.external_writes, 0)
         self.assertEqual(quote.external_reference_hash, "a" * 64)
+
+    def test_exact_unitary_ecommerce_consensus_is_provisional_and_rejects_15kg(self):
+        product = MasterProduct.objects.create(title="Cuello QA")
+        variant = ProductVariant.objects.create(product=product, sku="PAMO_6615P")
+        rows = []
+        for index, weight in enumerate(("1", "1.11", "1", "1.11"), start=1):
+            rows.append({
+                "sku": "PAMO_6615P", "exact_single_sku": True,
+                "products": [{"sku": "PAMO_6615P", "quantity": 1, "product_weight_kg": "1"}],
+                "shipped": False, "weight_kg": weight,
+                "dimensions": {"length_cm": 50, "width_cm": 15, "height_cm": 30},
+                "observed_at": f"2026-08-{20 + index}T20:00:00Z",
+                "order_reference_hash": str(index) * 64,
+            })
+        payload = {"records": [], "package_evidence": rows}
+        for _ in range(2):
+            with patch("sys.stdin", StringIO(json.dumps(payload))):
+                call_command(
+                    "import_envia_snapshot",
+                    approve_ecommerce_package_sku="PAMO_6615P",
+                    stdout=StringIO(),
+                )
+        candidates = PhysicalEvidenceCandidate.objects.filter(variant=variant)
+        self.assertEqual(candidates.count(), 4)
+        self.assertEqual(candidates.get(field="WEIGHT").normalized_value, Decimal("1.1100"))
+        self.assertNotEqual(candidates.get(field="WEIGHT").normalized_value, Decimal("15"))
+        self.assertTrue(all(candidate.stale_after for candidate in candidates))
+        self.assertEqual(PhysicalEvidenceDecision.objects.count(), 4)
+        self.assertTrue(all(decision.decision_snapshot["provisional"] for decision in PhysicalEvidenceDecision.objects.all()))
+
+    def test_incompatible_15kg_package_is_blocked(self):
+        product = MasterProduct.objects.create(title="Cuello QA")
+        ProductVariant.objects.create(product=product, sku="PAMO_6615P")
+        payload = {"records": [], "package_evidence": [
+            {
+                "sku": "PAMO_6615P", "exact_single_sku": True,
+                "products": [{"sku": "PAMO_6615P", "quantity": 1, "product_weight_kg": "1"}],
+                "shipped": False, "weight_kg": "15",
+                "dimensions": {"length_cm": 65, "width_cm": 50, "height_cm": 25},
+                "observed_at": "2026-08-24T20:00:00Z", "order_reference_hash": "a" * 64,
+            },
+            {
+                "sku": "PAMO_6615P", "exact_single_sku": True,
+                "products": [{"sku": "PAMO_6615P", "quantity": 1, "product_weight_kg": "1"}],
+                "shipped": False, "weight_kg": "15",
+                "dimensions": {"length_cm": 65, "width_cm": 50, "height_cm": 25},
+                "observed_at": "2026-08-25T20:00:00Z", "order_reference_hash": "b" * 64,
+            },
+        ]}
+        with patch("sys.stdin", StringIO(json.dumps(payload))):
+            with self.assertRaisesMessage(CommandError, "incompatible"):
+                call_command(
+                    "import_envia_snapshot",
+                    approve_ecommerce_package_sku="PAMO_6615P",
+                    stdout=StringIO(),
+                )
+        self.assertEqual(PhysicalEvidenceCandidate.objects.count(), 0)
 
 
 class ProviderDataImporterTests(TestCase):

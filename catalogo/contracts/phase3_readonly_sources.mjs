@@ -180,9 +180,10 @@ const sanitizedDestination = (root) => ({
 async function readEnvia() {
   required(["ENVIA_SHIPPING_API_TOKEN"]);
   const records = [];
+  const packageEvidence = [];
   let pages = 0;
   let remoteTotal = 0;
-  for (let page = 1; page <= 5; page += 1) {
+  for (let page = 1; page <= 40; page += 1) {
     const response = await fetch(`https://queries.envia.com/v4/orders?limit=100&page=${page}`, {
       method: "GET", headers: { accept: "application/json", authorization: `Bearer ${process.env.ENVIA_SHIPPING_API_TOKEN}` },
       redirect: "error", signal: AbortSignal.timeout(45_000),
@@ -197,17 +198,43 @@ async function readEnvia() {
           const shipment = entry?.shipment ?? entry?.shipment_info ?? entry ?? {};
           const quote = entry?.quote ?? shipment?.quote ?? {};
           const tracking = text(shipment.tracking_number ?? shipment.trackingNumber ?? shipment.guide_number);
+          const products = many(entry?.products ?? entry?.items ?? entry?.product).map((product) => ({
+            sku: text(product?.sku ?? product?.product_sku ?? product?.variant_sku),
+            quantity: numberOrNull(product?.quantity ?? product?.qty ?? product?.amount) ?? 1,
+            product_weight_kg: numberOrNull(product?.product_weight ?? product?.weight_kg ?? product?.weight),
+            product_dimensions_cm: {
+              length_cm: numberOrNull(product?.product_dimensions?.length ?? product?.dimensions?.length ?? product?.length),
+              width_cm: numberOrNull(product?.product_dimensions?.width ?? product?.dimensions?.width ?? product?.width),
+              height_cm: numberOrNull(product?.product_dimensions?.height ?? product?.dimensions?.height ?? product?.height),
+            },
+          })).filter((product) => product.sku);
+          const exactSingleSku = products.length === 1 && products[0].quantity === 1;
+          const weightKg = numberOrNull(firstValue(entry, ["weight_kg", "weight", "declared_weight"]));
+          const dimensions = {
+            length_cm: numberOrNull(firstValue(entry, ["length_cm", "length"])),
+            width_cm: numberOrNull(firstValue(entry, ["width_cm", "width"])),
+            height_cm: numberOrNull(firstValue(entry, ["height_cm", "height"])),
+          };
+          if (products.length) packageEvidence.push({
+            sku: exactSingleSku ? products[0].sku : "",
+            exact_single_sku: exactSingleSku,
+            products,
+            shipped: Boolean(tracking),
+            weight_kg: weightKg,
+            dimensions,
+            observed_at: text(shipment.updated_at ?? shipment.updatedAt ?? order.updated_at ?? order.updatedAt) || new Date().toISOString(),
+            order_reference_hash: hash(order?.order?.identifier ?? order?.identifier ?? order?.id),
+            evidence_reference: "Envía Ecommerce Queries API v4/orders exact-package read-only",
+          });
           if (!tracking) continue;
           const common = {
             external_reference_hash: hash(tracking), order_reference_hash: hash(order?.order?.identifier ?? order?.identifier ?? order?.id),
+            sku: exactSingleSku ? products[0].sku : "",
+            products,
             destination: sanitizedDestination({ order, location, entry }),
             carrier: text(shipment.carrier ?? shipment.carrier_name ?? shipment.service_name ?? entry?.carrier_name) || null,
-            weight_kg: numberOrNull(firstValue(entry, ["weight_kg", "weight", "declared_weight"])),
-            dimensions: {
-              length_cm: numberOrNull(firstValue(entry, ["length_cm", "length"])),
-              width_cm: numberOrNull(firstValue(entry, ["width_cm", "width"])),
-              height_cm: numberOrNull(firstValue(entry, ["height_cm", "height"])),
-            },
+            weight_kg: weightKg,
+            dimensions,
             observed_at: text(shipment.updated_at ?? shipment.updatedAt ?? order.updated_at ?? order.updatedAt) || new Date().toISOString(),
             evidence_reference: "Envía Queries API v4 orders read-only",
           };
@@ -222,9 +249,13 @@ async function readEnvia() {
     if (orders.length < 100) break;
   }
   await safeWrite({
-    source: { system: "ENVIA", endpoint: "Queries API v4/orders", observed_at: new Date().toISOString() }, records,
+    source: { system: "ENVIA", endpoint: "Queries API v4/orders", observed_at: new Date().toISOString() }, records, package_evidence: packageEvidence,
     summary: {
       pages, remote_total: remoteTotal, evidence_rows: records.length,
+      package_evidence_rows: packageEvidence.length,
+      exact_single_sku_packages: packageEvidence.filter((row) => row.exact_single_sku).length,
+      ambiguous_packages: packageEvidence.filter((row) => !row.exact_single_sku).length,
+      shipped_packages: packageEvidence.filter((row) => row.shipped).length,
       quoted_costs: records.filter((row) => row.basis === "CHECKOUT_ESTIMATE").length,
       realized_costs: records.filter((row) => row.basis === "REALIZED_GUIDE").length,
       with_weight: records.filter((row) => row.weight_kg != null).length,

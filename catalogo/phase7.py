@@ -111,6 +111,184 @@ def _volume_band(dimensions):
     return "L_40K+_CM3"
 
 
+def billable_weight_kg(weight_kg, dimensions, volumetric_divisor=Decimal("5000")):
+    """Referencia neutral; cada transportadora conserva su propio divisor real."""
+    weight = _decimal(weight_kg)
+    values = [_decimal((dimensions or {}).get(key)) for key in ("length_cm", "width_cm", "height_cm")]
+    volumetric = None
+    if all(value is not None and value > 0 for value in values):
+        volumetric = (values[0] * values[1] * values[2]) / volumetric_divisor
+    candidates = [value for value in (weight, volumetric) if value is not None and value > 0]
+    return max(candidates) if candidates else None
+
+
+def shipping_tariff_band(weight_kg, dimensions):
+    billable = billable_weight_kg(weight_kg, dimensions)
+    if billable is None:
+        return "SIN_DATOS"
+    for limit, label in (
+        (Decimal("1"), "HASTA_1_KG"),
+        (Decimal("2"), "1_A_2_KG"),
+        (Decimal("5"), "2_A_5_KG"),
+        (Decimal("10"), "5_A_10_KG"),
+    ):
+        if billable <= limit:
+            return label
+    return "MAS_DE_10_KG"
+
+
+def _rounded_cop(value, increment=Decimal("500")):
+    return (Decimal(value) / increment).quantize(Decimal("1")) * increment
+
+
+def _trimmed_mean(values):
+    ordered = sorted(Decimal(value) for value in values if value is not None and Decimal(value) > 0)
+    if not ordered:
+        return None
+    trim = int(len(ordered) * Decimal("0.05")) if len(ordered) >= 20 else 0
+    selected = ordered[trim:len(ordered) - trim] if trim else ordered
+    return sum(selected, Decimal("0")) / len(selected)
+
+
+def build_average_shipping_reference():
+    """Promedio informativo, ponderado por frecuencia real de guías y sin duplicados."""
+    rows = LogisticsQuoteSnapshot.objects.filter(
+        provider="ENVIA",
+        basis=LogisticsQuoteSnapshot.Basis.REALIZED_GUIDE,
+        status="AVAILABLE",
+        amount__isnull=False,
+        amount__gt=0,
+    ).order_by("-observed_at", "-id")
+    unique = []
+    seen = set()
+    for row in rows:
+        identity = row.external_reference_hash or row.fingerprint
+        if identity in seen:
+            continue
+        seen.add(identity)
+        unique.append(row)
+    amounts = [row.amount for row in unique]
+    overall = _trimmed_mean(amounts)
+    if overall is None:
+        return None
+    grouped = defaultdict(list)
+    zones = defaultdict(list)
+    for row in unique:
+        grouped[shipping_tariff_band(row.weight_kg, row.dimensions)].append(row.amount)
+        zones[_zone(row.destination)].append(row.amount)
+    overall_rounded = _rounded_cop(overall)
+    bands = {}
+    for band, band_amounts in sorted(grouped.items()):
+        raw = _trimmed_mean(band_amounts)
+        bands[band] = {
+            "amount": _rounded_cop(raw) if raw is not None and len(band_amounts) >= 5 else overall_rounded,
+            "sample_size": len(band_amounts),
+            "uses_global_fallback": len(band_amounts) < 5,
+        }
+    top_zones = sorted(zones.items(), key=lambda item: (-len(item[1]), item[0]))[:5]
+    return {
+        "amount": overall_rounded,
+        "currency": "COP",
+        "sample_size": len(unique),
+        "bands": bands,
+        "top_destination_zones": [
+            {
+                "zone": zone,
+                "shipments": len(zone_amounts),
+                "share_percent": round(len(zone_amounts) * 100 / len(unique), 1),
+                "average_amount": _rounded_cop(_trimmed_mean(zone_amounts)),
+            }
+            for zone, zone_amounts in top_zones
+        ],
+        "basis": "REALIZED_GUIDE_FREQUENCY_WEIGHTED_TRIMMED_MEAN",
+        "classification": "ESTIMATED_INFORMATIONAL_ONLY",
+        "volumetric_divisor_reference": 5000,
+    }
+
+
+def approved_package_values(variant):
+    candidates = getattr(variant, "envia_physical_candidates", None)
+    if candidates is None:
+        candidates = variant.physical_candidates.filter(
+            scope=PhysicalEvidenceCandidate.Scope.PACKAGE,
+            classification=PhysicalEvidenceCandidate.Classification.CONFIRMED,
+            conflict=False,
+        ).prefetch_related("decisions")
+    values = {}
+    for candidate in candidates:
+        latest = next(iter(candidate.decisions.all()), None)
+        if latest and latest.action == "APPROVE_LOCAL":
+            values[candidate.field] = candidate.normalized_value
+    sources = ["CONFIRMED_APPROVED_PACKAGE"] if values else []
+    snapshots = getattr(variant, "channel_snapshots", None)
+    snapshots = list(snapshots.all()) if hasattr(snapshots, "all") else []
+    shopify = next((row for row in snapshots if row.channel == Channel.SHOPIFY), None)
+    if shopify:
+        payload = shopify.payload or {}
+        native_weight = payload.get("weight") or {}
+        native_value = _decimal(native_weight.get("value")) if isinstance(native_weight, dict) else None
+        if native_value and native_value > 0:
+            unit = str(native_weight.get("unit") or "KILOGRAMS").upper()
+            if unit in {"GRAMS", "G"}:
+                native_value /= Decimal("1000")
+            elif unit in {"POUNDS", "LB"}:
+                native_value *= Decimal("0.45359237")
+            inserted = PhysicalEvidenceCandidate.Field.WEIGHT not in values
+            values.setdefault(PhysicalEvidenceCandidate.Field.WEIGHT, native_value)
+            if inserted and "SHOPIFY_NATIVE_WEIGHT" not in sources:
+                sources.append("SHOPIFY_NATIVE_WEIGHT")
+        metafield_map = {
+            "peso_empacado": PhysicalEvidenceCandidate.Field.WEIGHT,
+            "largo_paquete": PhysicalEvidenceCandidate.Field.LENGTH,
+            "ancho_paquete": PhysicalEvidenceCandidate.Field.WIDTH,
+            "alto_paquete": PhysicalEvidenceCandidate.Field.HEIGHT,
+        }
+        for metafield in payload.get("variantMetafields") or []:
+            field = metafield_map.get(str(metafield.get("key") or ""))
+            raw = metafield.get("jsonValue") or {}
+            value = _decimal(raw.get("value")) if isinstance(raw, dict) else None
+            if not field or value is None or value <= 0:
+                continue
+            unit = str(raw.get("unit") or "").upper()
+            if field == PhysicalEvidenceCandidate.Field.WEIGHT and unit in {"GRAMS", "G"}:
+                value /= Decimal("1000")
+            elif field != PhysicalEvidenceCandidate.Field.WEIGHT and unit in {"METERS", "M"}:
+                value *= Decimal("100")
+            elif field != PhysicalEvidenceCandidate.Field.WEIGHT and unit in {"MILLIMETERS", "MM"}:
+                value /= Decimal("10")
+            inserted = field not in values
+            values.setdefault(field, value)
+            if inserted and "SHOPIFY_LOGISTICS_METAFIELDS" not in sources:
+                sources.append("SHOPIFY_LOGISTICS_METAFIELDS")
+    return {
+        "weight_kg": values.get(PhysicalEvidenceCandidate.Field.WEIGHT),
+        "dimensions": {
+            "length_cm": values.get(PhysicalEvidenceCandidate.Field.LENGTH),
+            "width_cm": values.get(PhysicalEvidenceCandidate.Field.WIDTH),
+            "height_cm": values.get(PhysicalEvidenceCandidate.Field.HEIGHT),
+        },
+        "source": "+".join(sources) or "NO_PACKAGE_DATA",
+    }
+
+
+def average_shipping_for_variant(variant, reference=None):
+    reference = reference or build_average_shipping_reference()
+    if not reference:
+        return None
+    package = approved_package_values(variant)
+    band = shipping_tariff_band(package["weight_kg"], package["dimensions"])
+    band_reference = (reference.get("bands") or {}).get(band)
+    amount = band_reference["amount"] if band_reference else reference["amount"]
+    return {
+        **reference,
+        "amount": amount,
+        "tariff_band": band,
+        "package_basis": package["source"] if band != "SIN_DATOS" else "GLOBAL_HISTORY_FALLBACK",
+        "band_sample_size": band_reference["sample_size"] if band_reference else 0,
+        "uses_global_fallback": not band_reference or band_reference.get("uses_global_fallback", False),
+    }
+
+
 def _zone(destination):
     destination = destination or {}
     prefix = str(destination.get("postal_code_prefix") or "").strip()

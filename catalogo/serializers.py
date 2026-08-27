@@ -123,7 +123,11 @@ class VariantSerializer(serializers.ModelSerializer):
         return serialize_variant_envia_readiness(variant)
 
     def get_shipping_intelligence(self, variant):
-        return serialize_variant_shipping_intelligence(variant, self.context.get("external_snapshots", {}))
+        return serialize_variant_shipping_intelligence(
+            variant,
+            self.context.get("external_snapshots", {}),
+            self.context.get("average_shipping_reference"),
+        )
 
 
 class ImageSerializer(serializers.ModelSerializer):

@@ -168,3 +168,17 @@ class EnviaReadinessTests(TestCase):
         self.assertEqual(result["reference"]["source"], "MERCADO_LIBRE")
         self.assertEqual(result["reference"]["amount"], 12500)
         self.assertFalse(result["recommended_metric"]["available"])
+
+    def test_realized_history_adds_separate_average_shipping_reference(self):
+        LogisticsQuoteSnapshot.objects.create(
+            provider="ENVIA", basis=LogisticsQuoteSnapshot.Basis.REALIZED_GUIDE,
+            status="AVAILABLE", destination={"city": "Bogotá"}, weight_kg=1,
+            dimensions={"length_cm": 20, "width_cm": 15, "height_cm": 15},
+            carrier="estandar", amount=Decimal("12500"), currency="COP",
+            observed_at=timezone.now(), fingerprint="envia-average-reference",
+        )
+        result = serialize_variant_shipping_intelligence(self.variant)
+        self.assertEqual(result["average_shipping"]["amount"], Decimal("12500"))
+        self.assertEqual(result["average_shipping"]["tariff_band"], "SIN_DATOS")
+        self.assertTrue(result["recommended_metric"]["available"])
+        self.assertIsNone(result["reference"])

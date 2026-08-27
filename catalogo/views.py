@@ -57,6 +57,7 @@ from .pilot import build_bulk_metrics
 from .physical import build_shopify_preview
 from .envia_quote import EnviaQuoteContractError, run_fixture_quote
 from .envia_readiness import readiness_sets, serialize_variant_shipping_intelligence
+from .phase7 import build_average_shipping_reference
 from .physical_measurements import (
     PhysicalMeasurementImportError,
     apply_measurement_import,
@@ -192,6 +193,7 @@ def catalog_column_index():
     if cached is not None:
         return cached
 
+    average_shipping_reference = build_average_shipping_reference()
     variants = list(
         shopify_master_variants().select_related(
             "product", "canonical_cost__observation",
@@ -199,6 +201,11 @@ def catalog_column_index():
             "product__images", "channel_snapshots", "sodimac_catalog_links",
             "sodimac_catalog_links__observations", "cost_observations",
             "siigo_snapshots",
+            Prefetch("physical_candidates", queryset=PhysicalEvidenceCandidate.objects.filter(
+                scope=PhysicalEvidenceCandidate.Scope.PACKAGE,
+                classification=PhysicalEvidenceCandidate.Classification.CONFIRMED,
+                conflict=False,
+            ).prefetch_related("decisions"), to_attr="envia_physical_candidates"),
         )
     )
     external_ids = {
@@ -273,15 +280,6 @@ def catalog_column_index():
         else:
             envia_value = "LISTO PARA COTIZAR"
         quote = quote_map.get(variant_id)
-        if quote:
-            shipping_value = f"Cotización actual Envía · {_cop_label(quote.amount)}"
-            shipping_sort = float(quote.amount)
-        elif variant_id in meli_seller:
-            shipping_value = f"Costo estimado vendedor Mercado Libre · {_cop_label(meli_seller[variant_id])}"
-            shipping_sort = float(meli_seller[variant_id])
-        else:
-            shipping_value = "PENDIENTE"
-            shipping_sort = None
         missing_package = len(required_package_fields - package_fields.get(variant.id, set()))
         missing_total = len(product.missing_fields or []) + missing_package
         snapshots_by_channel = {
@@ -293,7 +291,16 @@ def catalog_column_index():
         shipping_intelligence = serialize_variant_shipping_intelligence(
             variant,
             external_snapshots,
+            average_shipping_reference,
         )
+        average_shipping = shipping_intelligence.get("average_shipping") or {}
+        shipping_amount = average_shipping.get("amount")
+        shipping_band = average_shipping.get("tariff_band")
+        shipping_value = (
+            f"{_cop_label(shipping_amount)} · {shipping_band} · estimado"
+            if shipping_amount is not None else "PENDIENTE"
+        )
+        shipping_sort = float(shipping_amount) if shipping_amount is not None else None
         channel_values = {}
         channel_sorts = {}
         for channel_code in CHANNEL_TABLE_CODES:
@@ -351,7 +358,17 @@ def catalog_column_index():
             seller_shipping = shipping_record.get("seller_estimate") if shipping_record else None
             buyer_shipping = shipping_record.get("buyer_charge") if shipping_record else None
             shipping_available = seller_shipping is not None or buyer_shipping is not None
-            if shipping_record:
+            average_display_amount = (
+                average_shipping.get("amount")
+                if channel_code == "SHOPIFY" and not shipping_available
+                else None
+            )
+            if average_display_amount is not None:
+                shipping_label = (
+                    f"Promedio estimado {_cop_label(average_display_amount)} · "
+                    "Cliente — · informativo"
+                )
+            elif shipping_record:
                 shipping_label = (
                     f"Empresa {_cop_label(seller_shipping)} · "
                     f"Cliente {_cop_label(buyer_shipping)}"
@@ -420,7 +437,11 @@ def catalog_column_index():
                 f"{prefix}costs": float(other_cost_amount) if other_cost_amount is not None else None,
                 f"{prefix}profit": float(profit) if profit is not None else None,
                 f"{prefix}target": float(target_value) if target_value is not None else None,
-                f"{prefix}shipping": float(seller_shipping if seller_shipping is not None else buyer_shipping) if shipping_available else None,
+                f"{prefix}shipping": (
+                    float(seller_shipping if seller_shipping is not None else buyer_shipping)
+                    if shipping_available
+                    else float(average_display_amount) if average_display_amount is not None else None
+                ),
                 f"{prefix}quality": float(quality_score) if quality_score is not None else None,
                 f"{prefix}missing": missing_count,
             })
@@ -944,10 +965,14 @@ class CatalogWorkspaceAPI(APIView):
         external_snapshots = {
             str(row.id): row for row in ExternalChannelProductSnapshot.objects.filter(id__in=external_ids)
         }
+        average_shipping_reference = build_average_shipping_reference()
         serialized_variants = VariantSerializer(
             variants,
             many=True,
-            context={"external_snapshots": external_snapshots},
+            context={
+                "external_snapshots": external_snapshots,
+                "average_shipping_reference": average_shipping_reference,
+            },
         ).data
         products = []
         for variant, variant_payload in zip(variants, serialized_variants):
