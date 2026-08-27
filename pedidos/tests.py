@@ -126,6 +126,44 @@ class OrdersAPITests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["channels"], ["shopify"])
 
+    def test_sodimac_via_shopify_keeps_source_link_and_filters_by_business_origin(self):
+        self.order.source_snapshot = {
+            "canonicalImport": True,
+            "business_origin": "sodimac",
+            "business_origin_via": "shopify",
+            "business_origin_confidence": "explicit_source_email_marker",
+        }
+        self.order.source_url = "https://admin.shopify.com/store/example/orders/1"
+        self.order.save()
+        Order.objects.create(
+            channel="shopify",
+            external_id="qa-shopify-native",
+            visible_id="19336",
+            placed_at=timezone.now(),
+            customer_name="Pedido Shopify QA",
+            grand_total=Decimal("100000"),
+            source_snapshot={
+                "canonicalImport": True,
+                "business_origin": "shopify",
+                "business_origin_via": "shopify",
+            },
+        )
+        self.login()
+
+        sodimac = self.client.get("/api/pedidos/?channel=sodimac").json()
+        shopify = self.client.get("/api/pedidos/?channel=shopify").json()
+        options = self.client.get("/api/pedidos/filter-options/").json()
+
+        self.assertEqual(sodimac["total"], 1)
+        self.assertEqual(sodimac["orders"][0]["business_origin"], "sodimac")
+        self.assertEqual(sodimac["orders"][0]["business_origin_via"], "shopify")
+        self.assertEqual(
+            sodimac["orders"][0]["channel_order_url"],
+            "https://admin.shopify.com/store/example/orders/1",
+        )
+        self.assertEqual(shopify["total"], 1)
+        self.assertEqual(options["channels"], ["shopify", "sodimac"])
+
     def test_combined_guide_filter_and_separate_filter(self):
         self.shipment_b.tracking_number = "GUIA-1"
         self.shipment_b.logistics_state = "guide_without_tracking"

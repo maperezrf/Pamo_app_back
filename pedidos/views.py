@@ -120,7 +120,18 @@ class OrdersListAPI(RoleRequiredMixin, APIView):
             )
         channel = request.query_params.get("channel", "").strip()
         if channel:
-            queryset = queryset.filter(channel=channel)
+            if channel == "shopify":
+                queryset = queryset.filter(channel="shopify").exclude(
+                    source_snapshot__business_origin="sodimac"
+                )
+            elif channel == "sodimac":
+                queryset = queryset.filter(
+                    Q(channel="sodimac") | Q(source_snapshot__business_origin="sodimac")
+                )
+            else:
+                queryset = queryset.filter(
+                    Q(channel=channel) | Q(source_snapshot__business_origin=channel)
+                )
         warehouse = request.query_params.get("warehouse", "").strip()
         if warehouse:
             queryset = queryset.filter(
@@ -220,16 +231,19 @@ class FilterOptionsAPI(RoleRequiredMixin, APIView):
     allowed_roles = OPERATOR_ROLES
 
     def get(self, request):
+        orders = operational_orders()
+        channels = set(orders.values_list("channel", flat=True))
+        channels.update(
+            value
+            for value in orders.values_list("source_snapshot__business_origin", flat=True)
+            if value
+        )
         return Response(
             {
                 "warehouses": list(
                     WarehouseLocation.objects.filter(active=True).values_list("name", flat=True)
                 ),
-                "channels": list(
-                    operational_orders().order_by("channel")
-                    .values_list("channel", flat=True)
-                    .distinct()
-                ),
+                "channels": sorted(channels),
                 "carriers": list(
                     Shipment.objects.exclude(carrier="")
                     .order_by("carrier")

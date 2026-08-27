@@ -18,6 +18,7 @@ from pedidos.models import (
 
 
 ALLOWED_LOGISTICS_STATES = {choice for choice, _ in Shipment.LOGISTICS_STATES}
+SODIMAC_ORIGIN_MARKERS = ("sodimac", "homecenter")
 
 
 def _text(value, maximum=600):
@@ -43,11 +44,45 @@ def _datetime(value):
     return parsed or timezone.now()
 
 
-def _minimal_order_snapshot(row):
+def _business_origin(row, channel):
+    """Clasifica el origen comercial sin cambiar la fuente técnica del pedido."""
+    if channel != "shopify":
+        return {
+            "business_origin": channel,
+            "business_origin_via": channel,
+            "business_origin_confidence": "source_channel",
+        }
+
+    source_snapshot = row.get("source_snapshot")
+    source_snapshot = source_snapshot if isinstance(source_snapshot, dict) else {}
+    email_values = (
+        row.get("customer_email"),
+        source_snapshot.get("email"),
+    )
+    if any(
+        marker in str(value or "").strip().casefold()
+        for value in email_values
+        for marker in SODIMAC_ORIGIN_MARKERS
+    ):
+        return {
+            "business_origin": "sodimac",
+            "business_origin_via": "shopify",
+            "business_origin_confidence": "explicit_source_email_marker",
+        }
+
+    return {
+        "business_origin": "shopify",
+        "business_origin_via": "shopify",
+        "business_origin_confidence": "source_channel",
+    }
+
+
+def _minimal_order_snapshot(row, channel):
     return {
         "canonical_order_id": _text(row.get("id"), 80),
         "source_fingerprint": _text(row.get("source_fingerprint"), 160),
         "last_synchronized_at": row.get("last_synchronized_at"),
+        **_business_origin(row, channel),
         "canonicalImport": True,
         "externalWrites": 0,
     }
@@ -143,6 +178,7 @@ def apply_canonical_snapshot(*, export_payload, details, from_date, to_date):
     details = details if isinstance(details, dict) else {}
     counts = Counter()
     channel_counts = Counter()
+    business_origin_latest = {}
     shipment_records = []
 
     for summary in rows:
@@ -177,10 +213,15 @@ def apply_canonical_snapshot(*, export_payload, details, from_date, to_date):
         order.currency = _text(detail.get("currency") or "COP", 8)
         order.grand_total = _decimal(detail.get("grand_total"))
         order.state = _text(detail.get("state") or "open", 80)
-        order.source_snapshot = _minimal_order_snapshot(detail)
+        order.source_snapshot = _minimal_order_snapshot(detail, channel)
         order.save()
         counts["orders_created" if created else "orders_updated"] += 1
         channel_counts[channel] += 1
+        business_origin = order.source_snapshot.get("business_origin") or channel
+        counts[f"business_origin_{business_origin}"] += 1
+        current_latest = business_origin_latest.get(business_origin)
+        if current_latest is None or order.placed_at > current_latest:
+            business_origin_latest[business_origin] = order.placed_at
 
         canonical_items = detail.get("items") if isinstance(detail.get("items"), list) else []
         item_by_canonical_id = {}
@@ -308,7 +349,7 @@ def apply_canonical_snapshot(*, export_payload, details, from_date, to_date):
         "sodimac": "sodimac",
     }
     for channel, provider in provider_names.items():
-        observed = channel_counts.get(channel, 0)
+        observed = counts.get(f"business_origin_{channel}", channel_counts.get(channel, 0))
         IntegrationStatus.objects.update_or_create(
             provider=provider,
             defaults={
@@ -321,6 +362,17 @@ def apply_canonical_snapshot(*, export_payload, details, from_date, to_date):
                     "from": from_date,
                     "to": to_date,
                     "canonical": True,
+                    "sourceChannelOrders": channel_counts.get(channel, 0),
+                    "viaShopify": (
+                        counts.get("business_origin_sodimac", 0) - channel_counts.get("sodimac", 0)
+                        if channel == "sodimac"
+                        else 0
+                    ),
+                    "latestBusinessOrderAt": (
+                        business_origin_latest[channel].isoformat()
+                        if channel in business_origin_latest
+                        else None
+                    ),
                     "externalWrites": 0,
                 },
             },
@@ -337,6 +389,15 @@ def apply_canonical_snapshot(*, export_payload, details, from_date, to_date):
                 "from": from_date,
                 "to": to_date,
                 "channels": dict(channel_counts),
+                "businessOrigins": {
+                    key.removeprefix("business_origin_"): value
+                    for key, value in counts.items()
+                    if key.startswith("business_origin_")
+                },
+                "businessOriginLatest": {
+                    key: value.isoformat()
+                    for key, value in business_origin_latest.items()
+                },
                 "externalWrites": 0,
             },
         },

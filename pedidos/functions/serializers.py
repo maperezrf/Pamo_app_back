@@ -63,12 +63,18 @@ def order_row(order):
     logistics_states = [item.logistics_state for item in shipments]
     incident_categories = [item.incident_category for item in shipments if item.incident_category]
     total_cost = sum((item.carrier_cost or 0) for item in shipments)
+    source_snapshot = order.source_snapshot if isinstance(order.source_snapshot, dict) else {}
+    business_origin = source_snapshot.get("business_origin") or order.channel
+    business_origin_via = source_snapshot.get("business_origin_via") or order.channel
     return {
         "id": str(order.id),
         "row_id": str(order.id),
         "channel_order_id": order.visible_id,
         "order_number": order.visible_id,
         "channel": order.channel,
+        "business_origin": business_origin,
+        "business_origin_via": business_origin_via,
+        "business_origin_confidence": source_snapshot.get("business_origin_confidence"),
         "external_id": order.external_id,
         "channel_order_url": order.source_url or None,
         "placed_at": order.placed_at.isoformat(),
@@ -132,4 +138,3 @@ def whatsapp_url(phone, message):
 
 
 from pedidos.models import LogisticsAudit  # noqa: E402
-
