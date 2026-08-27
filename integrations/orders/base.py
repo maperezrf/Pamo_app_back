@@ -13,6 +13,16 @@ class ExternalReadDisabled(RuntimeError):
     pass
 
 
+class ExternalReadFailed(RuntimeError):
+    """Fallo controlado de una lectura externa sin escrituras remotas."""
+
+    def __init__(self, provider, code, status_code=None):
+        self.provider = provider
+        self.code = code
+        self.status_code = status_code
+        super().__init__(f"{provider}: {code}")
+
+
 class ReadOnlyOrdersProvider:
     provider = "unknown"
 
@@ -30,4 +40,3 @@ class ReadOnlyOrdersProvider:
         if not self.enabled:
             raise ExternalReadDisabled(f"{self.provider} está deshabilitado en local")
         raise NotImplementedError("El contrato real se adapta en la siguiente fase controlada.")
-
