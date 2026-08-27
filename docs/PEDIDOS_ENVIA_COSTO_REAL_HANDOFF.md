@@ -16,3 +16,13 @@ Catálogo Multicanal ya separa dos valores:
 7. Mantener separados transporte Envía, alistamiento/bodegaje y costos de Fulfillment.
 
 La referencia actual usa promedio recortado para reducir el efecto de valores extremos y un divisor volumétrico neutral de 5.000 solo para clasificación. La cotización real siempre debe respetar el divisor y las reglas de la transportadora elegida.
+
+## Regla provisional del Catálogo Multicanal
+
+- Un producto sin peso ni medidas completas se clasifica provisionalmente como **menos de 1 kg** y queda marcado como `asumido` y `requiere revisión`. No se presenta como medición confirmada.
+- Un lavamanos o lavaplatos real usa el percentil 75 del costo histórico de guías de su propia familia hasta que exista una cotización actual por destino. No se mezcla con el promedio de artículos pequeños.
+- Griferías, válvulas, sifones, mangueras, desagües, canastillas y otros accesorios que mencionen lavamanos o lavaplatos no se clasifican como pieza voluminosa.
+- Si existe peso nativo de Shopify, se usa para la banda, pero la ausencia de dimensiones continúa visible como pendiente porque Envía factura el mayor entre peso real y volumétrico.
+- Cada importación posterior de snapshots sanitizados `REALIZED_GUIDE` actualiza los promedios al reconstruir el catálogo. La captura de nuevas guías debe programarse en Pedidos; hoy no existe un proceso autónomo que consulte Envía en segundo plano.
+
+Caso de control: `010100002-T` es una grifería para lavamanos, registra 1 kg en Shopify y corresponde a la banda **hasta 1 kg**, no a la familia de lavamanos voluminosos.

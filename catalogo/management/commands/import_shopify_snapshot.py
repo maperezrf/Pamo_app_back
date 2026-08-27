@@ -203,7 +203,8 @@ class Command(BaseCommand):
                     "payload": {"source": "secure-shopify-read", "partial": bool(product_missing or missing), "handle": raw.get("handle") or "",
                                 "missing": product_missing + missing, "selectedOptions": raw_variant.get("selectedOptions") or [],
                                 "variantMetafields": variant_meta, "requiresShipping": item.get("requiresShipping"),
-                                "tracked": item.get("tracked"), "weight": ((item.get("measurement") or {}).get("weight")),
+                                "tracked": item.get("tracked"), "inventoryItemId": item.get("id"),
+                                "weight": ((item.get("measurement") or {}).get("weight")),
                                 "inventoryLocationsPartial": not levels_complete},
                     "observed_at": observed(raw_variant.get("updatedAt") or raw.get("updatedAt")),
                 })

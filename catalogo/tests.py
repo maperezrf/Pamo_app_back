@@ -305,6 +305,33 @@ class CatalogPaginationAndFilterTests(APITestCase):
         self.assertEqual(options.data["options"], ["Barú", "Otro"])
         self.assertEqual(options.data["external_writes"], 0)
 
+    def test_shopify_compare_at_column_supports_global_options_and_filtering(self):
+        variant = ProductVariant.objects.get(sku="SKU-100")
+        variant.compare_at_price = Decimal("129900")
+        variant.save(update_fields=["compare_at_price"])
+        cache.clear()
+
+        options = self.client.get(
+            "/api/catalogo/workspace/column-options/?column=SHOPIFY__compare_at",
+        )
+        filtered = self.client.get(
+            "/api/catalogo/workspace/",
+            {
+                "column_filters": json.dumps(
+                    {"SHOPIFY__compare_at": ["$ 129.900"]},
+                ),
+                "fresh": "1",
+            },
+        )
+
+        self.assertEqual(options.status_code, 200)
+        self.assertIn("$ 129.900", options.data["options"])
+        self.assertEqual(options.data["scope"], "ALL_SHOPIFY_VARIANTS")
+        self.assertEqual(options.data["external_writes"], 0)
+        self.assertEqual(filtered.status_code, 200)
+        self.assertEqual(filtered.data["pagination"]["total"], 1)
+        self.assertEqual(filtered.data["products"][0]["variants"][0]["sku"], "SKU-100")
+
     def test_shopify_status_column_filter_never_mixes_active_and_draft(self):
         MasterProduct.objects.filter(shopify_product_id__gt="").update(status="ACTIVE")
         draft_variant = ProductVariant.objects.get(sku="SKU-000")
@@ -358,6 +385,70 @@ class CatalogPaginationAndFilterTests(APITestCase):
         self.assertEqual(status_options.status_code, 200)
         self.assertEqual(status_options.data["options"], ["ACTIVE", "DRAFT"])
         self.assertEqual(status_options.data["external_writes"], 0)
+
+    def test_shopify_inventory_by_location_is_serialized_sorted_and_filtered(self):
+        available_variant = ProductVariant.objects.get(sku="SKU-100")
+        empty_variant = ProductVariant.objects.get(sku="SKU-099")
+        InventoryLevel.objects.create(
+            variant=available_variant,
+            location_external_id="loc-taumm",
+            location_name="Taumm",
+            available=Decimal("12"),
+            observed_at=timezone.now(),
+        )
+        InventoryLevel.objects.create(
+            variant=available_variant,
+            location_external_id="loc-bodega",
+            location_name="Bodega principal",
+            available=Decimal("3"),
+            observed_at=timezone.now(),
+        )
+        InventoryLevel.objects.create(
+            variant=empty_variant,
+            location_external_id="loc-taumm",
+            location_name="Taumm",
+            available=Decimal("0"),
+            observed_at=timezone.now(),
+        )
+        cache.clear()
+
+        options = self.client.get(
+            "/api/catalogo/workspace/column-options/?column=SHOPIFY__inventory",
+        )
+        available = self.client.get(
+            "/api/catalogo/workspace/",
+            {
+                "column_filters": json.dumps(
+                    {"SHOPIFY__inventory": ["Con disponibilidad"]},
+                ),
+                "fresh": "1",
+            },
+        )
+        empty = self.client.get(
+            "/api/catalogo/workspace/",
+            {
+                "column_filters": json.dumps(
+                    {"SHOPIFY__inventory": ["Sin disponibilidad"]},
+                ),
+                "fresh": "1",
+            },
+        )
+
+        self.assertEqual(options.status_code, 200)
+        self.assertEqual(
+            options.data["options"],
+            ["Con disponibilidad", "Sin disponibilidad", "Sin ubicaciones"],
+        )
+        self.assertEqual(options.data["external_writes"], 0)
+        self.assertEqual(available.data["pagination"]["total"], 1)
+        self.assertEqual(available.data["products"][0]["variants"][0]["sku"], "SKU-100")
+        locations = available.data["products"][0]["variants"][0]["inventory_levels"]
+        self.assertCountEqual(
+            [location["location_name"] for location in locations],
+            ["Taumm", "Bodega principal"],
+        )
+        self.assertEqual(empty.data["pagination"]["total"], 1)
+        self.assertEqual(empty.data["products"][0]["variants"][0]["sku"], "SKU-099")
 
     def test_siigo_report_runs_from_shopify_master_toward_siigo(self):
         variant = ProductVariant.objects.filter(

@@ -19,6 +19,7 @@ from .views import (
     PhysicalReviewQueueAPI,
     PricingSimulationAPI,
     ShopifyImportPlanAPI,
+    ShopifySyncWorkspaceAPI,
 )
 
 
@@ -30,6 +31,7 @@ urlpatterns = [
     path("pricing/simulate/", PricingSimulationAPI.as_view(), name="pricing-simulate"),
     path("pricing/hypothesis/", HypothesisPolicyAPI.as_view(), name="pricing-hypothesis"),
     path("shopify/import-plan/", ShopifyImportPlanAPI.as_view(), name="shopify-import-plan"),
+    path("shopify/sync-workspace/", ShopifySyncWorkspaceAPI.as_view(), name="shopify-sync-workspace"),
     path("executive/simulation/", ExecutiveSimulationAPI.as_view(), name="executive-simulation"),
     path("pilot/simulation/", BulkPilotSimulationAPI.as_view(), name="pilot-simulation"),
     path("physical/review-queue/", PhysicalReviewQueueAPI.as_view(), name="physical-review-queue"),

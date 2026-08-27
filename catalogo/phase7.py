@@ -72,6 +72,44 @@ CHANNEL_MATRIX = [
 ]
 
 
+VOLUMETRIC_PRODUCT_FAMILIES = (
+    ("LAVAPLATOS_VOLUMINOSO", "lavaplat"),
+    ("LAVAMANOS_VOLUMINOSO", "lavaman"),
+)
+VOLUMETRIC_ACCESSORY_TERMS = (
+    "acoflex",
+    "aireador",
+    "canastilla",
+    "cartridge",
+    "combinación",
+    "combinacion",
+    "cuello",
+    "desagüe",
+    "desague",
+    "dispensador",
+    "grifería",
+    "griferia",
+    "grifer¡a",
+    "grifo",
+    "llave",
+    "manguera",
+    "manilla",
+    "mezclador",
+    "monomando",
+    "monocontrol",
+    "pico",
+    "registro",
+    "regadera",
+    "repuesto",
+    "set de lujo para",
+    "set para",
+    "sifón",
+    "sifon",
+    "válvula",
+    "valvula",
+)
+
+
 def _decimal(value):
     return None if value in (None, "") else Decimal(str(value))
 
@@ -122,6 +160,45 @@ def billable_weight_kg(weight_kg, dimensions, volumetric_divisor=Decimal("5000")
     return max(candidates) if candidates else None
 
 
+def product_shipping_family(variant):
+    """Detecta piezas voluminosas sin confundirlas con griferías o accesorios."""
+    product = variant.product
+    # El título y el tipo describen el artículo. La categoría es demasiado
+    # amplia (p. ej. una grifería puede pertenecer a "lavamanos") y no prueba
+    # que el producto sea la pieza voluminosa.
+    title = str(product.title or "").casefold()
+    product_type = str(product.product_type or "").casefold()
+    type_family_positions = [
+        product_type.find(term)
+        for _, term in VOLUMETRIC_PRODUCT_FAMILIES
+        if product_type.find(term) >= 0
+    ]
+    first_type_family = min(type_family_positions) if type_family_positions else None
+    first_type_accessory = min(
+        (position for position in (product_type.find(term) for term in VOLUMETRIC_ACCESSORY_TERMS) if position >= 0),
+        default=None,
+    )
+    if first_type_accessory is not None and (
+        first_type_family is None or first_type_accessory < first_type_family
+    ):
+        return None
+    searchable_fields = (title, product_type)
+    for family, term in VOLUMETRIC_PRODUCT_FAMILIES:
+        for searchable in searchable_fields:
+            family_position = searchable.find(term)
+            if family_position < 0:
+                continue
+            prefix = searchable[:family_position]
+            if not any(accessory in prefix for accessory in VOLUMETRIC_ACCESSORY_TERMS):
+                return family
+    return None
+
+
+def _complete_dimensions(dimensions):
+    values = [_decimal((dimensions or {}).get(key)) for key in ("length_cm", "width_cm", "height_cm")]
+    return all(value is not None and value > 0 for value in values)
+
+
 def shipping_tariff_band(weight_kg, dimensions):
     billable = billable_weight_kg(weight_kg, dimensions)
     if billable is None:
@@ -158,7 +235,7 @@ def build_average_shipping_reference():
         status="AVAILABLE",
         amount__isnull=False,
         amount__gt=0,
-    ).order_by("-observed_at", "-id")
+    ).select_related("variant__product").order_by("-observed_at", "-id")
     unique = []
     seen = set()
     for row in rows:
@@ -173,17 +250,39 @@ def build_average_shipping_reference():
         return None
     grouped = defaultdict(list)
     zones = defaultdict(list)
+    product_families = defaultdict(list)
     for row in unique:
         grouped[shipping_tariff_band(row.weight_kg, row.dimensions)].append(row.amount)
         zones[_zone(row.destination)].append(row.amount)
+        if row.variant_id:
+            family = product_shipping_family(row.variant)
+            if family:
+                product_families[family].append(row.amount)
     overall_rounded = _rounded_cop(overall)
+    reliable_large_floor_values = grouped.get("5_A_10_KG") or []
+    reliable_large_floor = (
+        _rounded_cop(_trimmed_mean(reliable_large_floor_values))
+        if len(reliable_large_floor_values) >= 5
+        else overall_rounded
+    )
     bands = {}
     for band, band_amounts in sorted(grouped.items()):
         raw = _trimmed_mean(band_amounts)
+        sparse = len(band_amounts) < 5
+        if not sparse and raw is not None:
+            amount = _rounded_cop(raw)
+            fallback_basis = None
+        elif band == "MAS_DE_10_KG":
+            amount = max(overall_rounded, reliable_large_floor)
+            fallback_basis = "CONSERVATIVE_5_A_10_KG_FLOOR"
+        else:
+            amount = overall_rounded
+            fallback_basis = "GLOBAL_HISTORY_FALLBACK"
         bands[band] = {
-            "amount": _rounded_cop(raw) if raw is not None and len(band_amounts) >= 5 else overall_rounded,
+            "amount": amount,
             "sample_size": len(band_amounts),
-            "uses_global_fallback": len(band_amounts) < 5,
+            "uses_global_fallback": sparse,
+            "fallback_basis": fallback_basis,
         }
     top_zones = sorted(zones.items(), key=lambda item: (-len(item[1]), item[0]))[:5]
     return {
@@ -191,6 +290,15 @@ def build_average_shipping_reference():
         "currency": "COP",
         "sample_size": len(unique),
         "bands": bands,
+        "product_families": {
+            family: {
+                "amount": _rounded_cop(_percentile(family_amounts, Decimal("0.75"))),
+                "sample_size": len(family_amounts),
+                "basis": "REALIZED_GUIDE_PRODUCT_FAMILY_P75",
+            }
+            for family, family_amounts in sorted(product_families.items())
+            if len(family_amounts) >= 5
+        },
         "top_destination_zones": [
             {
                 "zone": zone,
@@ -276,16 +384,66 @@ def average_shipping_for_variant(variant, reference=None):
     if not reference:
         return None
     package = approved_package_values(variant)
+    family = product_shipping_family(variant)
+    family_reference = (reference.get("product_families") or {}).get(family)
+    package_complete = _complete_dimensions(package["dimensions"])
+    if family_reference:
+        return {
+            **reference,
+            "amount": family_reference["amount"],
+            "basis": family_reference["basis"],
+            "tariff_band": family,
+            "package_basis": (
+                package["source"] + "+PRODUCT_FAMILY_HISTORY_P75"
+                if package_complete
+                else "PRODUCT_FAMILY_HISTORY_FALLBACK"
+            ),
+            "band_sample_size": family_reference["sample_size"],
+            "uses_global_fallback": False,
+            "assumed": not package_complete,
+            "requires_review": not package_complete,
+            "classification_reason": (
+                "P75 histórico de guías reales de la familia; el empaque está completo, pero la tarifa exacta depende del destino y servicio."
+                if package_complete
+                else "P75 histórico de guías reales de la familia; faltan medidas completas del empaque."
+            ),
+        }
     band = shipping_tariff_band(package["weight_kg"], package["dimensions"])
+    if band == "SIN_DATOS":
+        assumed_reference = (reference.get("bands") or {}).get("HASTA_1_KG")
+        assumed_amount = assumed_reference["amount"] if assumed_reference else reference["amount"]
+        return {
+            **reference,
+            "amount": assumed_amount,
+            "basis": "USER_POLICY_DEFAULT_UNDER_1KG_WITH_HISTORICAL_RATE",
+            "tariff_band": "HASTA_1_KG_ASUMIDO",
+            "package_basis": "USER_POLICY_DEFAULT_UNDER_1KG",
+            "band_sample_size": assumed_reference["sample_size"] if assumed_reference else 0,
+            "uses_global_fallback": assumed_reference is None,
+            "assumed": True,
+            "requires_review": True,
+            "classification_reason": "Sin evidencia física; política provisional para productos pequeños.",
+        }
     band_reference = (reference.get("bands") or {}).get(band)
     amount = band_reference["amount"] if band_reference else reference["amount"]
+    sparse_history = not band_reference or band_reference.get("uses_global_fallback", False)
     return {
         **reference,
         "amount": amount,
+        "basis": "REALIZED_GUIDE_TARIFF_BAND_TRIMMED_MEAN",
         "tariff_band": band,
         "package_basis": package["source"] if band != "SIN_DATOS" else "GLOBAL_HISTORY_FALLBACK",
         "band_sample_size": band_reference["sample_size"] if band_reference else 0,
         "uses_global_fallback": not band_reference or band_reference.get("uses_global_fallback", False),
+        "assumed": False,
+        "requires_review": not package_complete or sparse_history,
+        "classification_reason": (
+            "Historial insuficiente en la banda; se conserva una referencia conservadora y requiere cotización actual."
+            if sparse_history
+            else "Peso facturable calculado con peso y dimensiones completos."
+            if package_complete
+            else "Banda basada en el peso disponible; faltan medidas del empaque."
+        ),
     }
 
 

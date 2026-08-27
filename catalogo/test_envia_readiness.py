@@ -179,6 +179,7 @@ class EnviaReadinessTests(TestCase):
         )
         result = serialize_variant_shipping_intelligence(self.variant)
         self.assertEqual(result["average_shipping"]["amount"], Decimal("12500"))
-        self.assertEqual(result["average_shipping"]["tariff_band"], "SIN_DATOS")
+        self.assertEqual(result["average_shipping"]["tariff_band"], "HASTA_1_KG_ASUMIDO")
+        self.assertTrue(result["average_shipping"]["requires_review"])
         self.assertTrue(result["recommended_metric"]["available"])
         self.assertIsNone(result["reference"])

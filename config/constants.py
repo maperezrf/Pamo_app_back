@@ -52,6 +52,12 @@ PAMO_WHATSAPP_SUPPLIER_AUTOMATION_ENABLED = config(
 PAMO_WHATSAPP_GUIDE_AUTO_SEND_ENABLED = config(
     "PAMO_WHATSAPP_GUIDE_AUTO_SEND_ENABLED", default=False, cast=bool
 )
+SHOPIFY_SYNC_SCAN_ENABLED = config("SHOPIFY_SYNC_SCAN_ENABLED", default=False, cast=bool)
+SHOPIFY_SYNC_WRITES_ENABLED = config("SHOPIFY_SYNC_WRITES_ENABLED", default=False, cast=bool)
+SHOPIFY_SYNC_MAX_BATCH = config("SHOPIFY_SYNC_MAX_BATCH", default=5, cast=int)
+SHOPIFY_SYNC_SOURCE_MAX_AGE_MINUTES = config(
+    "SHOPIFY_SYNC_SOURCE_MAX_AGE_MINUTES", default=360, cast=int
+)
 
 # Credenciales usadas solo por los comandos explícitos de lectura Siigo.
 SIIGO_USERNAME = config("SIIGO_USERNAME", default="")

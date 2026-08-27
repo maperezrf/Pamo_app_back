@@ -9,6 +9,7 @@ from .phase7 import (
     average_shipping_for_variant,
     build_average_shipping_reference,
     build_historical_profiles,
+    product_shipping_family,
     protected_margin_preview,
     shipping_tariff_band,
 )
@@ -70,12 +71,91 @@ class Phase7LocalLogisticsTests(TestCase):
         self.assertEqual(reference["sample_size"], 24)
         self.assertEqual(reference["volumetric_divisor_reference"], 5000)
 
-    def test_unknown_package_uses_global_history_without_faking_measurements(self):
+    def test_sparse_over_ten_kg_band_never_falls_below_reliable_large_band(self):
+        for index, amount in enumerate((32000, 34000, 35000, 36000, 38000)):
+            LogisticsQuoteSnapshot.objects.create(
+                provider="ENVIA", basis="REALIZED_GUIDE", status="AVAILABLE",
+                destination={"city": "Bogotá"}, weight_kg="8",
+                dimensions={"length_cm": 40, "width_cm": 30, "height_cm": 20},
+                carrier="ground", amount=amount, currency="COP",
+                evidence_reference="fixture reliable large band",
+                observed_at=timezone.now(), fingerprint=f"large-reliable-{index}", external_writes=0,
+            )
+        LogisticsQuoteSnapshot.objects.create(
+            provider="ENVIA", basis="REALIZED_GUIDE", status="AVAILABLE",
+            destination={"city": "Bogotá"}, weight_kg="12",
+            dimensions={"length_cm": 30, "width_cm": 20, "height_cm": 20},
+            carrier="ground", amount=15000, currency="COP",
+            evidence_reference="fixture sparse over 10 kg",
+            observed_at=timezone.now(), fingerprint="large-sparse", external_writes=0,
+        )
+        reference = build_average_shipping_reference()
+        over_ten = reference["bands"]["MAS_DE_10_KG"]
+        self.assertEqual(over_ten["amount"], Decimal("35000"))
+        self.assertTrue(over_ten["uses_global_fallback"])
+        self.assertEqual(over_ten["fallback_basis"], "CONSERVATIVE_5_A_10_KG_FLOOR")
+
+    def test_unknown_small_product_uses_under_one_kg_policy_as_assumption(self):
         variant = ProductVariant.objects.create(
             product=MasterProduct.objects.create(title="Sin medidas"), sku="NO-DIMS",
         )
         result = average_shipping_for_variant(variant, build_average_shipping_reference())
-        self.assertEqual(result["tariff_band"], "SIN_DATOS")
-        self.assertEqual(result["package_basis"], "GLOBAL_HISTORY_FALLBACK")
-        self.assertTrue(result["uses_global_fallback"])
+        self.assertEqual(result["tariff_band"], "HASTA_1_KG_ASUMIDO")
+        self.assertEqual(result["package_basis"], "USER_POLICY_DEFAULT_UNDER_1KG")
+        self.assertTrue(result["assumed"])
+        self.assertTrue(result["requires_review"])
         self.assertEqual(shipping_tariff_band(None, {}), "SIN_DATOS")
+
+    def test_lavamanos_fixture_uses_family_p75_but_lavamanos_faucet_does_not(self):
+        basin_product = MasterProduct.objects.create(
+            title="Lavamanos cerámico de sobreponer",
+            product_type="Lavamanos",
+        )
+        basin = ProductVariant.objects.create(product=basin_product, sku="BASIN")
+        faucet = ProductVariant.objects.create(
+            product=MasterProduct.objects.create(
+                title="Grifería alta para lavamanos",
+                product_type="Grifería para lavamanos",
+            ),
+            sku="FAUCET",
+        )
+        for index, amount in enumerate((18000, 19000, 20000, 21000, 30000)):
+            LogisticsQuoteSnapshot.objects.create(
+                variant=basin,
+                provider="ENVIA", basis="REALIZED_GUIDE", status="AVAILABLE",
+                destination={"postal_code_prefix": "110"}, weight_kg="1",
+                dimensions={"length_cm": 40, "width_cm": 35, "height_cm": 20},
+                carrier="ground", amount=amount, currency="COP",
+                evidence_reference="fixture lavamanos", observed_at=timezone.now(),
+                fingerprint=f"basin-family-{index}", external_writes=0,
+            )
+        reference = build_average_shipping_reference()
+        basin_result = average_shipping_for_variant(basin, reference)
+        faucet_result = average_shipping_for_variant(faucet, reference)
+        self.assertEqual(basin_result["tariff_band"], "LAVAMANOS_VOLUMINOSO")
+        self.assertEqual(basin_result["amount"], Decimal("21000"))
+        self.assertEqual(basin_result["package_basis"], "PRODUCT_FAMILY_HISTORY_FALLBACK")
+        self.assertEqual(faucet_result["tariff_band"], "HASTA_1_KG_ASUMIDO")
+
+    def test_accessory_terms_do_not_turn_faucets_or_spares_into_volumetric_products(self):
+        fixtures = (
+            ("Combinación lavamanos Bonn", "Grifería Lavamanos"),
+            ("Mezclador para lavamanos de alto tráfico", "Mezclador para lavamanos"),
+            ("Aireador para lavaplatos vertical", "Grifería para lavaplatos"),
+            ("Set para lavaplatos: grifería y canastilla", "Grifería para cocina"),
+        )
+        for index, (title, product_type) in enumerate(fixtures):
+            variant = ProductVariant.objects.create(
+                product=MasterProduct.objects.create(title=title, product_type=product_type),
+                sku=f"ACCESSORY-{index}",
+            )
+            self.assertIsNone(product_shipping_family(variant))
+
+        actual_sink = ProductVariant.objects.create(
+            product=MasterProduct.objects.create(
+                title="Lavaplatos 60 x 45 cm con canastilla",
+                product_type="Lavaplatos de acero inoxidable",
+            ),
+            sku="ACTUAL-SINK",
+        )
+        self.assertEqual(product_shipping_family(actual_sink), "LAVAPLATOS_VOLUMINOSO")

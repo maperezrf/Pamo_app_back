@@ -246,8 +246,17 @@ def serialize_variant_shipping_intelligence(variant, external_snapshots=None, av
         "channels": channels,
         "missing_package_fields": envia.get("missing_fields") or [],
         "recommended_metric": {
-            "name": "REALIZED_GUIDE_FREQUENCY_WEIGHTED_TRIMMED_MEAN",
+            "name": (
+                average_reference.get("basis")
+                if average_reference
+                else "REALIZED_GUIDE_FREQUENCY_WEIGHTED_TRIMMED_MEAN"
+            ),
             "available": average_reference is not None,
+            "requires_review": (
+                average_reference.get("requires_review", True)
+                if average_reference
+                else True
+            ),
             "reason": "Referencia informativa ponderada por las guías históricas; no reemplaza la cotización por destino ni entra al costo del producto.",
         },
         "policy": "SEPARATE_CARRIER_BUYER_SELLER_AND_REALIZED_COSTS",

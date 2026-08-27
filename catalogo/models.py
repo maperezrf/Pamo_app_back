@@ -1148,3 +1148,98 @@ class SodimacKitComponent(models.Model):
         constraints = [
             models.UniqueConstraint(fields=["kit", "component_sku"], name="unique_sodimac_kit_component"),
         ]
+
+
+class ShopifySyncPolicy(models.Model):
+    """Fail-closed policy for the local catalog -> Shopify outbox."""
+
+    class Environment(models.TextChoices):
+        BETA = "BETA", "Beta"
+        PRODUCTION = "PRODUCTION", "Producción"
+
+    key = models.CharField(max_length=32, unique=True, default="PRIMARY")
+    environment = models.CharField(max_length=16, choices=Environment.choices, default=Environment.BETA)
+    scan_enabled = models.BooleanField(default=True)
+    writes_enabled = models.BooleanField(default=False)
+    price_enabled = models.BooleanField(default=True)
+    inventory_enabled = models.BooleanField(default=True)
+    maximum_batch_size = models.PositiveSmallIntegerField(default=5, validators=[MinValueValidator(1), MaxValueValidator(25)])
+    debounce_seconds = models.PositiveIntegerField(default=60)
+    source_max_age_minutes = models.PositiveIntegerField(default=360)
+    allowlisted_skus = models.JSONField(default=list, blank=True)
+    updated_by = models.CharField(max_length=160, default="local-operator")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["key"]
+
+
+class ShopifySyncRun(models.Model):
+    class Mode(models.TextChoices):
+        SCAN = "SCAN", "Detección local"
+        PREVIEW = "PREVIEW", "Vista previa"
+        EXECUTE = "EXECUTE", "Ejecución Shopify"
+
+    class Status(models.TextChoices):
+        RUNNING = "RUNNING", "En curso"
+        SUCCEEDED = "SUCCEEDED", "Completada"
+        PARTIAL = "PARTIAL", "Parcial"
+        BLOCKED = "BLOCKED", "Bloqueada"
+        FAILED = "FAILED", "Fallida"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    mode = models.CharField(max_length=16, choices=Mode.choices)
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.RUNNING)
+    trigger = models.CharField(max_length=40, default="MANUAL_PREVIEW")
+    requested_skus = models.JSONField(default=list, blank=True)
+    scanned_count = models.PositiveIntegerField(default=0)
+    ready_count = models.PositiveIntegerField(default=0)
+    blocked_count = models.PositiveIntegerField(default=0)
+    no_change_count = models.PositiveIntegerField(default=0)
+    succeeded_count = models.PositiveIntegerField(default=0)
+    failed_count = models.PositiveIntegerField(default=0)
+    error_code = models.CharField(max_length=80, blank=True)
+    error_message = models.CharField(max_length=300, blank=True)
+    external_writes = models.PositiveIntegerField(default=0)
+    started_at = models.DateTimeField(auto_now_add=True)
+    finished_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-started_at"]
+
+
+class ShopifySyncItem(models.Model):
+    class Status(models.TextChoices):
+        READY = "READY", "Lista para piloto"
+        BLOCKED = "BLOCKED", "Bloqueada"
+        NO_CHANGE = "NO_CHANGE", "Sin cambios"
+        SUCCEEDED = "SUCCEEDED", "Sincronizada"
+        FAILED = "FAILED", "Fallida"
+        CONFLICT = "CONFLICT", "Conflicto concurrente"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    run = models.ForeignKey(ShopifySyncRun, on_delete=models.CASCADE, related_name="items")
+    variant = models.ForeignKey(ProductVariant, on_delete=models.PROTECT, related_name="shopify_sync_items")
+    sku = models.CharField(max_length=160, db_index=True)
+    status = models.CharField(max_length=16, choices=Status.choices)
+    fields = models.JSONField(default=list, blank=True)
+    previous_values = models.JSONField(default=dict, blank=True)
+    proposed_values = models.JSONField(default=dict, blank=True)
+    source_evidence = models.JSONField(default=dict, blank=True)
+    blockers = models.JSONField(default=list, blank=True)
+    fingerprint = models.CharField(max_length=64, db_index=True)
+    idempotency_key = models.UUIDField(default=uuid.uuid4, editable=False, unique=True)
+    rollback_payload = models.JSONField(default=dict, blank=True)
+    attempts = models.PositiveSmallIntegerField(default=0)
+    external_writes = models.PositiveSmallIntegerField(default=0)
+    last_error_code = models.CharField(max_length=80, blank=True)
+    last_error_message = models.CharField(max_length=300, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["run", "sku"]
+        constraints = [
+            models.UniqueConstraint(fields=["run", "variant"], name="unique_shopify_sync_variant_run"),
+        ]
