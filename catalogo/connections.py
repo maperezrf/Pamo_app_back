@@ -118,6 +118,12 @@ SCHEDULED_CONNECTORS = {
     },
 }
 
+PRIMARY_CONNECTION_CAPABILITIES = {
+    "SHOPIFY": {"marketplace_catalog_snapshot", "read_only_connector", "catalog_snapshot"},
+    "SIIGO": {"marketplace_catalog_snapshot", "product_snapshot"},
+    "ENVIA": {"shipping_api_connection"},
+}
+
 
 def _maximum(values):
     valid = [value for value in values if value is not None]
@@ -144,8 +150,14 @@ def _latest_file_upload(code):
 
 
 def _connection_status(definition, statuses, now):
-    last_attempt = _maximum(row.observed_at for row in statuses)
-    last_success = _maximum(row.last_success_at for row in statuses)
+    primary_capabilities = PRIMARY_CONNECTION_CAPABILITIES.get(definition["code"])
+    health_statuses = (
+        [row for row in statuses if row.capability in primary_capabilities]
+        if primary_capabilities
+        else statuses
+    )
+    last_attempt = _maximum(row.observed_at for row in health_statuses or statuses)
+    last_success = _maximum(row.last_success_at for row in health_statuses or statuses)
     last_file_upload = _latest_file_upload(definition["code"])
     cadence = definition.get("cadence_hours")
     stale = bool(
@@ -153,23 +165,30 @@ def _connection_status(definition, statuses, now):
         and last_success
         and now > last_success + timedelta(hours=cadence * 2)
     )
-    available = any(row.status == IntegrationReadStatus.Status.AVAILABLE for row in statuses)
-    incomplete = any(
-        row.status
+    available = any(
+        row.status == IntegrationReadStatus.Status.AVAILABLE
+        for row in health_statuses
+    )
+    pending_capabilities = [
+        {
+            "capability": row.capability,
+            "status": row.status,
+            "message": row.message,
+        }
+        for row in statuses
+        if row.status
         in {
             IntegrationReadStatus.Status.PARTIAL,
             IntegrationReadStatus.Status.BLOCKED,
             IntegrationReadStatus.Status.MISSING,
             IntegrationReadStatus.Status.NOT_AUTHORIZED,
         }
-        for row in statuses
-    )
+    ]
+    incomplete = bool(pending_capabilities)
+    pending_count = len(pending_capabilities)
     if stale:
         state = "STALE"
         state_label = "Desactualizada"
-    elif available and incomplete:
-        state = "PARTIAL"
-        state_label = "Parcial"
     elif available:
         state = "CONNECTED"
         state_label = "Conectada"
@@ -202,6 +221,13 @@ def _connection_status(definition, statuses, now):
             [row.record_count or 0 for row in statuses], default=0
         ),
         "capabilities": len(statuses),
+        "coverage_status": "PARTIAL" if incomplete else "COMPLETE",
+        "coverage_label": (
+            f"{pending_count} {'dato pendiente' if pending_count == 1 else 'datos pendientes'}"
+            if pending_capabilities
+            else "Datos disponibles"
+        ),
+        "pending_capabilities": pending_capabilities,
         "external_writes": sum(row.external_writes for row in statuses),
     }
 

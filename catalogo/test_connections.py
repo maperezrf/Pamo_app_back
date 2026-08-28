@@ -23,12 +23,22 @@ class ConnectionsWorkspaceTests(TestCase):
             last_success_at=observed_at,
             external_writes=0,
         )
+        IntegrationReadStatus.objects.create(
+            system="SHOPIFY",
+            capability="metafields",
+            status=IntegrationReadStatus.Status.PARTIAL,
+            message="Algunos productos todavía no tienen metacampos.",
+            observed_at=observed_at,
+            external_writes=0,
+        )
 
         workspace = build_connections_workspace()
         shopify = next(row for row in workspace["connections"] if row["code"] == "SHOPIFY")
         taumm = next(row for row in workspace["connections"] if row["code"] == "TAUMM")
 
         self.assertEqual(shopify["status"], "CONNECTED")
+        self.assertEqual(shopify["coverage_status"], "PARTIAL")
+        self.assertEqual(len(shopify["pending_capabilities"]), 1)
         self.assertEqual(shopify["record_count"], 12)
         self.assertIsNotNone(shopify["next_scheduled_at"])
         self.assertEqual(taumm["status"], "DISCONNECTED")
