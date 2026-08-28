@@ -11,6 +11,7 @@ from django.utils import timezone
 
 from .models import (
     LogisticsAudit,
+    ManualFollowup,
     MessagingConfig,
     MessagingContact,
     Order,
@@ -21,7 +22,12 @@ from .models import (
     ShipmentItem,
     WarehouseLocation,
 )
-from .functions.supplier_responses import SupplierResponseError, apply_supplier_response
+from .functions.supplier_responses import (
+    SupplierResponseError,
+    apply_supplier_novelty_category,
+    apply_supplier_novelty_detail,
+    apply_supplier_response,
+)
 
 
 User = get_user_model()
@@ -286,8 +292,101 @@ class OrdersAPITests(TestCase):
         self.assertEqual(payload["recipientCount"], 2)
         self.assertEqual(payload["externalWrites"], 0)
         self.assertTrue(all("Pedido 19335" in item["rendered_message"] for item in payload["generated"]))
-        self.assertTrue(all("SKU 8844 × 3" in item["rendered_message"] for item in payload["generated"]))
+        self.assertTrue(all("SKU 8844 - Artículo Barú x 3" in item["rendered_message"] for item in payload["generated"]))
         self.assertTrue(all("Sin guía" in item["rendered_message"] for item in payload["generated"]))
+
+    def test_whatsapp_separates_each_shipment_and_fans_out_to_contacts(self):
+        self.shipment_b.warehouse = self.location
+        self.shipment_b.warehouse_name = "Barú"
+        self.shipment_b.save(update_fields=["warehouse", "warehouse_name"])
+        config = MessagingConfig.objects.create(warehouse=self.location)
+        for index in range(2):
+            MessagingContact.objects.create(
+                config=config,
+                name=f"Contacto {index + 1}",
+                phone=f"57300000001{index}",
+            )
+        self.login()
+        response = self.client.post(
+            "/api/pedidos/messaging/manual/",
+            {"shipment_ids": [str(self.shipment_a.id), str(self.shipment_b.id)]},
+            content_type="application/json",
+        )
+        payload = response.json()
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(payload["recipientCount"], 4)
+        self.assertEqual(payload["shipmentCount"], 2)
+        self.assertEqual({item["shipmentId"] for item in payload["generated"]}, {
+            str(self.shipment_a.id), str(self.shipment_b.id)
+        })
+        for item in payload["generated"]:
+            if item["shipmentId"] == str(self.shipment_a.id):
+                self.assertIn("8844", item["rendered_message"])
+                self.assertNotIn("GV-L025", item["rendered_message"])
+            else:
+                self.assertIn("GV-L025", item["rendered_message"])
+                self.assertNotIn("8844", item["rendered_message"])
+
+    def test_whatsapp_disabled_warehouse_is_explicitly_skipped(self):
+        MessagingConfig.objects.create(warehouse=self.location, active=False)
+        self.login()
+        response = self.client.post(
+            "/api/pedidos/messaging/manual/",
+            {"shipment_ids": [str(self.shipment_a.id)]},
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(
+            response.json()["skipped"][0]["reason"],
+            "warehouse_messaging_disabled",
+        )
+        self.assertEqual(ManualFollowup.objects.count(), 0)
+
+    def test_whatsapp_prepare_is_replayable_without_duplicate_rows(self):
+        config = MessagingConfig.objects.create(warehouse=self.location)
+        MessagingContact.objects.create(
+            config=config, name="Contacto", phone="573000000010"
+        )
+        self.login()
+        data = {"shipment_ids": [str(self.shipment_a.id)]}
+        first = self.client.post(
+            "/api/pedidos/messaging/manual/", data, content_type="application/json"
+        )
+        second = self.client.post(
+            "/api/pedidos/messaging/manual/", data, content_type="application/json"
+        )
+        self.assertEqual(first.status_code, 201)
+        self.assertEqual(second.status_code, 201)
+        self.assertEqual(ManualFollowup.objects.count(), 1)
+        self.assertEqual(first.json()["generated"][0]["id"], second.json()["generated"][0]["id"])
+        self.assertTrue(second.json()["generated"][0]["replayed"])
+
+    def test_contact_book_rejects_duplicate_phone_without_losing_existing_contacts(self):
+        config = MessagingConfig.objects.create(warehouse=self.location)
+        first = MessagingContact.objects.create(
+            config=config, name="Primero", phone="573000000021"
+        )
+        second = MessagingContact.objects.create(
+            config=config, name="Segundo", phone="573000000022"
+        )
+        self.login()
+        response = self.client.put(
+            "/api/pedidos/messaging/configs/",
+            {
+                "warehouse_id": self.location.id,
+                "active": True,
+                "contacts": [
+                    {"id": first.id, "name": "Primero editado", "phone": "573000000021", "active": True},
+                    {"id": second.id, "name": "Segundo", "phone": "573000000021", "active": True},
+                ],
+            },
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(
+            list(config.contacts.order_by("id").values_list("name", "phone")),
+            [("Primero", "573000000021"), ("Segundo", "573000000022")],
+        )
 
     @override_settings(MEDIA_ROOT=tempfile.mkdtemp())
     def test_private_manual_guide_upload_and_authenticated_read(self):
@@ -401,6 +500,111 @@ class OrdersAPITests(TestCase):
         )
         self.assertEqual(result["result"], "review")
         self.assertEqual(result["guideDeliveryState"], "not_requested")
+
+    def test_supplier_novelty_category_updates_exact_open_novelty_and_is_idempotent(self):
+        self.configure_supplier()
+        opened = apply_supplier_response(
+            shipment_id=self.shipment_a.id,
+            action="report_issue",
+            provider_event_id="wamid.issue-category-open",
+            sender_phone="573045454936",
+        )
+        self.assertEqual(opened["openNovelty"]["detailState"], "awaiting_category")
+        first = apply_supplier_novelty_category(
+            shipment_id=self.shipment_a.id,
+            category="supplier_stockout",
+            provider_event_id="wamid.issue-category-1",
+            sender_phone="573045454936",
+        )
+        replay = apply_supplier_novelty_category(
+            shipment_id=self.shipment_a.id,
+            category="supplier_stockout",
+            provider_event_id="wamid.issue-category-1",
+            sender_phone="573045454936",
+        )
+        novelty = ShipmentNovelty.objects.get(shipment=self.shipment_a, state="open")
+        self.assertEqual(novelty.category, "supplier_stockout")
+        self.assertEqual(novelty.detail_state, "awaiting_detail")
+        self.assertIn("SKU agotados", first["nextPrompt"])
+        self.assertTrue(replay["replayed"])
+        self.assertEqual(
+            SupplierResponseEvent.objects.filter(action="classify_issue").count(), 1
+        )
+        with self.assertRaises(SupplierResponseError) as caught:
+            apply_supplier_novelty_category(
+                shipment_id=self.shipment_a.id,
+                category="supplier_delay",
+                provider_event_id="wamid.issue-category-overwrite",
+                sender_phone="573045454936",
+            )
+        self.assertEqual(
+            caught.exception.code, "supplier_novelty_category_already_recorded"
+        )
+
+    def test_supplier_novelty_category_rejects_wrong_warehouse_contact(self):
+        self.configure_supplier("573001112233")
+        apply_supplier_response(
+            shipment_id=self.shipment_a.id,
+            action="report_issue",
+            provider_event_id="wamid.issue-category-open-2",
+            sender_phone="573001112233",
+        )
+        with self.assertRaises(SupplierResponseError) as caught:
+            apply_supplier_novelty_category(
+                shipment_id=self.shipment_a.id,
+                category="supplier_delay",
+                provider_event_id="wamid.issue-category-wrong",
+                sender_phone="573045454936",
+            )
+        self.assertEqual(caught.exception.code, "supplier_contact_mismatch")
+
+    def test_supplier_novelty_detail_completes_the_exact_open_novelty(self):
+        self.configure_supplier()
+        apply_supplier_response(
+            shipment_id=self.shipment_a.id,
+            action="report_issue",
+            provider_event_id="wamid.detail-open",
+            sender_phone="573045454936",
+        )
+        apply_supplier_novelty_category(
+            shipment_id=self.shipment_a.id,
+            category="supplier_partial",
+            provider_event_id="wamid.detail-category",
+            sender_phone="573045454936",
+        )
+        result = apply_supplier_novelty_detail(
+            shipment_id=self.shipment_a.id,
+            detail="  SKU 8844: solo hay 2 unidades.  ",
+            provider_event_id="wamid.detail-text",
+            sender_phone="573045454936",
+        )
+        novelty = ShipmentNovelty.objects.get(shipment=self.shipment_a)
+        self.assertEqual(novelty.detail, "SKU 8844: solo hay 2 unidades.")
+        self.assertEqual(novelty.detail_state, "complete")
+        self.assertEqual(result["openNovelty"]["detailState"], "complete")
+
+    @override_settings(DEBUG=True)
+    def test_local_simulator_classifies_open_novelty_without_external_write(self):
+        self.login()
+        self.client.post(
+            f"/api/pedidos/shipments/{self.shipment_a.id}/supplier-response/simulate/",
+            {"action": "report_issue", "event_id": "local-ui-issue-open"},
+            content_type="application/json",
+        )
+        response = self.client.post(
+            f"/api/pedidos/shipments/{self.shipment_a.id}/supplier-response/simulate/",
+            {
+                "action": "classify_issue",
+                "category": "supplier_partial",
+                "event_id": "local-ui-issue-category",
+            },
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["externalWrites"], 0)
+        novelty = ShipmentNovelty.objects.get(shipment=self.shipment_a)
+        self.assertEqual(novelty.category, "supplier_partial")
+        self.assertEqual(novelty.detail_state, "awaiting_detail")
 
     def test_response_from_wrong_supplier_is_rejected(self):
         self.configure_supplier("573001112233")

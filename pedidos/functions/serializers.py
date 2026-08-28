@@ -81,6 +81,7 @@ def shipment_dict(shipment, *, detailed=False):
                 "id": str(novelty.id),
                 "category": novelty.category,
                 "state": novelty.state,
+                "detail_state": novelty.detail_state,
                 "detail": novelty.detail,
                 "affected_items": novelty.affected_items,
                 "source": novelty.source,

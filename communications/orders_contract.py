@@ -112,7 +112,7 @@ def create_order_drafts(*, selections, actor):
             contact.config.template_body,
             contact.name,
             shipment.effective_warehouse_name,
-            [shipment],
+            shipment,
         )
         document = getattr(shipment, "document", None)
         document_sha256 = document.sha256 if document else ""
@@ -143,4 +143,3 @@ def create_order_drafts(*, selections, actor):
         created_count += int(created)
         drafts.append(draft)
     return drafts, created_count
-

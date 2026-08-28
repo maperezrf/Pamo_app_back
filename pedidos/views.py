@@ -24,7 +24,12 @@ from config.constants import (
 from .functions.messaging import prepare_manual_followups
 from .functions.querysets import operational_orders
 from .functions.serializers import order_detail, order_row, shipment_dict, whatsapp_url
-from .functions.supplier_responses import SupplierResponseError, apply_supplier_response
+from .functions.supplier_responses import (
+    SupplierResponseError,
+    apply_supplier_novelty_category,
+    apply_supplier_novelty_detail,
+    apply_supplier_response,
+)
 from .models import (
     IntegrationStatus,
     LogisticsAudit,
@@ -427,18 +432,39 @@ class SupplierResponseSimulationAPI(RoleRequiredMixin, APIView):
         if not (settings.DEBUG and ORDERS_LOCAL_MODE):
             return Response({"detail": "Simulacion disponible solo en local."}, status=404)
         action = str(request.data.get("action") or "").strip()
+        category = str(request.data.get("category") or "").strip()
+        detail = str(request.data.get("detail") or "")
         event_id = str(request.data.get("event_id") or "").strip()
         if not event_id or len(event_id) > 180:
             return Response({"event_id": ["Identificador requerido."]}, status=400)
         try:
-            result = apply_supplier_response(
-                shipment_id=shipment_id,
-                action=action,
-                provider_event_id=event_id,
-                sender_phone="local-simulator",
-                source="local_simulator",
-                validate_contact=False,
-            )
+            if action == "classify_issue":
+                result = apply_supplier_novelty_category(
+                    shipment_id=shipment_id,
+                    category=category,
+                    provider_event_id=event_id,
+                    sender_phone="local-simulator",
+                    source="local_simulator",
+                    validate_contact=False,
+                )
+            elif action == "provide_issue_detail":
+                result = apply_supplier_novelty_detail(
+                    shipment_id=shipment_id,
+                    detail=detail,
+                    provider_event_id=event_id,
+                    sender_phone="local-simulator",
+                    source="local_simulator",
+                    validate_contact=False,
+                )
+            else:
+                result = apply_supplier_response(
+                    shipment_id=shipment_id,
+                    action=action,
+                    provider_event_id=event_id,
+                    sender_phone="local-simulator",
+                    source="local_simulator",
+                    validate_contact=False,
+                )
         except SupplierResponseError as error:
             return Response({"detail": error.code}, status=error.http_status)
         return Response({"supplierResponse": result, "externalWrites": 0})
@@ -534,25 +560,53 @@ class MessagingConfigsAPI(RoleRequiredMixin, APIView):
         config, _ = MessagingConfig.objects.get_or_create(warehouse=warehouse)
         config.template_body = request.data.get("template_body") or config.template_body
         config.followup_template_body = request.data.get("followup_template_body") or ""
-        config.maximum_attempts = min(max(int(request.data.get("maximum_attempts", 2)), 1), 2)
+        try:
+            maximum_attempts = int(request.data.get("maximum_attempts", 2))
+        except (TypeError, ValueError):
+            transaction.set_rollback(True)
+            return Response({"maximum_attempts": ["Debe ser un número entre 1 y 2."]}, status=400)
+        config.maximum_attempts = min(max(maximum_attempts, 1), 2)
         config.active = bool(request.data.get("active", True))
+        config.updated_by = actor_name(request)
         config.save()
         contacts = request.data.get("contacts", [])
         if not isinstance(contacts, list):
             return Response({"contacts": ["Formato inválido."]}, status=400)
-        config.contacts.all().delete()
+        normalized_contacts = []
+        seen_phones = set()
         for contact in contacts:
             name = str(contact.get("name", "")).strip()
             phone = "".join(character for character in str(contact.get("phone", "")) if character.isdigit())
-            if not name or len(phone) < 10:
+            if not name or not 8 <= len(phone) <= 15:
                 transaction.set_rollback(True)
                 return Response({"contacts": ["Cada contacto necesita nombre y teléfono válido."]}, status=400)
-            MessagingContact.objects.create(
-                config=config,
-                name=name,
-                phone=phone,
-                active=bool(contact.get("active", True)),
+            if phone in seen_phones:
+                transaction.set_rollback(True)
+                return Response({"contacts": ["El mismo teléfono no puede repetirse en una bodega."]}, status=400)
+            seen_phones.add(phone)
+            normalized_contacts.append(
+                {
+                    "id": contact.get("id"),
+                    "name": name,
+                    "phone": phone,
+                    "active": bool(contact.get("active", True)),
+                }
             )
+        retained_ids = []
+        for contact in normalized_contacts:
+            contact_id = contact.pop("id", None)
+            if contact_id:
+                item = config.contacts.filter(id=contact_id).first()
+                if not item:
+                    transaction.set_rollback(True)
+                    return Response({"contacts": ["Contacto inválido para esta bodega."]}, status=400)
+                for field, value in contact.items():
+                    setattr(item, field, value)
+                item.save(update_fields=["name", "phone", "active"])
+            else:
+                item = MessagingContact.objects.create(config=config, **contact)
+            retained_ids.append(item.id)
+        config.contacts.exclude(id__in=retained_ids).delete()
         return Response({"config": self._serialize(config)})
 
     @staticmethod
@@ -579,7 +633,7 @@ class ManualMessagingAPI(RoleRequiredMixin, APIView):
         shipment_ids = request.data.get("shipment_ids", [])
         if not isinstance(shipment_ids, list) or not shipment_ids:
             return Response({"shipment_ids": ["Selecciona al menos un despacho."]}, status=400)
-        generated, missing_config = prepare_manual_followups(
+        generated, missing_config, skipped = prepare_manual_followups(
             shipment_ids=shipment_ids,
             actor=actor_name(request),
         )
@@ -588,6 +642,7 @@ class ManualMessagingAPI(RoleRequiredMixin, APIView):
                 {
                     "detail": "No hay una configuración activa con contacto para las bodegas seleccionadas.",
                     "missing_config": missing_config,
+                    "skipped": skipped,
                 },
                 status=400,
             )
@@ -595,7 +650,11 @@ class ManualMessagingAPI(RoleRequiredMixin, APIView):
             {
                 "generated": generated,
                 "recipientCount": len(generated),
+                "shipmentCount": len(
+                    {item["shipmentId"] for item in generated if item["shipmentId"]}
+                ),
                 "missing_config": missing_config,
+                "skipped": skipped,
                 "externalWrites": 0,
                 "detail": "Mensajes preparados. Nada se envió automáticamente.",
             },

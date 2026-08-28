@@ -217,6 +217,8 @@ class SupplierResponseEvent(models.Model):
         ("order_received", "Pedido recibido"),
         ("request_guide", "Listo, enviar guia"),
         ("report_issue", "Reportar novedad"),
+        ("classify_issue", "Clasificar novedad"),
+        ("provide_issue_detail", "Detallar novedad"),
     ]
     RESULTS = [
         ("applied", "Aplicada"),
@@ -253,6 +255,11 @@ class ShipmentNovelty(models.Model):
         ("supplier_other", "Otra novedad"),
     ]
     STATES = [("open", "Abierta"), ("resolved", "Resuelta")]
+    DETAIL_STATES = [
+        ("awaiting_category", "Pendiente de categoria"),
+        ("awaiting_detail", "Pendiente de detalle"),
+        ("complete", "Detalle completo"),
+    ]
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     shipment = models.ForeignKey(
@@ -267,6 +274,12 @@ class ShipmentNovelty(models.Model):
     )
     category = models.CharField(max_length=50, choices=CATEGORIES)
     state = models.CharField(max_length=16, choices=STATES, default="open", db_index=True)
+    detail_state = models.CharField(
+        max_length=24,
+        choices=DETAIL_STATES,
+        default="awaiting_category",
+        db_index=True,
+    )
     detail = models.TextField(blank=True)
     affected_items = models.JSONField(default=list, blank=True)
     source = models.CharField(max_length=40, default="supplier_whatsapp")
@@ -297,7 +310,7 @@ class MessagingConfig(models.Model):
     template_body = models.TextField(
         default=(
             "Hola, {{contacto}}.\n\n"
-            "Estos son los despachos pendientes de {{bodega}}:\n\n"
+            "Tienes un nuevo despacho de {{bodega}}:\n\n"
             "{{lista_pedidos}}\n\n"
             "Agradecemos confirmar su estado."
         )
@@ -305,6 +318,7 @@ class MessagingConfig(models.Model):
     followup_template_body = models.TextField(blank=True)
     maximum_attempts = models.PositiveSmallIntegerField(default=2)
     active = models.BooleanField(default=True)
+    updated_by = models.CharField(max_length=240, blank=True)
     updated_at = models.DateTimeField(auto_now=True)
 
 
@@ -316,11 +330,32 @@ class MessagingContact(models.Model):
 
     class Meta:
         ordering = ["id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["config", "phone"],
+                name="pedidos_messaging_contact_phone_unique",
+            )
+        ]
 
 
 class ManualFollowup(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     warehouse = models.ForeignKey(WarehouseLocation, null=True, on_delete=models.SET_NULL)
+    shipment = models.ForeignKey(
+        Shipment,
+        related_name="manual_followups",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+    )
+    contact = models.ForeignKey(
+        MessagingContact,
+        related_name="manual_followups",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+    )
+    preparation_key = models.CharField(max_length=64, null=True, blank=True, unique=True)
     contact_name = models.CharField(max_length=160)
     phone = models.CharField(max_length=32)
     order_numbers = models.JSONField(default=list)

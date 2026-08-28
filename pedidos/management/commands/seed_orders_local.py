@@ -39,6 +39,8 @@ class Command(BaseCommand):
         locations = {}
         for external_id, name, reference in (
             ("local-baru", "Barú", "BARU"),
+            ("local-compas", "Compas", "COMPAS_LOCAL_POR_CONFIRMAR"),
+            ("local-taumm", "Taumm", "TAUMM"),
             ("local-proveedores", "Proveedores", "PROVEEDORES"),
             ("local-envia", "Bodega Envía", "ENVIA"),
         ):
@@ -47,29 +49,29 @@ class Command(BaseCommand):
                 defaults={"name": name, "reference": reference, "active": True},
             )
 
-        config, _ = MessagingConfig.objects.get_or_create(warehouse=locations["Barú"])
-        if not config.contacts.exists():
-            MessagingContact.objects.create(
-                config=config,
-                name="Contacto Barú 1",
-                phone="573000000001",
-                active=True,
+        target_contacts = {
+            "Barú": (
+                ("Contacto Barú 1", "573000000001"),
+                ("Contacto Barú 2", "573000000002"),
+            ),
+            "Compas": (("Contacto Compas local", "573000000003"),),
+            "Taumm": (("Contacto Taumm local", "573000000004"),),
+        }
+        for warehouse_name, contacts in target_contacts.items():
+            config, _ = MessagingConfig.objects.update_or_create(
+                warehouse=locations[warehouse_name],
+                defaults={"active": True, "updated_by": "seed_local_sanitized"},
             )
-            MessagingContact.objects.create(
-                config=config,
-                name="Contacto Barú 2",
-                phone="573000000002",
-                active=True,
-            )
-        provider_config, _ = MessagingConfig.objects.get_or_create(
-            warehouse=locations["Proveedores"]
-        )
-        if not provider_config.contacts.exists():
-            MessagingContact.objects.create(
-                config=provider_config,
-                name="Proveedor de prueba",
-                phone="573000000003",
-                active=True,
+            for contact_name, phone in contacts:
+                MessagingContact.objects.update_or_create(
+                    config=config,
+                    phone=phone,
+                    defaults={"name": contact_name, "active": True},
+                )
+        for warehouse_name in ("Proveedores", "Bodega Envía"):
+            MessagingConfig.objects.update_or_create(
+                warehouse=locations[warehouse_name],
+                defaults={"active": False, "updated_by": "seed_local_sanitized"},
             )
 
         now = timezone.now()
@@ -80,10 +82,15 @@ class Command(BaseCommand):
                 "visible_id": "19335",
                 "total": "1139718",
                 "customer": "Cliente multibodega",
-                "items": [("8844", "Artículo Barú", 3, "200000"), ("GV-L025", "Artículo proveedor", 1, "539718")],
+                "items": [
+                    ("8844", "Artículo Barú", 3, "200000"),
+                    ("GV-L025", "Artículo Compas", 1, "339718"),
+                    ("TAU-001", "Artículo Taumm", 2, "100000"),
+                ],
                 "shipments": [
                     ("local-19335-baru", "Barú", "", "", "without_guide", ["8844"]),
-                    ("local-19335-prov", "Proveedores", "", "", "without_guide", ["GV-L025"]),
+                    ("local-19335-compas", "Compas", "", "", "without_guide", ["GV-L025"]),
+                    ("local-19335-taumm", "Taumm", "", "", "without_guide", ["TAU-001"]),
                 ],
             },
             {
@@ -143,6 +150,15 @@ class Command(BaseCommand):
                     },
                 )
                 item_map[sku] = item
+            desired_shipment_ids = {
+                shipment_data[0] for shipment_data in example["shipments"]
+            }
+            # Solo limpia despachos obsoletos de esta fixture sanitizada. Nunca
+            # toca pedidos reales ni registros que no provengan de local_fixture.
+            Shipment.objects.filter(
+                order=order,
+                warehouse_assignment_source="local_fixture",
+            ).exclude(external_id__in=desired_shipment_ids).delete()
             for external_id, warehouse_name, tracking, carrier, state, skus in example["shipments"]:
                 shipment, _ = Shipment.objects.update_or_create(
                     order=order,

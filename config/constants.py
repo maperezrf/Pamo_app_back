@@ -31,6 +31,9 @@ PAMO_WHATSAPP_PILOT_RECIPIENT = config(
 PAMO_WHATSAPP_AUTO_PREPARE_ENABLED = config(
     "PAMO_WHATSAPP_AUTO_PREPARE_ENABLED", default=True, cast=bool
 )
+PAMO_WHATSAPP_SUPPLIER_AUTOMATION_ENABLED = config(
+    "PAMO_WHATSAPP_SUPPLIER_AUTOMATION_ENABLED", default=False, cast=bool
+)
 
 # Credenciales usadas solo por los comandos explícitos de lectura Siigo.
 SIIGO_USERNAME = config("SIIGO_USERNAME", default="")
