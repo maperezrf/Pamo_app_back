@@ -93,6 +93,11 @@ from .sodimac_kits import reverse_sodimac_kit_import
 from .channel_refresh import get_channel_refresh_state, start_channel_refresh
 from .connections import build_connections_workspace
 from .commercial_costs import enrich_commercial_payload
+from .shipping_delivery import (
+    ShippingDeliveryInputError,
+    shipping_delivery_workspace,
+    simulate_standard_shipping,
+)
 from .shopify_sync import (
     ShopifySyncError,
     execute_shopify_pilot,
@@ -126,6 +131,23 @@ class CatalogConnectionsAPI(APIView):
 
     def get(self, request):
         return Response(build_connections_workspace())
+
+
+class ShippingDeliveryWorkspaceAPI(APIView):
+    permission_classes = [LocalOrAuthenticatedCatalogAccess]
+
+    def get(self, request):
+        return Response(shipping_delivery_workspace())
+
+    def post(self, request):
+        try:
+            payload = request.data.dict() if hasattr(request.data, "dict") else dict(request.data)
+            return Response(simulate_standard_shipping(payload))
+        except ShippingDeliveryInputError as error:
+            return Response({
+                "detail": str(error),
+                "external_writes": 0,
+            }, status=400)
 
 
 CHANNEL_TABLE_CODES = {

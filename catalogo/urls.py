@@ -21,6 +21,7 @@ from .views import (
     PricingSimulationAPI,
     ShopifyImportPlanAPI,
     ShopifySyncWorkspaceAPI,
+    ShippingDeliveryWorkspaceAPI,
 )
 
 
@@ -28,6 +29,7 @@ urlpatterns = [
     path("workspace/", CatalogWorkspaceAPI.as_view(), name="catalog-workspace"),
     path("workspace/refresh-channels/", CatalogChannelRefreshAPI.as_view(), name="catalog-refresh-channels"),
     path("workspace/connections/", CatalogConnectionsAPI.as_view(), name="catalog-connections"),
+    path("shipping-delivery/workspace/", ShippingDeliveryWorkspaceAPI.as_view(), name="shipping-delivery-workspace"),
     path("workspace/column-options/", CatalogColumnOptionsAPI.as_view(), name="catalog-column-options"),
     path("alignment/", ChannelAlignmentAPI.as_view(), name="catalog-alignment"),
     path("pricing/simulate/", PricingSimulationAPI.as_view(), name="pricing-simulate"),

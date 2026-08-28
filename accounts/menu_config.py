@@ -63,4 +63,11 @@ MENU = [
             },
         ],
     },
+    {
+        "key": "envios-entrega",
+        "label": "Envíos y entrega",
+        "path": "/envios-entrega",
+        "roles": ["Admin", "Comercial", "Catalogo", "Logistica"],
+        "submodulos": [],
+    },
 ]
