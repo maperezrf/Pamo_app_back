@@ -165,6 +165,21 @@ class OrdersAPITests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["channels"], ["shopify"])
 
+    def test_locations_identify_shopify_and_local_records_without_deleting_history(self):
+        shopify_location = WarehouseLocation.objects.create(
+            external_id="gid://shopify/Location/123",
+            name="Barú",
+        )
+        self.login()
+
+        response = self.client.get("/api/pedidos/locations/")
+
+        self.assertEqual(response.status_code, 200)
+        by_id = {item["id"]: item for item in response.json()["locations"]}
+        self.assertEqual(by_id[str(self.location.id)]["source"], "local")
+        self.assertEqual(by_id[str(shopify_location.id)]["source"], "shopify")
+        self.assertIn("Shopify", by_id[str(shopify_location.id)]["display_name"])
+
     def test_sodimac_via_shopify_keeps_source_link_and_filters_by_business_origin(self):
         self.order.source_snapshot = {
             "canonicalImport": True,

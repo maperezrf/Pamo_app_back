@@ -252,6 +252,16 @@ class LocationsAPI(RoleRequiredMixin, APIView):
                         "external_id": location.external_id,
                         "name": location.name,
                         "reference": location.reference,
+                        "source": (
+                            "shopify"
+                            if location.external_id.startswith("gid://shopify/Location/")
+                            else "local"
+                        ),
+                        "display_name": (
+                            f"{location.name} · Shopify"
+                            if location.external_id.startswith("gid://shopify/Location/")
+                            else f"{location.name} · Local"
+                        ),
                     }
                     for location in WarehouseLocation.objects.filter(active=True)
                 ]
