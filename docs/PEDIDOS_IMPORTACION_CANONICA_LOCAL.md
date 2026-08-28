@@ -71,6 +71,28 @@ Antes de ejecutar, se deben establecer explícitamente la API canónica, la
 lectura externa y la base local; las escrituras externas deben permanecer
 apagadas.
 
+## Actualización automática local
+
+El planificador local ejecuta una lectura idempotente cada cinco minutos sin
+consultar directamente Shopify, Mercado Libre, Sodimac, Falabella o Envía. Su
+única fuente es la API canónica de Pedidos, por lo que no crea un segundo
+consumidor de los canales.
+
+```text
+python manage.py run_orders_sync_scheduler --loop --interval-seconds 300
+```
+
+- Cada ciclo normal vuelve a leer los dos días más recientes para absorber
+  pedidos, cambios de estado, guías y PDFs que aparezcan con retraso.
+- Cada 72 ciclos ejecuta una recuperación de 14 días. La recuperación histórica
+  de hasta 93 días permanece como comando manual para evitar miles de consultas
+  repetidas.
+- Un bloqueo exclusivo impide dos planificadores sobre la misma SQLite.
+- Si la fuente falla, los datos anteriores permanecen visibles y el estado se
+  marca como desactualizado sin vaciar la tabla.
+- El proceso se detiene antes de leer si la base no es SQLite local o si alguna
+  compuerta de escritura externa está habilitada.
+
 ## Siguiente fase: cotización y generación
 
 La cotización y generación de guías no está habilitada por esta importación.

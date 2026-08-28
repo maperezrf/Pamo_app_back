@@ -7,10 +7,14 @@ from os import environ
 from django.conf import settings
 from django.core.files.base import ContentFile
 from django.core.management.base import BaseCommand, CommandError
-from django.db import transaction
+from django.db import connection, transaction
 from django.utils import timezone
 
-from config.constants import ORDERS_EXTERNAL_READS_ENABLED, ORDERS_EXTERNAL_WRITES_ENABLED
+from config.constants import (
+    EXTERNAL_WRITES_ENABLED,
+    ORDERS_EXTERNAL_READS_ENABLED,
+    ORDERS_EXTERNAL_WRITES_ENABLED,
+)
 from integrations.orders.base import ExternalReadFailed
 from integrations.orders.canonical import PamoCanonicalOrdersProvider
 from pedidos.functions.canonical_import import apply_canonical_snapshot, apply_integration_readiness
@@ -31,9 +35,11 @@ class Command(BaseCommand):
         parser.add_argument("--label-workers", type=int, default=3)
 
     def handle(self, *args, **options):
+        if connection.vendor != "sqlite":
+            raise CommandError("La importación canónica sólo puede escribir en SQLite local.")
         if not ORDERS_EXTERNAL_READS_ENABLED:
             raise CommandError("ORDERS_EXTERNAL_READS_ENABLED debe estar activo para esta lectura explícita.")
-        if ORDERS_EXTERNAL_WRITES_ENABLED:
+        if EXTERNAL_WRITES_ENABLED or ORDERS_EXTERNAL_WRITES_ENABLED:
             raise CommandError("La importación exige ORDERS_EXTERNAL_WRITES_ENABLED=false.")
         try:
             from_date = date.fromisoformat(options["from_date"])
