@@ -168,11 +168,29 @@ class Command(BaseCommand):
                 availability = []
                 for level in levels:
                     location = level.get("location") or {}
+                    address = location.get("address") or {}
                     location_id = str(location.get("id") or level.get("id") or "UNKNOWN")
                     available = quantity(level)
                     availability.append(available)
                     level_time = observed(level.get("updatedAt") or raw_variant.get("updatedAt"))
-                    InventoryLevel.objects.create(variant=variant, location_external_id=location_id, location_name=location.get("name") or "Ubicación sin nombre", available=available, observed_at=level_time)
+                    InventoryLevel.objects.create(
+                        variant=variant,
+                        location_external_id=location_id,
+                        location_name=location.get("name") or "Ubicación sin nombre",
+                        available=available,
+                        observed_at=level_time,
+                        origin_address={
+                            key: address.get(key)
+                            for key in (
+                                "address1", "address2", "city", "province",
+                                "provinceCode", "zip", "country", "countryCode",
+                            )
+                            if address.get(key) not in (None, "")
+                        },
+                        address_verified=bool(location.get("addressVerified")),
+                        fulfills_online_orders=bool(location.get("fulfillsOnlineOrders")),
+                        location_active=location.get("isActive") is not False,
+                    )
                     InventorySourceSnapshot.objects.create(
                         variant=variant, source_name="Shopify ubicación", warehouse_external_id=location_id,
                         warehouse_name=location.get("name") or "Ubicación sin nombre", reported_stock=available,

@@ -1,7 +1,9 @@
 from django.contrib.auth import get_user_model
 from django.test import TestCase
+from django.utils import timezone
 
-from .shipping_delivery import ShippingDeliveryInputError, simulate_standard_shipping
+from .models import IntegrationReadStatus, InventoryLevel, LogisticsQuoteSnapshot, MasterProduct, ProductVariant
+from .shipping_delivery import ShippingDeliveryInputError, estimate_catalog_shipping, simulate_standard_shipping
 
 
 class ShippingDeliveryPhase1Tests(TestCase):
@@ -87,3 +89,57 @@ class ShippingDeliveryPhase1Tests(TestCase):
         )
         self.assertEqual(response.status_code, 400)
         self.assertEqual(response.json()["external_writes"], 0)
+
+    def test_catalog_estimate_uses_stock_origin_and_matching_envia_route(self):
+        product = MasterProduct.objects.create(
+            shopify_product_id="gid://shopify/Product/1", title="Prueba logística",
+            status="ACTIVE",
+        )
+        variant = ProductVariant.objects.create(
+            product=product, sku="SHIP-1", price="100000", provider_cost="35000",
+            shopify_variant_id="gid://shopify/ProductVariant/1",
+        )
+        InventoryLevel.objects.create(
+            variant=variant, location_external_id="loc-1", location_name="Bodega Envía",
+            available=5, observed_at=timezone.now(),
+            origin_address={"address1": "Calle 1", "city": "Bogotá", "countryCode": "CO"},
+            address_verified=True, fulfills_online_orders=True,
+        )
+        LogisticsQuoteSnapshot.objects.create(
+            variant=variant, provider="ENVIA",
+            basis=LogisticsQuoteSnapshot.Basis.CHECKOUT_ESTIMATE,
+            status=IntegrationReadStatus.Status.AVAILABLE,
+            destination={"city": "05001000", "state": "Antioquia"},
+            amount="16000", currency="COP", carrier="Coordinadora / Estándar",
+            delivery_estimate="2-3 días", observed_at=timezone.now(),
+            fingerprint="route-quote-1",
+        )
+        result = estimate_catalog_shipping({
+            "destination": {"city": "Medellín", "department": "Antioquia", "dane_code": "05001000"},
+            "items": [{"sku": "SHIP-1", "quantity": 1}],
+        })
+        self.assertEqual(result["status"], "LIVE_QUOTE_PREVIEW")
+        self.assertEqual(result["items"][0]["origins"][0]["location_name"], "Bodega Envía")
+        self.assertEqual(result["items"][0]["shipping"]["delivery_estimate"], "2-3 días")
+        self.assertEqual(result["order"]["estimated_shipping"], "16000")
+        self.assertFalse(result["guide_created"])
+        self.assertEqual(result["external_writes"], 0)
+
+    def test_catalog_estimate_blocks_when_location_stock_is_insufficient(self):
+        product = MasterProduct.objects.create(
+            shopify_product_id="gid://shopify/Product/2", title="Sin stock suficiente",
+            status="ACTIVE",
+        )
+        variant = ProductVariant.objects.create(
+            product=product, sku="SHIP-2", price="100000", provider_cost="35000",
+            shopify_variant_id="gid://shopify/ProductVariant/2",
+        )
+        InventoryLevel.objects.create(
+            variant=variant, location_external_id="loc-2", location_name="Proveedor",
+            available=1, observed_at=timezone.now(),
+        )
+        with self.assertRaisesRegex(ShippingDeliveryInputError, "inventario suficiente"):
+            estimate_catalog_shipping({
+                "destination": {"city": "Medellín", "department": "Antioquia"},
+                "items": [{"sku": "SHIP-2", "quantity": 2}],
+            })

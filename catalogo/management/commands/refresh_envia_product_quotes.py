@@ -191,6 +191,7 @@ class Command(BaseCommand):
                         "status": IntegrationReadStatus.Status.AVAILABLE, "destination": row.get("destination") or {},
                         "weight_kg": Decimal(str(package.get("weight_kg"))), "dimensions": package.get("dimensions_cm") or {},
                         "carrier": " / ".join(filter(None, [option.get("carrier"), option.get("service")])),
+                        "delivery_estimate": option.get("delivery_estimate") or "",
                         "amount": Decimal(str(amount)), "currency": option.get("currency") or "COP",
                         "evidence_reference": f"Envía /ship/rate non-binding option; {row.get('option_count') or 1} positive options require policy or human selection",
                         "observed_at": parse_datetime(row.get("observed_at") or "") or timezone.now(), "external_writes": 0,

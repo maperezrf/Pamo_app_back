@@ -6,14 +6,18 @@ margen mínimo del pedido después de descuentos y subsidio logístico.
 """
 
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+import re
 
-from .phase7 import build_average_shipping_reference
+from .commercial_costs import DRIVE_COST_RULES
+from .models import LogisticsQuoteSnapshot, ProductVariant
+from .phase7 import average_shipping_for_variant, build_average_shipping_reference
 
 
 ZERO = Decimal("0")
 HUNDRED = Decimal("100")
 MINIMUM_MARGIN_PERCENT = Decimal("20")
 FULFILLMENT_ORIGINS = {"ENVIA", "SUPPLIER"}
+DANE_CODE = re.compile(r"^\d{8}$")
 
 
 class ShippingDeliveryInputError(ValueError):
@@ -214,5 +218,239 @@ def simulate_standard_shipping(payload):
         },
         "quote_basis": "MANUAL_CITY_ESTIMATE_NOT_CARRIER_QUOTE",
         "warnings": warnings,
+        "external_writes": 0,
+    }
+
+
+def _variant_by_sku(sku):
+    matches = list(
+        ProductVariant.objects.select_related("product")
+        .prefetch_related("inventory_levels", "logistics_quotes", "channel_snapshots")
+        .filter(sku__iexact=sku)
+        .exclude(product__status="STALE_LOCAL_SNAPSHOT")[:2]
+    )
+    if not matches:
+        raise ShippingDeliveryInputError(f"El SKU {sku} no existe en el catálogo Shopify local.")
+    if len(matches) > 1:
+        raise ShippingDeliveryInputError(f"El SKU {sku} está duplicado y requiere revisión.")
+    return matches[0]
+
+
+def _allocate_origins(variant, quantity):
+    levels = [
+        level for level in variant.inventory_levels.all()
+        if level.location_active and level.available is not None and level.available > 0
+    ]
+    levels.sort(key=lambda level: (
+        not level.fulfills_online_orders,
+        "bodega envia" not in level.location_name.casefold(),
+        -level.available,
+        level.location_name.casefold(),
+    ))
+    remaining = Decimal(quantity)
+    allocations = []
+    for level in levels:
+        if remaining <= 0:
+            break
+        allocated = min(remaining, level.available)
+        allocations.append({
+            "location_id": level.location_external_id,
+            "location_name": level.location_name,
+            "quantity": _money(allocated),
+            "address": level.origin_address,
+            "address_verified": level.address_verified,
+            "fulfills_online_orders": level.fulfills_online_orders,
+            "observed_at": level.observed_at,
+            "live_quote_origin_ready": bool(
+                level.origin_address.get("address1")
+                and level.origin_address.get("city")
+                and level.origin_address.get("countryCode")
+            ),
+        })
+        remaining -= allocated
+    return allocations, remaining
+
+
+def _quote_matches_destination(quote, city, department, dane_code):
+    destination = quote.destination or {}
+    quoted_city = str(destination.get("city") or "").strip()
+    quoted_state = str(destination.get("state") or destination.get("department") or "").strip()
+    if dane_code and quoted_city == dane_code:
+        return True
+    return (
+        quoted_city.casefold() == city.casefold()
+        and (not quoted_state or quoted_state.casefold() == department.casefold())
+    )
+
+
+def _shipping_reference(variant, city, department, dane_code, average_reference):
+    quotes = [
+        quote for quote in variant.logistics_quotes.all()
+        if quote.provider == "ENVIA"
+        and quote.basis == LogisticsQuoteSnapshot.Basis.CHECKOUT_ESTIMATE
+        and quote.status == "AVAILABLE"
+        and quote.amount is not None
+        and _quote_matches_destination(quote, city, department, dane_code)
+    ]
+    if quotes:
+        newest = max(quote.observed_at for quote in quotes)
+        current = [quote for quote in quotes if quote.observed_at == newest]
+        selected = min(current, key=lambda quote: quote.amount)
+        return {
+            "amount": selected.amount,
+            "currency": selected.currency,
+            "basis": "ENVIA_CURRENT_ROUTE_QUOTE",
+            "classification": "CURRENT_NON_BINDING",
+            "carrier": selected.carrier,
+            "delivery_estimate": selected.delivery_estimate or None,
+            "observed_at": selected.observed_at,
+            "selection_policy": "CHEAPEST_STANDARD_PREVIEW",
+            "requires_final_quote": True,
+        }
+    average = average_shipping_for_variant(variant, average_reference)
+    if not average or average.get("amount") is None:
+        return None
+    return {
+        "amount": Decimal(str(average["amount"])),
+        "currency": average.get("currency") or "COP",
+        "basis": average.get("basis") or "HISTORICAL_GUIDE_REFERENCE",
+        "classification": "APPROXIMATE_HISTORICAL",
+        "carrier": None,
+        "delivery_estimate": None,
+        "observed_at": None,
+        "tariff_band": average.get("tariff_band"),
+        "requires_final_quote": True,
+    }
+
+
+def estimate_catalog_shipping(payload):
+    """Contrato Beta para la web: calcula el pedido sin crear guías ni escribir Shopify."""
+    destination = payload.get("destination") or {}
+    city = str(destination.get("city") or "").strip()
+    department = str(destination.get("department") or "").strip()
+    address = str(destination.get("address") or "").strip()
+    dane_code = str(destination.get("dane_code") or "").strip()
+    if not city or not department:
+        raise ShippingDeliveryInputError("El destino requiere city y department.")
+    if dane_code and not DANE_CODE.fullmatch(dane_code):
+        raise ShippingDeliveryInputError("dane_code debe tener 8 dígitos para Colombia.")
+    items = payload.get("items") or []
+    if not isinstance(items, list) or not items:
+        raise ShippingDeliveryInputError("El pedido requiere por lo menos un SKU.")
+    discount_percent = _decimal(
+        payload, "wholesale_discount_percent", required=False,
+        minimum=ZERO, maximum=HUNDRED,
+    ) or ZERO
+
+    average_reference = build_average_shipping_reference()
+    lines = []
+    subtotal = total_cost = total_reserve = shipping_total = ZERO
+    missing_cost = False
+    approximate = False
+    total_units = ZERO
+    for item in items:
+        sku = str((item or {}).get("sku") or "").strip()
+        if not sku:
+            raise ShippingDeliveryInputError("Cada producto requiere sku.")
+        try:
+            quantity = Decimal(str((item or {}).get("quantity") or 1))
+        except (InvalidOperation, TypeError, ValueError) as error:
+            raise ShippingDeliveryInputError(f"La cantidad de {sku} no es válida.") from error
+        if quantity <= 0 or quantity != quantity.to_integral_value():
+            raise ShippingDeliveryInputError(f"La cantidad de {sku} debe ser un entero positivo.")
+        variant = _variant_by_sku(sku)
+        if variant.price is None or variant.price <= 0:
+            raise ShippingDeliveryInputError(f"El SKU {sku} no tiene precio Shopify válido.")
+        allocations, shortage = _allocate_origins(variant, quantity)
+        if shortage > 0:
+            raise ShippingDeliveryInputError(
+                f"El SKU {sku} no tiene inventario suficiente por ubicación; faltan {_money(shortage)} unidades."
+            )
+        reference = _shipping_reference(
+            variant, city, department, dane_code, average_reference,
+        )
+        if not reference:
+            raise ShippingDeliveryInputError(f"El SKU {sku} no tiene una referencia de envío verificable.")
+        approximate = approximate or reference["classification"] != "CURRENT_NON_BINDING"
+        line_shipping = reference["amount"] * quantity
+        line_reserve = min(variant.price * Decimal("0.04"), Decimal("40000")) * quantity
+        line_cost = variant.provider_cost * quantity if variant.provider_cost else None
+        subtotal += variant.price * quantity
+        shipping_total += line_shipping
+        total_reserve += line_reserve
+        total_units += quantity
+        if line_cost is None:
+            missing_cost = True
+        else:
+            total_cost += line_cost
+        lines.append({
+            "sku": variant.sku,
+            "title": variant.product.title,
+            "quantity": _money(quantity),
+            "unit_price": _money(variant.price),
+            "unit_cost": _money(variant.provider_cost) if variant.provider_cost else None,
+            "origins": allocations,
+            "shipping": {**reference, "amount": _money(line_shipping)},
+            "logistics_reserve": _money(line_reserve),
+        })
+
+    net_revenue = subtotal * (HUNDRED - discount_percent) / HUNDRED
+    rule = DRIVE_COST_RULES["SHOPIFY"]
+    commission = (
+        net_revenue * rule["commission_percent"] / HUNDRED
+        + rule["commission_fixed"] * total_units
+    ) * (Decimal("1") + rule["commission_tax_percent"] / HUNDRED)
+    administration = net_revenue * rule["administrative_percent"] / HUNDRED
+    internal_fixed = (rule["operating_fixed"] + rule["additional_fixed"]) * total_units
+    margin_floor = net_revenue * rule["target_net_margin_percent"] / HUNDRED
+    profit_before_subsidy = (
+        net_revenue - total_cost - commission - administration - internal_fixed
+        if not missing_cost else ZERO
+    )
+    margin_capacity = max(ZERO, profit_before_subsidy - margin_floor)
+    protected_subsidy = (
+        min(shipping_total, total_reserve, margin_capacity)
+        if not missing_cost else ZERO
+    )
+    customer_charge = max(ZERO, shipping_total - protected_subsidy)
+    free_shipping = customer_charge == ZERO and not approximate and not missing_cost
+    warnings = []
+    if approximate:
+        warnings.append("La tarifa es histórica y aproximada; debe reemplazarse por la cotización Envía de la ruta antes de prometer el cobro.")
+    if not dane_code:
+        warnings.append("Falta resolver la ciudad al código DANE de 8 dígitos para consultar Envía en tiempo real.")
+    if not address:
+        warnings.append("La dirección se solicitará en checkout para completar la cotización final; no se guarda en este preview.")
+    if any(not origin["live_quote_origin_ready"] for line in lines for origin in line["origins"]):
+        warnings.append("Una o más bodegas no tienen dirección de origen completa para cotizar en tiempo real.")
+    if missing_cost:
+        warnings.append("Hay productos sin costo; el sistema no aplica subsidio ni promete envío gratis.")
+
+    return {
+        "status": "LIVE_QUOTE_PREVIEW" if not approximate else "APPROXIMATE_PREVIEW",
+        "destination": {
+            "city": city, "department": department, "dane_code": dane_code or None,
+            "country": "CO", "address_received": bool(address),
+        },
+        "items": lines,
+        "order": {
+            "subtotal": _money(subtotal),
+            "wholesale_discount_percent": _percent(discount_percent),
+            "net_revenue": _money(net_revenue),
+            "estimated_shipping": _money(shipping_total),
+            "logistics_reserve_available": _money(total_reserve),
+            "margin_safe_subsidy": _money(protected_subsidy),
+            "customer_shipping_charge": _money(customer_charge),
+            "free_shipping": free_shipping,
+            "minimum_margin_percent": _percent(rule["target_net_margin_percent"]),
+        },
+        "website_contract": {
+            "input": "city + department + address + cart SKUs; DANE resolved before live quote",
+            "output": "standard shipping amount, origin, quote basis and delivery estimate",
+            "publishable_now": not approximate and not missing_cost and bool(dane_code) and bool(address),
+        },
+        "warnings": warnings,
+        "guide_created": False,
+        "shopify_written": False,
         "external_writes": 0,
     }

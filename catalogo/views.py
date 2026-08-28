@@ -95,6 +95,7 @@ from .connections import build_connections_workspace
 from .commercial_costs import enrich_commercial_payload
 from .shipping_delivery import (
     ShippingDeliveryInputError,
+    estimate_catalog_shipping,
     shipping_delivery_workspace,
     simulate_standard_shipping,
 )
@@ -148,6 +149,17 @@ class ShippingDeliveryWorkspaceAPI(APIView):
                 "detail": str(error),
                 "external_writes": 0,
             }, status=400)
+
+
+class ShippingDeliveryEstimateAPI(APIView):
+    permission_classes = [LocalOrAuthenticatedCatalogAccess]
+
+    def post(self, request):
+        try:
+            payload = request.data.dict() if hasattr(request.data, "dict") else dict(request.data)
+            return Response(estimate_catalog_shipping(payload))
+        except ShippingDeliveryInputError as error:
+            return Response({"detail": str(error), "external_writes": 0}, status=400)
 
 
 CHANNEL_TABLE_CODES = {

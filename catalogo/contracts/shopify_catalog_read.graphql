@@ -21,7 +21,23 @@ query MerciCatalogRead($first: Int!, $after: String, $updatedQuery: String) {
         inventoryLevels(first: 100) {
           nodes {
             id
-            location { id name }
+            location {
+              id
+              name
+              isActive
+              fulfillsOnlineOrders
+              addressVerified
+              address {
+                address1
+                address2
+                city
+                province
+                provinceCode
+                zip
+                country
+                countryCode
+              }
+            }
             quantities(names: ["available", "reserved", "committed", "incoming", "on_hand"]) { name quantity }
             updatedAt
           }

@@ -36,7 +36,10 @@ class ProviderConfigSerializer(serializers.ModelSerializer):
 class InventoryLevelSerializer(serializers.ModelSerializer):
     class Meta:
         model = InventoryLevel
-        fields = ["location_external_id", "location_name", "available", "observed_at"]
+        fields = [
+            "location_external_id", "location_name", "available", "observed_at",
+            "fulfills_online_orders", "location_active",
+        ]
 
 
 class IntegrationReadStatusSerializer(serializers.ModelSerializer):

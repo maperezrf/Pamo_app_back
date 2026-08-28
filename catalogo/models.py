@@ -212,6 +212,10 @@ class InventoryLevel(models.Model):
     location_name = models.CharField(max_length=160)
     available = models.DecimalField(max_digits=14, decimal_places=3, null=True, blank=True)
     observed_at = models.DateTimeField()
+    origin_address = models.JSONField(default=dict, blank=True)
+    address_verified = models.BooleanField(default=False)
+    fulfills_online_orders = models.BooleanField(default=False)
+    location_active = models.BooleanField(default=True)
 
     class Meta:
         constraints = [models.UniqueConstraint(fields=["variant", "location_external_id"], name="unique_variant_location")]
@@ -563,6 +567,7 @@ class LogisticsQuoteSnapshot(models.Model):
     weight_kg = models.DecimalField(max_digits=10, decimal_places=3, null=True, blank=True)
     dimensions = models.JSONField(default=dict, blank=True)
     carrier = models.CharField(max_length=120, blank=True)
+    delivery_estimate = models.CharField(max_length=120, blank=True)
     amount = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
     currency = models.CharField(max_length=3, default="COP")
     evidence_reference = models.CharField(max_length=300, blank=True)
