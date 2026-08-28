@@ -20,6 +20,27 @@ MENU = [
         "label": "Prototipos",
         "path": "/prototipos",
         "roles": ["Admin"],
+        "submodulos": [
+            {
+                "key": "remisiones",
+                "label": "Remisiones",
+                "path": "/prototipos/remisiones",
+                "roles": ["Admin", "Operaciones", "Logistica"],
+            },
+        ],
+    },
+    {
+        "key": "remisiones",
+        "label": "Remisiones",
+        "path": "/remisiones",
+        "roles": ["Admin", "Operaciones", "Logistica"],
+        "submodulos": [],
+    },
+    {
+        "key": "facturacion-remisiones",
+        "label": "Facturación de remisiones",
+        "path": "/contabilidad/remisiones",
+        "roles": ["Admin", "Facturacion"],
         "submodulos": [],
     },
     {

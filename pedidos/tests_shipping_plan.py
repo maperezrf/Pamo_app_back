@@ -22,7 +22,7 @@ User = get_user_model()
 
 class ShipmentShippingPlanTests(TestCase):
     def setUp(self):
-        group = Group.objects.create(name="Operaciones")
+        group, _ = Group.objects.get_or_create(name="Operaciones")
         self.user = User.objects.create_user(
             username="qa.shipping@pamo.test",
             email="qa.shipping@pamo.test",

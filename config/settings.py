@@ -29,6 +29,7 @@ INSTALLED_APPS = [
     'corsheaders',
     'accounts',
     'feature_tracking',
+    'facturacion',
     'catalogo',
     'pedidos',
     'communications',
@@ -117,8 +118,9 @@ STATIC_URL = 'static/'
 STATIC_ROOT = BASE_DIR / 'staticfiles'
 STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
 
-# Los documentos de guía son privados: no se declara MEDIA_URL ni se sirven
-# desde Django static. Sólo salen por un endpoint autenticado de Pedidos.
+# Los documentos de guía y los adjuntos de facturas son privados: no se
+# declara MEDIA_URL ni se sirven desde Django static. Sólo salen por endpoints
+# autenticados de sus módulos.
 PRIVATE_UPLOAD_ROOT = BASE_DIR / 'private_uploads'
 MEDIA_ROOT = PRIVATE_UPLOAD_ROOT
 
