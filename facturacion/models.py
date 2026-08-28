@@ -118,6 +118,7 @@ class Remittance(models.Model):
     supplier_global_discount_value = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
     supplier_other_charges = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
     supplier_freight_cost = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
+    default_margin_percent = models.DecimalField(max_digits=6, decimal_places=3, default=Decimal("35.000"))
     created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="created_remittances")
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -150,6 +151,7 @@ class RemittanceLine(models.Model):
     siigo_sku = models.CharField(max_length=120, blank=True)
     invoice_description = models.CharField(max_length=500, blank=True)
     invoice_unit_price = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
+    invoice_margin_percent = models.DecimalField(max_digits=6, decimal_places=3, null=True, blank=True)
     override_reason = models.CharField(max_length=500, blank=True)
 
     class Meta:

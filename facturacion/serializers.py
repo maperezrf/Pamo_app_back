@@ -1,7 +1,13 @@
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 
 from django.db import transaction
 from rest_framework import serializers
+
+try:
+    from catalogo.models import SiigoProductSnapshot
+except ModuleNotFoundError:  # La rama de Facturación puede revisarse sin activar Catálogo.
+    SiigoProductSnapshot = None
+from .functions.remittance_domain import calculate_supplier_commercials
 
 from .models import (
     AuthorizedPerson,
@@ -56,7 +62,7 @@ class RemittanceLineSerializer(serializers.ModelSerializer):
             "supplier_sku", "supplier_unit_cost", "supplier_line_total",
             "supplier_discount_percent", "supplier_discount_value",
             "siigo_sku", "invoice_description",
-            "invoice_unit_price", "override_reason",
+            "invoice_unit_price", "invoice_margin_percent", "override_reason",
         ]
         read_only_fields = ["id", "line_number"]
 
@@ -68,8 +74,53 @@ class RemittanceLineSerializer(serializers.ModelSerializer):
                 "supplier_sku", "supplier_unit_cost", "supplier_line_total",
                 "supplier_discount_percent", "supplier_discount_value", "siigo_sku",
                 "invoice_description", "invoice_unit_price", "override_reason",
+                "invoice_margin_percent",
             ]:
                 representation.pop(field, None)
+        elif representation.get("lines"):
+            source_lines = [{
+                "id": line.id,
+                "quantity": line.quantity,
+                "supplier_unit_cost": line.supplier_unit_cost,
+                "supplier_line_total": line.supplier_line_total,
+                "supplier_discount_percent": line.supplier_discount_percent,
+                "supplier_discount_value": line.supplier_discount_value,
+            } for line in instance.lines.all()]
+            commercial_rows = calculate_supplier_commercials(
+                source_lines,
+                profile={"margin_rate": "0", "rounding_increment": "100"},
+                document={
+                    "supplier_global_discount_percent": instance.supplier_global_discount_percent,
+                    "supplier_global_discount_value": instance.supplier_global_discount_value,
+                    "supplier_other_charges": instance.supplier_other_charges,
+                    "supplier_freight_cost": instance.supplier_freight_cost,
+                },
+            )
+            cost_by_id = {str(row["id"]): row["net_unit_cost"] for row in commercial_rows}
+            skus = {str(line.get("siigo_sku") or "").upper() for line in representation["lines"]}
+            snapshots = {} if SiigoProductSnapshot is None else {
+                item.sku.upper(): item
+                for item in SiigoProductSnapshot.objects.filter(active=True, sku__in=skus)
+            }
+            for line in representation["lines"]:
+                cost = cost_by_id.get(str(line["id"]))
+                snapshot = snapshots.get(str(line.get("siigo_sku") or "").upper())
+                rate = snapshot.tax_rate if snapshot and snapshot.tax_rate is not None else None
+                included = snapshot.tax_included is True if snapshot else None
+                price = Decimal(str(line["invoice_unit_price"])) if line.get("invoice_unit_price") is not None else None
+                multiplier = Decimal("1") + (rate / Decimal("100")) if rate is not None else None
+                line["supplier_net_unit_cost"] = cost
+                line["supplier_net_unit_cost_with_tax"] = (
+                    (cost * multiplier).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+                    if cost is not None and multiplier is not None else None
+                )
+                line["invoice_tax_rate"] = rate
+                line["invoice_tax_included"] = included
+                line["invoice_taxable_unit_price"] = price
+                line["invoice_final_unit_price_with_tax"] = (
+                    (price * multiplier).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+                    if price is not None and multiplier is not None else None
+                )
         return representation
 
 
@@ -106,6 +157,7 @@ class RemittanceSerializer(serializers.ModelSerializer):
             "delivery_status", "invoice_status", "communication_status", "lines", "delivery",
             "supplier_global_discount_percent", "supplier_global_discount_value",
             "supplier_other_charges", "supplier_freight_cost", "supplier_invoice_files",
+            "default_margin_percent",
             "signature_status", "signed_by", "signed_at", "created_at", "updated_at", "confirmed_at",
         ]
         read_only_fields = [
@@ -131,6 +183,7 @@ class RemittanceSerializer(serializers.ModelSerializer):
             for field in [
                 "supplier_global_discount_percent", "supplier_global_discount_value",
                 "supplier_other_charges", "supplier_freight_cost", "supplier_invoice_files",
+                "default_margin_percent",
             ]:
                 representation.pop(field, None)
         return representation
