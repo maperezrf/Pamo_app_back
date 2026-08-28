@@ -1,0 +1,93 @@
+{
+  "schema_version": "1.0",
+  "skill": {
+    "name": "pamo-carga-a-prototipos",
+    "version": "1.0.0"
+  },
+  "handoff_id": "20260827-2258-pedidos-multibodega-guias-v001",
+  "idempotency_key": "sha256:246208ca7232ddd3397d20ccfbadf93ec77e99da933433b00590b1eeb41d3630",
+  "status": "READY_FOR_REVIEW",
+  "origin": {
+    "type": "local",
+    "available": true
+  },
+  "repositories": [
+    {
+      "role": "front",
+      "repository": "maperezrf/pamo_app_front",
+      "branch": "handoff/pedidos-multibodega-guides-20260827",
+      "base_branch": "dev",
+      "base_sha": "9ec356d4fc09210995320021094dc4a1c8b74839",
+      "delivery_sha": "84c512df913521710e104cf0eab378c7189f85ab",
+      "pr_url": null,
+      "changed": true
+    },
+    {
+      "role": "back",
+      "repository": "maperezrf/Pamo_app_back",
+      "branch": "handoff/pedidos-multibodega-guides-20260827",
+      "base_branch": "dev",
+      "base_sha": "580cab28c0a67e379b55fcf38e8ae5df8850701a",
+      "delivery_sha": "5b91751e2d88851bfe29cdec75bee691021f2d5c",
+      "pr_url": null,
+      "changed": true
+    }
+  ],
+  "tests": [
+    {"scope": "backend", "name": "manage.py check", "status": "PASS"},
+    {"scope": "backend", "name": "manage.py test", "status": "PASS", "count": 256},
+    {"scope": "frontend", "name": "npm run lint", "status": "PASS_WITH_WARNINGS"},
+    {"scope": "frontend", "name": "npm run build", "status": "PASS"},
+    {"scope": "orders", "name": "desktop and mobile local QA", "status": "PASS"}
+  ],
+  "governance": {
+    "documents": [
+      "mapa_documentacion",
+      "lineamientos_generales",
+      "lineamientos_frontend",
+      "lineamientos_backend",
+      "lineamientos_identidad_visual",
+      "lineamientos_git",
+      "lineamientos_prototipos",
+      "listar_prototipos"
+    ],
+    "exceptions": [
+      {
+        "type": "secret_scanner_false_positive",
+        "rule": "assigned-secret",
+        "authorization": "explicit_user_authorization_2026-08-27",
+        "scope": "dynamic environment reads, runtime generation, webhook input and test placeholder; no literal secret versioned"
+      }
+    ]
+  },
+  "migrations": [
+    "catalogo:0001-0015",
+    "pedidos:0001-0006",
+    "communications:0001-0003"
+  ],
+  "infrastructure_changes": [],
+  "data_effects": [
+    "No migrations applied",
+    "No real database writes",
+    "No external orders, labels or messages created"
+  ],
+  "security_findings": [
+    {
+      "rule": "assigned-secret",
+      "status": "REVIEWED_FALSE_POSITIVE",
+      "value_exposed": false
+    }
+  ],
+  "prototype": {
+    "id": null,
+    "canonical_url": null
+  },
+  "webhook_owned_fields": [
+    "merged_to_desarrollo",
+    "merged_to_produccion",
+    "url_merge_request",
+    "github_event_id",
+    "ultima_actualizacion_webhook"
+  ],
+  "external_writes": 0
+}
