@@ -5,7 +5,7 @@ from django.conf import settings
 from django.db import transaction
 
 from pedidos.functions.messaging import render_message
-from pedidos.models import MessagingContact, Shipment
+from pedidos.models import LogisticsAudit, MessagingContact, Shipment
 
 from .interactive import (
     InteractivePayloadError,
@@ -54,8 +54,38 @@ def trusted_shopify_warehouse(shipment):
     )
 
 
+def trusted_manual_warehouse(shipment):
+    """Accept only a locked, audited assignment to an active location record."""
+    if (
+        not shipment.warehouse_id
+        or not shipment.warehouse.active
+        or not shipment.warehouse_locked
+        or shipment.warehouse_assignment_source != "manual"
+    ):
+        return False
+    audit_marker = f"warehouse_location_id={shipment.warehouse_id}"
+    return LogisticsAudit.objects.filter(
+        shipment=shipment,
+        field="warehouse",
+        source="manual",
+        detail__contains=audit_marker,
+    ).exists()
+
+
+def warehouse_trust_source(shipment):
+    if trusted_shopify_warehouse(shipment):
+        return "shopify"
+    if trusted_manual_warehouse(shipment):
+        return "manual_audited"
+    return "untrusted"
+
+
+def trusted_operational_warehouse(shipment):
+    return warehouse_trust_source(shipment) != "untrusted"
+
+
 def _active_contacts(shipment):
-    if not trusted_shopify_warehouse(shipment):
+    if not trusted_operational_warehouse(shipment):
         return []
     return list(
         MessagingContact.objects.filter(
@@ -87,6 +117,7 @@ def recipient_options(shipment_ids):
                 "order": shipment.order.visible_id,
                 "warehouse": shipment.effective_warehouse_name or "Sin asignar",
                 "trustedShopifyWarehouse": trusted_shopify_warehouse(shipment),
+                "warehouseTrust": warehouse_trust_source(shipment),
                 "contacts": [
                     {
                         "id": str(contact.id),
@@ -234,9 +265,14 @@ def _draft_defaults(*, shipment, contact, message_kind, actor, auto_prepared):
 def create_workflow_draft(
     *, shipment, contact, message_kind, actor, auto_prepared=False
 ):
-    if not trusted_shopify_warehouse(shipment):
+    if not trusted_operational_warehouse(shipment):
         raise DraftValidationError(
-            {"warehouse": ["La ubicación de Shopify no es verificable para este despacho."]}
+            {
+                "warehouse": [
+                    "La bodega debe venir verificada desde Shopify o quedar asignada "
+                    "manualmente con bloqueo y auditoría."
+                ]
+            }
         )
     if not contact or contact.config.warehouse_id != shipment.warehouse_id or not contact.active:
         raise DraftValidationError(
@@ -343,7 +379,7 @@ def auto_prepare_new_shipments(shipments, *, actor="system:canonical-import"):
             .prefetch_related("shipment_items__order_item")
             .first()
         )
-        if not shipment or not trusted_shopify_warehouse(shipment):
+        if not shipment or not trusted_operational_warehouse(shipment):
             result["skippedUntrustedWarehouse"] += 1
             continue
         contacts = _active_contacts(shipment)

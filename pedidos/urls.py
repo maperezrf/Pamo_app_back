@@ -16,6 +16,7 @@ from .views import (
     ShipmentAPI,
     ShipmentDocumentAPI,
     ShipmentIncidentAPI,
+    ShipmentShippingPlanAPI,
     SupplierResponseSimulationAPI,
 )
 
@@ -37,6 +38,11 @@ urlpatterns = [
         name="pedidos-messaging-manual-detail",
     ),
     path("shipments/<uuid:shipment_id>/", ShipmentAPI.as_view(), name="pedidos-shipment"),
+    path(
+        "shipments/<uuid:shipment_id>/shipping-plan/",
+        ShipmentShippingPlanAPI.as_view(),
+        name="pedidos-shipment-shipping-plan",
+    ),
     path(
         "shipments/<uuid:shipment_id>/incident/",
         ShipmentIncidentAPI.as_view(),

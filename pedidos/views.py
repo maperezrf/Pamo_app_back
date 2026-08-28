@@ -24,6 +24,13 @@ from config.constants import (
 from .functions.messaging import prepare_manual_followups
 from .functions.querysets import operational_orders
 from .functions.serializers import order_detail, order_row, shipment_dict, whatsapp_url
+from .functions.shipping_plan import (
+    ShippingPlanError,
+    normalize_destination,
+    normalize_package,
+    select_quote,
+    shipment_shipping_plan,
+)
 from .functions.supplier_responses import (
     SupplierResponseError,
     apply_supplier_novelty_category,
@@ -95,6 +102,10 @@ class OrdersOverviewAPI(RoleRequiredMixin, APIView):
                 "exceptions": shipments.filter(
                     Q(incident_category__gt="") | Q(novelties__state="open")
                 ).distinct().count(),
+                "unassigned": orders.filter(
+                    Q(shipments__warehouse__isnull=True)
+                    & (Q(shipments__warehouse_name="") | Q(shipments__warehouse_name__isnull=True))
+                ).distinct().count(),
                 "split": orders.annotate(shipment_total=Count("shipments")).filter(
                     shipment_total__gt=1
                 ).count(),
@@ -146,6 +157,16 @@ class OrdersListAPI(RoleRequiredMixin, APIView):
             queryset = queryset.filter(
                 Q(shipments__warehouse__name__iexact=warehouse)
                 | Q(shipments__warehouse_name__iexact=warehouse)
+            )
+        assignment = request.query_params.get("assignment", "").strip()
+        if assignment == "unassigned":
+            queryset = queryset.filter(
+                Q(shipments__warehouse__isnull=True)
+                & (Q(shipments__warehouse_name="") | Q(shipments__warehouse_name__isnull=True))
+            )
+        elif assignment == "assigned":
+            queryset = queryset.filter(
+                Q(shipments__warehouse__isnull=False) | Q(shipments__warehouse_name__gt="")
             )
         logistics_state = request.query_params.get("logistics_state", "").strip()
         if logistics_state:
@@ -372,7 +393,12 @@ class ShipmentAPI(RoleRequiredMixin, APIView):
             if not warehouse:
                 return Response({"warehouse_location_id": ["Bodega inválida."]}, status=400)
             old_value = shipment.effective_warehouse_name
-            if shipment.warehouse_id != warehouse.id:
+            manual_confirmation_needed = (
+                shipment.warehouse_id != warehouse.id
+                or not shipment.warehouse_locked
+                or shipment.warehouse_assignment_source != "manual"
+            )
+            if manual_confirmation_needed:
                 shipment.warehouse = warehouse
                 shipment.warehouse_name = warehouse.name
                 shipment.warehouse_reference = warehouse.reference
@@ -385,7 +411,10 @@ class ShipmentAPI(RoleRequiredMixin, APIView):
                     new_value=warehouse.name,
                     actor=actor,
                     source="manual",
-                    detail="Asignación manual protegida contra sincronización.",
+                    detail=(
+                        "Asignación manual protegida contra sincronización. "
+                        f"warehouse_location_id={warehouse.id}"
+                    ),
                 )
                 changed.append("warehouse")
 
@@ -393,6 +422,143 @@ class ShipmentAPI(RoleRequiredMixin, APIView):
             shipment.version += 1
             shipment.save()
         return Response({"shipment": shipment_dict(shipment, detailed=True), "changed": changed})
+
+
+class ShipmentShippingPlanAPI(RoleRequiredMixin, APIView):
+    allowed_roles = OPERATOR_ROLES
+
+    @staticmethod
+    def _shipment(shipment_id, *, lock=False):
+        queryset = Shipment.objects.select_related("order", "warehouse", "document").prefetch_related(
+            "shipment_items__order_item",
+        )
+        if lock:
+            queryset = queryset.select_for_update()
+        return queryset.filter(id=shipment_id).first()
+
+    def get(self, request, shipment_id):
+        shipment = self._shipment(shipment_id)
+        if not shipment:
+            return Response({"detail": "Despacho no encontrado."}, status=404)
+        return Response(shipment_shipping_plan(shipment))
+
+    @transaction.atomic
+    def patch(self, request, shipment_id):
+        shipment = self._shipment(shipment_id, lock=True)
+        if not shipment:
+            return Response({"detail": "Despacho no encontrado."}, status=404)
+        if request.data.get("version") not in (None, shipment.version, str(shipment.version)):
+            return Response(
+                {"detail": "El despacho cambió. Recarga antes de volver a guardar.", "version": shipment.version},
+                status=409,
+            )
+        actor = actor_name(request)
+        changed = []
+        reset_quote = False
+        try:
+            if "destination" in request.data:
+                destination = normalize_destination(request.data.get("destination"))
+                if destination != shipment.shipping_destination:
+                    shipment.shipping_destination = destination
+                    reset_quote = True
+                    changed.append("shipping_destination")
+                    LogisticsAudit.objects.create(
+                        shipment=shipment,
+                        field="shipping_destination",
+                        actor=actor,
+                        source="manual",
+                        detail=(
+                            "Destino operativo actualizado; la dirección no se copia en auditoría. "
+                            f"city={destination.get('city')}; dane={destination.get('dane_code')}"
+                        ),
+                    )
+            if "package" in request.data:
+                package = normalize_package(request.data.get("package"))
+                if package != shipment.shipping_package:
+                    shipment.shipping_package = package
+                    reset_quote = True
+                    changed.append("shipping_package")
+                    LogisticsAudit.objects.create(
+                        shipment=shipment,
+                        field="shipping_package",
+                        actor=actor,
+                        source="manual",
+                        detail="Peso y medidas de empaque confirmados manualmente para el despacho.",
+                    )
+            if reset_quote:
+                shipment.shipping_quote_selection = {}
+                shipment.guide_request_state = "not_ready"
+            if changed:
+                shipment.version += 1
+                shipment.save()
+
+            fingerprint = str(request.data.get("quote_fingerprint") or "").strip()
+            if fingerprint:
+                selection = select_quote(shipment, fingerprint)
+                shipment.shipping_quote_selection = selection
+                shipment.guide_request_state = "selected"
+                shipment.version += 1
+                shipment.save(
+                    update_fields=[
+                        "shipping_quote_selection",
+                        "guide_request_state",
+                        "version",
+                        "updated_at",
+                    ]
+                )
+                changed.append("shipping_quote_selection")
+                LogisticsAudit.objects.create(
+                    shipment=shipment,
+                    field="shipping_quote_selection",
+                    actor=actor,
+                    source="manual",
+                    detail=(
+                        f"Tarifa no vinculante seleccionada: {selection['carrier']} "
+                        f"{selection['amount']} {selection['currency']}."
+                    ),
+                )
+        except ShippingPlanError as error:
+            return Response({"detail": str(error), "externalWrites": 0}, status=400)
+
+        plan = shipment_shipping_plan(shipment)
+        calculated = plan["calculatedState"]
+        if shipment.guide_request_state not in {"prepared", "created"} and calculated != shipment.guide_request_state:
+            shipment.guide_request_state = calculated
+            shipment.save(update_fields=["guide_request_state", "updated_at"])
+            plan["guideRequestState"] = calculated
+        return Response({"plan": plan, "changed": changed, "version": shipment.version})
+
+    @transaction.atomic
+    def post(self, request, shipment_id):
+        shipment = self._shipment(shipment_id, lock=True)
+        if not shipment:
+            return Response({"detail": "Despacho no encontrado."}, status=404)
+        if request.data.get("action") != "prepare":
+            return Response({"detail": "Acción no válida.", "externalWrites": 0}, status=400)
+        plan = shipment_shipping_plan(shipment)
+        if not plan["readyToPrepare"]:
+            return Response(
+                {
+                    "detail": "El despacho todavía no está listo para generar guía.",
+                    "blockers": plan["blockers"],
+                    "externalWrites": 0,
+                },
+                status=409,
+            )
+        shipment.guide_request_state = "prepared"
+        shipment.version += 1
+        shipment.save(update_fields=["guide_request_state", "version", "updated_at"])
+        LogisticsAudit.objects.create(
+            shipment=shipment,
+            field="guide_request_state",
+            previous_value="selected",
+            new_value="prepared",
+            actor=actor_name(request),
+            source="manual",
+            detail="Preparación local aprobada; no se compró ni generó ninguna guía. externalWrites=0.",
+        )
+        plan["guideRequestState"] = "prepared"
+        return Response({"plan": plan, "prepared": True, "externalWrites": 0})
 
 
 class ShipmentIncidentAPI(RoleRequiredMixin, APIView):

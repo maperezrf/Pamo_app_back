@@ -98,6 +98,15 @@ class Shipment(models.Model):
         ("sent", "Enviada"),
         ("failed", "Fallo de envío"),
     ]
+    GUIDE_REQUEST_STATES = [
+        ("not_ready", "Datos incompletos"),
+        ("ready_to_quote", "Listo para cotizar"),
+        ("quoted", "Cotizado"),
+        ("selected", "Tarifa seleccionada"),
+        ("prepared", "Preparado para generar"),
+        ("created", "Guía creada"),
+        ("failed", "Fallo al generar"),
+    ]
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     order = models.ForeignKey(Order, related_name="shipments", on_delete=models.CASCADE)
@@ -130,6 +139,15 @@ class Shipment(models.Model):
     incident_category = models.CharField(max_length=80, blank=True)
     incident_detail = models.TextField(blank=True)
     customer_context = models.TextField(blank=True)
+    shipping_destination = models.JSONField(default=dict, blank=True)
+    shipping_package = models.JSONField(default=dict, blank=True)
+    shipping_quote_selection = models.JSONField(default=dict, blank=True)
+    guide_request_state = models.CharField(
+        max_length=24,
+        choices=GUIDE_REQUEST_STATES,
+        default="not_ready",
+        db_index=True,
+    )
     messaging_state = models.CharField(max_length=60, default="draft")
     supplier_state = models.CharField(
         max_length=40,

@@ -29,6 +29,10 @@ def shipment_dict(shipment, *, detailed=False):
         "incident_category": shipment.incident_category or None,
         "incident_detail": shipment.incident_detail or None,
         "customer_context": shipment.customer_context or None,
+        "shipping_destination": shipment.shipping_destination,
+        "shipping_package": shipment.shipping_package,
+        "shipping_quote_selection": shipment.shipping_quote_selection,
+        "guide_request_state": shipment.guide_request_state,
         "messaging_state": shipment.messaging_state,
         "supplier_state": shipment.supplier_state,
         "supplier_state_updated_at": (

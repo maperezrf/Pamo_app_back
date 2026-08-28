@@ -20,6 +20,7 @@ from pedidos.models import (
     ShipmentDocument,
     ShipmentItem,
     WarehouseLocation,
+    LogisticsAudit,
 )
 
 from .models import (
@@ -209,7 +210,66 @@ class WhatsAppPlatformTests(TestCase):
         self.assertEqual(response.status_code, 200)
         contacts = response.json()["shipments"][0]["contacts"]
         self.assertEqual([item["id"] for item in contacts], [str(self.contact.id)])
+        self.assertEqual(response.json()["shipments"][0]["warehouseTrust"], "shopify")
         self.assertNotIn(self.contact.phone, json.dumps(response.json()))
+
+    def test_audited_locked_manual_warehouse_can_use_its_contacts(self):
+        self.shipment.source_snapshot = {}
+        self.shipment.warehouse_locked = True
+        self.shipment.warehouse_assignment_source = "manual"
+        self.shipment.save(
+            update_fields=[
+                "source_snapshot",
+                "warehouse_locked",
+                "warehouse_assignment_source",
+            ]
+        )
+        LogisticsAudit.objects.create(
+            shipment=self.shipment,
+            field="warehouse",
+            previous_value="",
+            new_value=self.warehouse.name,
+            actor="qa.whatsapp@pamo.test",
+            source="manual",
+            detail=f"Asignación manual protegida. warehouse_location_id={self.warehouse.id}",
+        )
+
+        response = self.client.post(
+            "/api/communications/whatsapp/recipients/",
+            data={"shipment_ids": [str(self.shipment.id)]},
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        shipment_payload = response.json()["shipments"][0]
+        self.assertEqual(shipment_payload["warehouseTrust"], "manual_audited")
+        self.assertEqual(
+            [item["id"] for item in shipment_payload["contacts"]],
+            [str(self.contact.id)],
+        )
+
+    def test_unlocked_or_unaudited_manual_warehouse_cannot_message(self):
+        self.shipment.source_snapshot = {}
+        self.shipment.warehouse_assignment_source = "manual"
+        self.shipment.warehouse_locked = True
+        self.shipment.save(
+            update_fields=[
+                "source_snapshot",
+                "warehouse_assignment_source",
+                "warehouse_locked",
+            ]
+        )
+
+        response = self.client.post(
+            "/api/communications/whatsapp/recipients/",
+            data={"shipment_ids": [str(self.shipment.id)]},
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        shipment_payload = response.json()["shipments"][0]
+        self.assertEqual(shipment_payload["warehouseTrust"], "untrusted")
+        self.assertEqual(shipment_payload["contacts"], [])
 
     def test_draft_preview_is_idempotent_and_requires_explicit_contact(self):
         first = self.client.post(

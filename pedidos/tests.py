@@ -246,6 +246,31 @@ class OrdersAPITests(TestCase):
         self.assertTrue(self.shipment_a.warehouse_locked)
         self.assertEqual(self.shipment_a.warehouse_assignment_source, "manual")
         self.assertEqual(LogisticsAudit.objects.filter(field="warehouse").count(), 1)
+        self.assertIn(
+            f"warehouse_location_id={self.provider_location.id}",
+            LogisticsAudit.objects.get(field="warehouse").detail,
+        )
+
+    def test_unassigned_filter_and_overview_count_orders_needing_camila(self):
+        order = Order.objects.create(
+            channel="shopify",
+            external_id="qa-shopify-unassigned",
+            visible_id="19337",
+            placed_at=timezone.now(),
+            customer_name="Pedido sin bodega QA",
+            grand_total=Decimal("50000"),
+        )
+        Shipment.objects.create(order=order, external_id="shipment-unassigned")
+        self.login()
+
+        filtered = self.client.get("/api/pedidos/?assignment=unassigned")
+        overview = self.client.get("/api/pedidos/overview/")
+
+        self.assertEqual(filtered.status_code, 200)
+        self.assertEqual(filtered.json()["total"], 1)
+        self.assertEqual(filtered.json()["orders"][0]["channel_order_id"], "19337")
+        self.assertEqual(overview.status_code, 200)
+        self.assertEqual(overview.json()["unassigned"], 1)
 
     def test_stale_version_does_not_write(self):
         self.login()
