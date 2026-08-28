@@ -13,6 +13,7 @@ from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 
 from catalogo.models import (
+    CatalogHistoryEvent,
     IntegrationReadStatus,
     LogisticsQuoteSnapshot,
     PhysicalEvidenceCandidate,
@@ -212,4 +213,19 @@ class Command(BaseCommand):
                 "last_success_at": now if status == IntegrationReadStatus.Status.AVAILABLE else None,
                 "external_writes": 0, "details": details,
             },
+        )
+        CatalogHistoryEvent.objects.create(
+            entity_type="ShippingConnector",
+            entity_id="ENVIA",
+            action="RATE_CONNECTION_CHECK",
+            before={},
+            after={
+                "status": status,
+                "message": message,
+                "record_count": count,
+                "details": details,
+                "external_writes": 0,
+            },
+            reversible=False,
+            actor_label="envia-read-only-connector",
         )

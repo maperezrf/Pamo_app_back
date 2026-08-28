@@ -8,8 +8,11 @@ margen mínimo del pedido después de descuentos y subsidio logístico.
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 import re
 
+from django.utils import timezone
+
 from .commercial_costs import DRIVE_COST_RULES
-from .models import LogisticsQuoteSnapshot, ProductVariant
+from .envia_readiness import readiness_sets
+from .models import CatalogHistoryEvent, IntegrationReadStatus, LogisticsQuoteSnapshot, ProductVariant
 from .phase7 import average_shipping_for_variant, build_average_shipping_reference
 
 
@@ -18,6 +21,7 @@ HUNDRED = Decimal("100")
 MINIMUM_MARGIN_PERCENT = Decimal("20")
 FULFILLMENT_ORIGINS = {"ENVIA", "SUPPLIER"}
 DANE_CODE = re.compile(r"^\d{8}$")
+CONNECTION_FRESHNESS_HOURS = 6
 
 
 class ShippingDeliveryInputError(ValueError):
@@ -69,7 +73,103 @@ def _average_reference_payload():
     }
 
 
+def _connector_status(system, *, primary_capability, label, purpose, strategy):
+    now = timezone.now()
+    statuses = list(IntegrationReadStatus.objects.filter(system=system))
+    primary = next((row for row in statuses if row.capability == primary_capability), None)
+    last_attempt = max((row.observed_at for row in statuses), default=None)
+    last_success = max((row.last_success_at for row in statuses if row.last_success_at), default=None)
+    fresh = bool(
+        last_success
+        and (now - last_success).total_seconds() <= CONNECTION_FRESHNESS_HOURS * 3600
+    )
+    available = bool(primary and primary.status == IntegrationReadStatus.Status.AVAILABLE)
+    blockers = [
+        {"capability": row.capability, "message": row.message}
+        for row in statuses
+        if row.status in {
+            IntegrationReadStatus.Status.BLOCKED,
+            IntegrationReadStatus.Status.MISSING,
+            IntegrationReadStatus.Status.NOT_AUTHORIZED,
+        }
+    ]
+    if available and fresh:
+        state, state_label = "CONNECTED", "Conectado"
+    elif available:
+        state, state_label = "STALE", "Conexión por verificar"
+    elif statuses:
+        state, state_label = "DEGRADED", "Con información parcial"
+    else:
+        state, state_label = "DISCONNECTED", "Sin conexión verificada"
+    return {
+        "system": system,
+        "label": label,
+        "purpose": purpose,
+        "strategy": strategy,
+        "status": state,
+        "status_label": state_label,
+        "fresh": fresh,
+        "last_attempt_at": last_attempt,
+        "last_success_at": last_success,
+        "record_count": primary.record_count if primary else None,
+        "message": primary.message if primary else "Todavía no hay una comprobación registrada.",
+        "blockers": blockers,
+        "external_writes": sum(row.external_writes for row in statuses),
+    }
+
+
+def _connection_history():
+    events = list(
+        CatalogHistoryEvent.objects.filter(entity_type="ShippingConnector")
+        .order_by("-created_at")[:30]
+    )
+    if events:
+        return [
+            {
+                "system": event.entity_id,
+                "action": event.action,
+                "status": (event.after or {}).get("status"),
+                "message": (event.after or {}).get("message"),
+                "records": (event.after or {}).get("record_count"),
+                "created_at": event.created_at,
+                "external_writes": (event.after or {}).get("external_writes", 0),
+            }
+            for event in events
+        ]
+    return [
+        {
+            "system": row.system,
+            "action": "ÚLTIMA_LECTURA_REGISTRADA",
+            "status": row.status,
+            "message": row.message,
+            "records": row.record_count,
+            "created_at": row.observed_at,
+            "external_writes": row.external_writes,
+        }
+        for row in IntegrationReadStatus.objects.filter(
+            system__in=["SHOPIFY", "ENVIA"],
+        ).order_by("-observed_at")[:30]
+    ]
+
+
 def shipping_delivery_workspace():
+    _, package_complete, quoted = readiness_sets()
+    connectors = [
+        _connector_status(
+            "SHOPIFY",
+            primary_capability="marketplace_catalog_snapshot",
+            label="Shopify",
+            purpose="Inventario, precio y ubicación de despacho",
+            strategy="Webhook en la futura integración + lectura completa de respaldo",
+        ),
+        _connector_status(
+            "ENVIA",
+            primary_capability="shipping_api_connection",
+            label="Envía",
+            purpose="Cotización estándar por origen, destino y paquete",
+            strategy="Cotización al consultar el producto o el carrito + caché temporal",
+        ),
+    ]
     return {
         "module": {
             "title": "Envíos y entrega",
@@ -109,6 +209,31 @@ def shipping_delivery_workspace():
             "below_minimum_action": "Reducir descuento o subsidio, o enviar el pedido a aprobación. Nunca vender automáticamente con pérdida.",
         },
         "average_shipping_reference": _average_reference_payload(),
+        "engine_configuration": [
+            {"key": "PLAN_A", "label": "Plan A", "value": "Cotización actual de Envía", "detail": "Se usa únicamente con origen, destino DANE, peso y medidas verificables."},
+            {"key": "PLAN_B", "label": "Plan B", "value": "Perfil histórico aproximado", "detail": "Mantiene una referencia si falta un dato o Envía no responde; nunca se publica como tarifa definitiva."},
+            {"key": "ORIGIN", "label": "Origen", "value": "Ubicación Shopify con inventario", "detail": "El motor asigna la bodega real antes de cotizar."},
+            {"key": "DESTINATION", "label": "Destino", "value": "Ciudad, departamento y dirección", "detail": "La ciudad se resuelve al código DANE requerido por Envía; la dirección no se conserva en el preview."},
+            {"key": "RESERVE", "label": "Reserva logística", "value": "4% · máximo $40.000 por unidad", "detail": "Solo subsidia hasta donde permita la reserva y el margen."},
+            {"key": "MARGIN", "label": "Margen mínimo", "value": "20%", "detail": "Se recalcula después de descuentos mayoristas y subsidio."},
+            {"key": "SERVICE", "label": "Servicio activo", "value": "Envío estándar", "detail": "Envío rápido, gratis automático y mismo día quedan para una fase posterior."},
+        ],
+        "readiness": {
+            "variants_with_positive_stock": ProductVariant.objects.filter(
+                inventory_levels__available__gt=0,
+                inventory_levels__location_active=True,
+            ).distinct().count(),
+            "package_complete": len(package_complete),
+            "current_route_quotes": len(quoted),
+            "note": "La conexión puede estar disponible aunque algunos productos sigan bloqueados por peso o medidas.",
+        },
+        "connections": connectors,
+        "connection_history": _connection_history(),
+        "monitoring": {
+            "freshness_hours": CONNECTION_FRESHNESS_HOURS,
+            "absolute_guarantee": False,
+            "plain_note": "Ninguna API puede garantizarse al 100%. El tablero verifica actualidad, conserva el último dato correcto y activa el Plan B si la lectura falla.",
+        },
         "phase_2": {
             "active": False,
             "items": [

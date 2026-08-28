@@ -18,8 +18,42 @@ class ShippingDeliveryPhase1Tests(TestCase):
         self.assertEqual(payload["commercial_policy"]["minimum_margin_percent"], "20.00")
         self.assertFalse(payload["destination"]["postal_code_required"])
         self.assertFalse(payload["phase_2"]["active"])
+        self.assertEqual(
+            [item["key"] for item in payload["engine_configuration"][:2]],
+            ["PLAN_A", "PLAN_B"],
+        )
+        self.assertEqual(
+            [item["system"] for item in payload["connections"]],
+            ["SHOPIFY", "ENVIA"],
+        )
+        self.assertFalse(payload["monitoring"]["absolute_guarantee"])
         self.assertEqual(payload["external_writes"], 0)
         self.assertFalse(payload["execution_allowed_external"])
+
+    def test_fresh_verified_connector_reads_are_shown_as_connected(self):
+        now = timezone.now()
+        for system, capability in [
+            ("SHOPIFY", "marketplace_catalog_snapshot"),
+            ("ENVIA", "shipping_api_connection"),
+        ]:
+            IntegrationReadStatus.objects.create(
+                system=system,
+                capability=capability,
+                status=IntegrationReadStatus.Status.AVAILABLE,
+                message="Lectura autenticada correcta.",
+                record_count=1,
+                observed_at=now,
+                last_success_at=now,
+                external_writes=0,
+            )
+
+        response = self.client.get("/api/catalogo/shipping-delivery/workspace/")
+
+        self.assertEqual(response.status_code, 200)
+        connections = {item["system"]: item for item in response.json()["connections"]}
+        self.assertEqual(connections["SHOPIFY"]["status"], "CONNECTED")
+        self.assertEqual(connections["ENVIA"]["status"], "CONNECTED")
+        self.assertEqual(connections["ENVIA"]["external_writes"], 0)
 
     def test_wholesale_discount_is_checked_after_shipping_subsidy(self):
         result = simulate_standard_shipping({

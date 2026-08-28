@@ -9,7 +9,7 @@ from django.db import transaction
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 
-from catalogo.models import ChannelSnapshot, CostObservation, IntegrationReadStatus, InventoryLevel, InventorySourceSnapshot
+from catalogo.models import CatalogHistoryEvent, ChannelSnapshot, CostObservation, IntegrationReadStatus, InventoryLevel, InventorySourceSnapshot
 from catalogo.models import MasterProduct, ProductImage, ProductMetafield, ProductVariant, ProviderConfig, ShopifyImportState
 
 
@@ -264,6 +264,22 @@ class Command(BaseCommand):
                     "incremental": incremental, "externalWrites": 0,
                 },
             },
+        )
+        CatalogHistoryEvent.objects.create(
+            entity_type="ShippingConnector",
+            entity_id="SHOPIFY",
+            action="CATALOG_SNAPSHOT_READ",
+            before={},
+            after={
+                "status": IntegrationReadStatus.Status.AVAILABLE,
+                "message": "Inventario y ubicaciones Shopify actualizados en el snapshot local.",
+                "record_count": current_variant_count if incremental else imported_variants,
+                "complete": complete,
+                "incremental": incremental,
+                "external_writes": 0,
+            },
+            reversible=False,
+            actor_label="shopify-read-only-connector",
         )
         self.stdout.write(self.style.SUCCESS(
             f"Snapshot local: {imported_products} productos, {imported_variants} variantes; compare-at {field_counts['compare_at_price']}, costos {field_counts['variant_unit_cost']}, niveles {field_counts['inventory_by_location']}. externalWrites=0."
