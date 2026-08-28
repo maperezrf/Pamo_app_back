@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 from urllib.parse import urlparse
 
+from django.conf import settings
 from django.db import transaction
 from django.db.models import Count, Q
 from django.http import FileResponse
@@ -23,6 +24,7 @@ from config.constants import (
 from .functions.messaging import prepare_manual_followups
 from .functions.querysets import operational_orders
 from .functions.serializers import order_detail, order_row, shipment_dict, whatsapp_url
+from .functions.supplier_responses import SupplierResponseError, apply_supplier_response
 from .models import (
     IntegrationStatus,
     LogisticsAudit,
@@ -85,7 +87,9 @@ class OrdersOverviewAPI(RoleRequiredMixin, APIView):
                 "guide_without_tracking": guide_without_tracking,
                 "in_transit": shipments.filter(logistics_state="in_transit").count(),
                 "delivered": shipments.filter(logistics_state="delivered").count(),
-                "exceptions": shipments.exclude(incident_category="").count(),
+                "exceptions": shipments.filter(
+                    Q(incident_category__gt="") | Q(novelties__state="open")
+                ).distinct().count(),
                 "split": orders.annotate(shipment_total=Count("shipments")).filter(
                     shipment_total__gt=1
                 ).count(),
@@ -199,6 +203,8 @@ class OrderDetailAPI(RoleRequiredMixin, APIView):
                 "shipments__document",
                 "shipments__shipment_items__order_item",
                 "shipments__tracking_events",
+                "shipments__supplier_response_events",
+                "shipments__novelties",
             )
             .filter(id=order_id)
             .first()
@@ -414,6 +420,30 @@ class ShipmentIncidentAPI(RoleRequiredMixin, APIView):
         return Response({"shipment": shipment_dict(shipment, detailed=True)})
 
 
+class SupplierResponseSimulationAPI(RoleRequiredMixin, APIView):
+    allowed_roles = [*OPERATOR_ROLES, "Integraciones"]
+
+    def post(self, request, shipment_id):
+        if not (settings.DEBUG and ORDERS_LOCAL_MODE):
+            return Response({"detail": "Simulacion disponible solo en local."}, status=404)
+        action = str(request.data.get("action") or "").strip()
+        event_id = str(request.data.get("event_id") or "").strip()
+        if not event_id or len(event_id) > 180:
+            return Response({"event_id": ["Identificador requerido."]}, status=400)
+        try:
+            result = apply_supplier_response(
+                shipment_id=shipment_id,
+                action=action,
+                provider_event_id=event_id,
+                sender_phone="local-simulator",
+                source="local_simulator",
+                validate_contact=False,
+            )
+        except SupplierResponseError as error:
+            return Response({"detail": error.code}, status=error.http_status)
+        return Response({"supplierResponse": result, "externalWrites": 0})
+
+
 class ShipmentDocumentAPI(RoleRequiredMixin, APIView):
     allowed_roles = OPERATOR_ROLES
     parser_classes = [MultiPartParser, FormParser]
@@ -471,8 +501,10 @@ class ShipmentDocumentAPI(RoleRequiredMixin, APIView):
             source="manual",
             detail="Documento privado; acceso autenticado.",
         )
+        if shipment.guide_delivery_state == "requested":
+            shipment.guide_delivery_state = "ready_to_send"
         shipment.version += 1
-        shipment.save(update_fields=["version", "updated_at"])
+        shipment.save(update_fields=["guide_delivery_state", "version", "updated_at"])
         return Response(
             {
                 "document": {

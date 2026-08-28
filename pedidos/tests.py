@@ -16,9 +16,12 @@ from .models import (
     Order,
     OrderItem,
     Shipment,
+    ShipmentNovelty,
+    SupplierResponseEvent,
     ShipmentItem,
     WarehouseLocation,
 )
+from .functions.supplier_responses import SupplierResponseError, apply_supplier_response
 
 
 User = get_user_model()
@@ -311,3 +314,114 @@ class OrdersAPITests(TestCase):
         response = self.client.post("/api/pedidos/sync/shopify/")
         self.assertEqual(response.status_code, 409)
         self.assertEqual(response.json()["externalWrites"], 0)
+
+    def configure_supplier(self, phone="573045454936"):
+        config = MessagingConfig.objects.create(warehouse=self.location)
+        return MessagingContact.objects.create(
+            config=config, name="Proveedor QA", phone=phone, active=True
+        )
+
+    def test_supplier_received_response_is_idempotent(self):
+        self.configure_supplier()
+        first = apply_supplier_response(
+            shipment_id=self.shipment_a.id,
+            action="order_received",
+            provider_event_id="wamid.received-1",
+            sender_phone="+57 304 545 4936",
+        )
+        replay = apply_supplier_response(
+            shipment_id=self.shipment_a.id,
+            action="order_received",
+            provider_event_id="wamid.received-1",
+            sender_phone="+57 304 545 4936",
+        )
+        self.shipment_a.refresh_from_db()
+        self.assertEqual(self.shipment_a.supplier_state, "received")
+        self.assertFalse(first["replayed"])
+        self.assertTrue(replay["replayed"])
+        self.assertEqual(SupplierResponseEvent.objects.count(), 1)
+
+    def test_supplier_requests_guide_before_pdf_and_upload_makes_it_ready(self):
+        self.configure_supplier()
+        result = apply_supplier_response(
+            shipment_id=self.shipment_a.id,
+            action="request_guide",
+            provider_event_id="wamid.guide-1",
+            sender_phone="573045454936",
+        )
+        self.assertEqual(result["guideDeliveryState"], "requested")
+
+        self.login()
+        file = SimpleUploadedFile(
+            "guia-19335.pdf", b"%PDF-1.4\nlocal qa", content_type="application/pdf"
+        )
+        response = self.client.post(
+            f"/api/pedidos/shipments/{self.shipment_a.id}/document/", {"file": file}
+        )
+        self.assertEqual(response.status_code, 201)
+        self.shipment_a.refresh_from_db()
+        self.assertEqual(self.shipment_a.guide_delivery_state, "ready_to_send")
+
+    @override_settings(MEDIA_ROOT=tempfile.mkdtemp())
+    def test_existing_guide_is_ready_to_send_when_supplier_requests_it(self):
+        self.configure_supplier()
+        self.login()
+        file = SimpleUploadedFile(
+            "guia-lista.pdf", b"%PDF-1.4\nlocal qa", content_type="application/pdf"
+        )
+        self.client.post(
+            f"/api/pedidos/shipments/{self.shipment_a.id}/document/", {"file": file}
+        )
+        result = apply_supplier_response(
+            shipment_id=self.shipment_a.id,
+            action="request_guide",
+            provider_event_id="wamid.guide-2",
+            sender_phone="573045454936",
+        )
+        self.assertEqual(result["guideDeliveryState"], "ready_to_send")
+
+    def test_supplier_novelty_is_separate_from_carrier_exception(self):
+        self.configure_supplier()
+        apply_supplier_response(
+            shipment_id=self.shipment_a.id,
+            action="report_issue",
+            provider_event_id="wamid.issue-1",
+            sender_phone="573045454936",
+        )
+        self.shipment_a.refresh_from_db()
+        self.assertEqual(self.shipment_a.supplier_state, "issue_reported")
+        self.assertEqual(self.shipment_a.logistics_state, "without_guide")
+        self.assertEqual(ShipmentNovelty.objects.filter(state="open").count(), 1)
+
+        result = apply_supplier_response(
+            shipment_id=self.shipment_a.id,
+            action="request_guide",
+            provider_event_id="wamid.guide-blocked",
+            sender_phone="573045454936",
+        )
+        self.assertEqual(result["result"], "review")
+        self.assertEqual(result["guideDeliveryState"], "not_requested")
+
+    def test_response_from_wrong_supplier_is_rejected(self):
+        self.configure_supplier("573001112233")
+        with self.assertRaises(SupplierResponseError) as caught:
+            apply_supplier_response(
+                shipment_id=self.shipment_a.id,
+                action="order_received",
+                provider_event_id="wamid.wrong-contact",
+                sender_phone="573045454936",
+            )
+        self.assertEqual(caught.exception.code, "supplier_contact_mismatch")
+
+    @override_settings(DEBUG=True)
+    def test_local_simulator_updates_supplier_state_without_external_write(self):
+        self.login()
+        response = self.client.post(
+            f"/api/pedidos/shipments/{self.shipment_a.id}/supplier-response/simulate/",
+            {"action": "order_received", "event_id": "local-ui-test-0001"},
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["externalWrites"], 0)
+        self.shipment_a.refresh_from_db()
+        self.assertEqual(self.shipment_a.supplier_state, "received")

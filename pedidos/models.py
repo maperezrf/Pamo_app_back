@@ -85,6 +85,19 @@ class Shipment(models.Model):
         ("returned", "Devuelto"),
         ("logistically_cancelled", "Cancelado logísticamente"),
     ]
+    SUPPLIER_STATES = [
+        ("pending_response", "Pendiente de respuesta"),
+        ("received", "Pedido recibido"),
+        ("ready_for_guide", "Listo para enviar guia"),
+        ("issue_reported", "Novedad reportada"),
+    ]
+    GUIDE_DELIVERY_STATES = [
+        ("not_requested", "No solicitada"),
+        ("requested", "Solicitada"),
+        ("ready_to_send", "Lista para enviar"),
+        ("sent", "Enviada"),
+        ("failed", "Fallo de envio"),
+    ]
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     order = models.ForeignKey(Order, related_name="shipments", on_delete=models.CASCADE)
@@ -118,6 +131,19 @@ class Shipment(models.Model):
     incident_detail = models.TextField(blank=True)
     customer_context = models.TextField(blank=True)
     messaging_state = models.CharField(max_length=60, default="draft")
+    supplier_state = models.CharField(
+        max_length=40,
+        choices=SUPPLIER_STATES,
+        default="pending_response",
+        db_index=True,
+    )
+    supplier_state_updated_at = models.DateTimeField(null=True, blank=True)
+    guide_delivery_state = models.CharField(
+        max_length=32,
+        choices=GUIDE_DELIVERY_STATES,
+        default="not_requested",
+        db_index=True,
+    )
     version = models.PositiveIntegerField(default=1)
     source_snapshot = models.JSONField(default=dict, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -181,6 +207,71 @@ class LogisticsAudit(models.Model):
     source = models.CharField(max_length=40, default="manual")
     detail = models.TextField(blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+
+class SupplierResponseEvent(models.Model):
+    ACTIONS = [
+        ("order_received", "Pedido recibido"),
+        ("request_guide", "Listo, enviar guia"),
+        ("report_issue", "Reportar novedad"),
+    ]
+    RESULTS = [
+        ("applied", "Aplicada"),
+        ("replayed", "Repetida"),
+        ("review", "Requiere revision"),
+        ("rejected", "Rechazada"),
+    ]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    shipment = models.ForeignKey(
+        Shipment, related_name="supplier_response_events", on_delete=models.CASCADE
+    )
+    provider_event_id = models.CharField(max_length=180, unique=True)
+    action = models.CharField(max_length=32, choices=ACTIONS)
+    source = models.CharField(max_length=40, default="whatsapp")
+    sender_suffix = models.CharField(max_length=8, blank=True)
+    previous_state = models.CharField(max_length=40)
+    new_state = models.CharField(max_length=40)
+    result = models.CharField(max_length=16, choices=RESULTS, default="applied")
+    details = models.JSONField(default=dict, blank=True)
+    occurred_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-occurred_at"]
+
+
+class ShipmentNovelty(models.Model):
+    CATEGORIES = [
+        ("supplier_pending_detail", "Proveedor debe detallar la novedad"),
+        ("supplier_stockout", "Agotado total"),
+        ("supplier_partial", "Faltante parcial"),
+        ("supplier_delay", "Retraso de despacho"),
+        ("supplier_not_recognized", "Pedido no reconocido"),
+        ("supplier_other", "Otra novedad"),
+    ]
+    STATES = [("open", "Abierta"), ("resolved", "Resuelta")]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    shipment = models.ForeignKey(
+        Shipment, related_name="novelties", on_delete=models.CASCADE
+    )
+    supplier_response = models.OneToOneField(
+        SupplierResponseEvent,
+        related_name="novelty",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+    )
+    category = models.CharField(max_length=50, choices=CATEGORIES)
+    state = models.CharField(max_length=16, choices=STATES, default="open", db_index=True)
+    detail = models.TextField(blank=True)
+    affected_items = models.JSONField(default=list, blank=True)
+    source = models.CharField(max_length=40, default="supplier_whatsapp")
+    created_at = models.DateTimeField(auto_now_add=True)
+    resolved_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         ordering = ["-created_at"]
@@ -270,4 +361,3 @@ class IntegrationStatus(models.Model):
 
     class Meta:
         ordering = ["provider"]
-

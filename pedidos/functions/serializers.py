@@ -30,6 +30,13 @@ def shipment_dict(shipment, *, detailed=False):
         "incident_detail": shipment.incident_detail or None,
         "customer_context": shipment.customer_context or None,
         "messaging_state": shipment.messaging_state,
+        "supplier_state": shipment.supplier_state,
+        "supplier_state_updated_at": (
+            shipment.supplier_state_updated_at.isoformat()
+            if shipment.supplier_state_updated_at
+            else None
+        ),
+        "guide_delivery_state": shipment.guide_delivery_state,
         "version": shipment.version,
         "has_document": hasattr(shipment, "document"),
         "document_url": f"/api/pedidos/shipments/{shipment.id}/document/" if hasattr(shipment, "document") else None,
@@ -57,6 +64,29 @@ def shipment_dict(shipment, *, detailed=False):
                 "occurred_at": event.occurred_at.isoformat(),
             }
             for event in shipment.tracking_events.all()
+        ]
+        data["supplier_response_events"] = [
+            {
+                "id": str(event.id),
+                "action": event.action,
+                "result": event.result,
+                "source": event.source,
+                "sender_suffix": event.sender_suffix,
+                "occurred_at": event.occurred_at.isoformat(),
+            }
+            for event in shipment.supplier_response_events.all()[:50]
+        ]
+        data["novelties"] = [
+            {
+                "id": str(novelty.id),
+                "category": novelty.category,
+                "state": novelty.state,
+                "detail": novelty.detail,
+                "affected_items": novelty.affected_items,
+                "source": novelty.source,
+                "created_at": novelty.created_at.isoformat(),
+            }
+            for novelty in shipment.novelties.all()[:50]
         ]
     return data
 
@@ -102,6 +132,11 @@ def order_row(order):
         "logistics_state": logistics_states,
         "incident_category": incident_categories,
         "messaging_state": [item.messaging_state for item in shipments],
+        "supplier_states": [item.supplier_state for item in shipments],
+        "guide_delivery_states": [item.guide_delivery_state for item in shipments],
+        "open_novelty_count": sum(
+            item.novelties.filter(state="open").count() for item in shipments
+        ),
         "state": order.state,
         "version": max((item.version for item in shipments), default=1),
     }
