@@ -84,7 +84,7 @@ CONNECTOR_DEFINITIONS = (
         "purpose": "Cotizaciones y costos de guías",
         "mode": "Lectura habilitada",
         "strategy": "Cotización por pedido + caché local",
-        "cadence_hours": None,
+        "cadence_hours": 6,
     },
     {
         "code": "TAUMM",
@@ -111,6 +111,11 @@ SCHEDULED_CONNECTORS = {
     "MERCADO_LIBRE": {"command": "refresh_mercadolibre_snapshot", "timeout_seconds": 1800},
     "FALABELLA": {"command": "refresh_falabella_snapshot", "timeout_seconds": 900},
     "TAUMM": {"command": "refresh_taumm_snapshot", "timeout_seconds": 60},
+    "ENVIA": {
+        "command": "check_envia_connection",
+        "args": ["--execute-read"],
+        "timeout_seconds": 120,
+    },
 }
 
 

@@ -1,6 +1,10 @@
+import fcntl
 import json
 import os
 import subprocess
+import tempfile
+import time
+from pathlib import Path
 
 from django.core.management.base import BaseCommand, CommandError
 from django.db import connection, transaction
@@ -41,6 +45,8 @@ class Command(BaseCommand):
 
     def add_arguments(self, parser):
         parser.add_argument("--execute-read", action="store_true")
+        parser.add_argument("--loop", action="store_true")
+        parser.add_argument("--interval-seconds", type=int, default=21600)
         parser.add_argument("--project", default=DEFAULT_PROJECT)
         parser.add_argument("--environment", default=DEFAULT_ENVIRONMENT)
         parser.add_argument("--service", default=DEFAULT_SERVICE)
@@ -52,6 +58,27 @@ class Command(BaseCommand):
         if not options["execute_read"]:
             self.stdout.write("Vista previa: use --execute-read para comprobar Envía; externalWrites=0.")
             return
+
+        if options["loop"]:
+            lock_path = Path(tempfile.gettempdir()) / "pamo-envia-connection-monitor.lock"
+            self._lock_file = lock_path.open("a+")
+            try:
+                fcntl.flock(self._lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError as error:
+                raise CommandError("Ya existe un monitor de conexión Envía en ejecución.") from error
+        interval = max(options["interval_seconds"], 300)
+        while True:
+            try:
+                self._check_once(options)
+            except CommandError as error:
+                if not options["loop"]:
+                    raise
+                self.stderr.write(str(error))
+            if not options["loop"]:
+                return
+            time.sleep(interval)
+
+    def _check_once(self, options):
 
         command = [
             "railway", "ssh",

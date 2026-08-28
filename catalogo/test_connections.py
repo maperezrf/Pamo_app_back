@@ -68,6 +68,25 @@ class ConnectionsWorkspaceTests(TestCase):
         self.assertEqual(heartbeat.status, IntegrationReadStatus.Status.AVAILABLE)
         self.assertEqual(heartbeat.external_writes, 0)
 
+    @patch("catalogo.management.commands.run_connector_scheduler.fcntl.flock")
+    @patch("catalogo.management.commands.run_connector_scheduler.subprocess.run")
+    def test_scheduler_runs_envia_authenticated_read_every_six_hours(self, mocked_run, _mocked_lock):
+        mocked_run.return_value.returncode = 0
+        mocked_run.return_value.stderr = ""
+
+        call_command(
+            "run_connector_scheduler",
+            connectors="ENVIA",
+            force=True,
+        )
+
+        command = mocked_run.call_args.args[0]
+        self.assertIn("check_envia_connection", command)
+        self.assertIn("--execute-read", command)
+        workspace = build_connections_workspace()
+        envia = next(row for row in workspace["connections"] if row["code"] == "ENVIA")
+        self.assertEqual(envia["cadence_hours"], 6)
+
     @patch("catalogo.management.commands.refresh_taumm_snapshot.urlopen")
     def test_taumm_reader_persists_sanitized_real_status(self, mocked_urlopen):
         response = BytesIO(

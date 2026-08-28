@@ -102,7 +102,12 @@ class Command(BaseCommand):
             )
             try:
                 completed_process = subprocess.run(
-                    [sys.executable, "manage.py", connector["command"]],
+                    [
+                        sys.executable,
+                        "manage.py",
+                        connector["command"],
+                        *connector.get("args", []),
+                    ],
                     cwd=settings.BASE_DIR,
                     text=True,
                     capture_output=True,
