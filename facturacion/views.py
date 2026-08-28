@@ -24,10 +24,19 @@ from config.constants import (
     SIIGO_USERNAME,
 )
 from integrations.openai_supplier_invoice import OpenAISupplierInvoiceReader
+try:
+    from catalogo.models import SiigoProductSnapshot
+except ModuleNotFoundError:  # Se habilita al integrar la rama independiente de Catálogo.
+    SiigoProductSnapshot = None
+
+from .functions.build_invoice_preview import build_invoice_preview
+from .functions.issue_siigo_invoice import SiigoIssuanceError, issue_controlled_siigo_draft
 from .functions.siigo_invoice import (
     SiigoCredentials,
     SiigoPreflightError,
     SiigoReadClient,
+    SiigoInvoiceWriteClient,
+    build_live_preflight,
 )
 from .functions.confirm_remittance import confirm_remittance
 from .functions.recipient_completion import (
@@ -49,6 +58,7 @@ from .models import (
     AuthorizedPerson,
     Remittance,
     RemittanceAuditEvent,
+    RemittanceInvoiceAttempt,
     RemittanceFavorite,
     RemittanceLine,
     RemittanceParty,
@@ -553,6 +563,11 @@ class RemittanceSiigoProductSearchAPI(RoleRequiredMixin, APIView):
     allowed_roles = ACCOUNTING_ROLES
 
     def get(self, request):
+        if SiigoProductSnapshot is None:
+            return Response({
+                "detail": "Integra la rama de Catálogo para buscar productos en el snapshot local de Siigo.",
+                "code": "SIIGO_PRODUCT_SNAPSHOT_UNAVAILABLE",
+            }, status=409)
         query = str(request.query_params.get("q") or "").strip()
         if len(query) < 2:
             return Response({"detail": "Escribe al menos 2 caracteres para buscar."}, status=400)
@@ -669,6 +684,11 @@ class RemittanceAccountingCommercialPreparationAPI(RoleRequiredMixin, APIView):
     allowed_roles = ACCOUNTING_ROLES
 
     def patch(self, request, remittance_id):
+        if SiigoProductSnapshot is None:
+            return Response({
+                "detail": "Integra la rama de Catálogo antes de vincular SKU de Siigo.",
+                "code": "SIIGO_PRODUCT_SNAPSHOT_UNAVAILABLE",
+            }, status=409)
         serializer = AccountingCommercialPreparationSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data

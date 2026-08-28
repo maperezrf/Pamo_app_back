@@ -27,6 +27,12 @@ MENU = [
                 "path": "/prototipos/remisiones",
                 "roles": ["Admin", "Operaciones", "Logistica"],
             },
+            {
+                "key": "facturacion-remisiones",
+                "label": "Facturación de remisiones",
+                "path": "/prototipos/facturacion-remisiones",
+                "roles": ["Admin", "Facturacion"],
+            },
         ],
     },
     {
