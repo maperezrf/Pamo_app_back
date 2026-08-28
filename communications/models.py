@@ -47,6 +47,16 @@ class WhatsAppChannelConfig(models.Model):
 
 
 class WhatsAppDraft(models.Model):
+    MESSAGE_KINDS = [
+        ("supplier_order", "Nuevo despacho"),
+        ("guide_delivery", "Entrega de guía"),
+        ("novelty_menu", "Menú de novedad"),
+        ("novelty_prompt", "Solicitud de detalle"),
+        ("issue_sku_menu", "Selección de SKU afectado"),
+        ("issue_quantity_prompt", "Cantidad afectada"),
+        ("novelty_confirmation", "Confirmación de novedad"),
+        ("internal_order_copy", "Copia interna de pedido"),
+    ]
     STATES = [
         ("draft", "Borrador"),
         ("approved", "Aprobado"),
@@ -61,12 +71,17 @@ class WhatsAppDraft(models.Model):
     source_module = models.CharField(max_length=60, default="pedidos")
     source_type = models.CharField(max_length=60, default="shipment")
     source_id = models.CharField(max_length=80, db_index=True)
+    message_kind = models.CharField(
+        max_length=32, choices=MESSAGE_KINDS, default="supplier_order", db_index=True
+    )
     order_visible_id = models.CharField(max_length=160, blank=True)
     warehouse_reference = models.CharField(max_length=160, blank=True)
     contact_reference = models.CharField(max_length=160)
     recipient_name = models.CharField(max_length=160)
     recipient_phone = models.CharField(max_length=32)
     rendered_body = models.TextField()
+    interactive_payload = models.JSONField(default=dict, blank=True)
+    auto_prepared = models.BooleanField(default=False)
     document_source_id = models.CharField(max_length=80, blank=True)
     document_name = models.CharField(max_length=255, blank=True)
     document_sha256 = models.CharField(max_length=64, blank=True)

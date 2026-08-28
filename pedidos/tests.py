@@ -414,7 +414,7 @@ class OrdersAPITests(TestCase):
         self.assertEqual(response.status_code, 409)
         self.assertEqual(response.json()["externalWrites"], 0)
 
-    def configure_supplier(self, phone="573045454936"):
+    def configure_supplier(self, phone="573000004936"):
         config = MessagingConfig.objects.create(warehouse=self.location)
         return MessagingContact.objects.create(
             config=config, name="Proveedor QA", phone=phone, active=True
@@ -426,13 +426,13 @@ class OrdersAPITests(TestCase):
             shipment_id=self.shipment_a.id,
             action="order_received",
             provider_event_id="wamid.received-1",
-            sender_phone="+57 304 545 4936",
+            sender_phone="+57 300 000 4936",
         )
         replay = apply_supplier_response(
             shipment_id=self.shipment_a.id,
             action="order_received",
             provider_event_id="wamid.received-1",
-            sender_phone="+57 304 545 4936",
+            sender_phone="+57 300 000 4936",
         )
         self.shipment_a.refresh_from_db()
         self.assertEqual(self.shipment_a.supplier_state, "received")
@@ -446,7 +446,7 @@ class OrdersAPITests(TestCase):
             shipment_id=self.shipment_a.id,
             action="request_guide",
             provider_event_id="wamid.guide-1",
-            sender_phone="573045454936",
+            sender_phone="573000004936",
         )
         self.assertEqual(result["guideDeliveryState"], "requested")
 
@@ -475,7 +475,7 @@ class OrdersAPITests(TestCase):
             shipment_id=self.shipment_a.id,
             action="request_guide",
             provider_event_id="wamid.guide-2",
-            sender_phone="573045454936",
+            sender_phone="573000004936",
         )
         self.assertEqual(result["guideDeliveryState"], "ready_to_send")
 
@@ -485,7 +485,7 @@ class OrdersAPITests(TestCase):
             shipment_id=self.shipment_a.id,
             action="report_issue",
             provider_event_id="wamid.issue-1",
-            sender_phone="573045454936",
+            sender_phone="573000004936",
         )
         self.shipment_a.refresh_from_db()
         self.assertEqual(self.shipment_a.supplier_state, "issue_reported")
@@ -496,7 +496,7 @@ class OrdersAPITests(TestCase):
             shipment_id=self.shipment_a.id,
             action="request_guide",
             provider_event_id="wamid.guide-blocked",
-            sender_phone="573045454936",
+            sender_phone="573000004936",
         )
         self.assertEqual(result["result"], "review")
         self.assertEqual(result["guideDeliveryState"], "not_requested")
@@ -507,25 +507,25 @@ class OrdersAPITests(TestCase):
             shipment_id=self.shipment_a.id,
             action="report_issue",
             provider_event_id="wamid.issue-category-open",
-            sender_phone="573045454936",
+            sender_phone="573000004936",
         )
         self.assertEqual(opened["openNovelty"]["detailState"], "awaiting_category")
         first = apply_supplier_novelty_category(
             shipment_id=self.shipment_a.id,
             category="supplier_stockout",
             provider_event_id="wamid.issue-category-1",
-            sender_phone="573045454936",
+            sender_phone="573000004936",
         )
         replay = apply_supplier_novelty_category(
             shipment_id=self.shipment_a.id,
             category="supplier_stockout",
             provider_event_id="wamid.issue-category-1",
-            sender_phone="573045454936",
+            sender_phone="573000004936",
         )
         novelty = ShipmentNovelty.objects.get(shipment=self.shipment_a, state="open")
         self.assertEqual(novelty.category, "supplier_stockout")
-        self.assertEqual(novelty.detail_state, "awaiting_detail")
-        self.assertIn("SKU agotados", first["nextPrompt"])
+        self.assertEqual(novelty.detail_state, "awaiting_item")
+        self.assertIn("Selecciona el SKU agotado", first["nextPrompt"])
         self.assertTrue(replay["replayed"])
         self.assertEqual(
             SupplierResponseEvent.objects.filter(action="classify_issue").count(), 1
@@ -535,7 +535,7 @@ class OrdersAPITests(TestCase):
                 shipment_id=self.shipment_a.id,
                 category="supplier_delay",
                 provider_event_id="wamid.issue-category-overwrite",
-                sender_phone="573045454936",
+                sender_phone="573000004936",
             )
         self.assertEqual(
             caught.exception.code, "supplier_novelty_category_already_recorded"
@@ -554,7 +554,7 @@ class OrdersAPITests(TestCase):
                 shipment_id=self.shipment_a.id,
                 category="supplier_delay",
                 provider_event_id="wamid.issue-category-wrong",
-                sender_phone="573045454936",
+                sender_phone="573000004936",
             )
         self.assertEqual(caught.exception.code, "supplier_contact_mismatch")
 
@@ -564,19 +564,19 @@ class OrdersAPITests(TestCase):
             shipment_id=self.shipment_a.id,
             action="report_issue",
             provider_event_id="wamid.detail-open",
-            sender_phone="573045454936",
+            sender_phone="573000004936",
         )
         apply_supplier_novelty_category(
             shipment_id=self.shipment_a.id,
-            category="supplier_partial",
+            category="supplier_other",
             provider_event_id="wamid.detail-category",
-            sender_phone="573045454936",
+            sender_phone="573000004936",
         )
         result = apply_supplier_novelty_detail(
             shipment_id=self.shipment_a.id,
             detail="  SKU 8844: solo hay 2 unidades.  ",
             provider_event_id="wamid.detail-text",
-            sender_phone="573045454936",
+            sender_phone="573000004936",
         )
         novelty = ShipmentNovelty.objects.get(shipment=self.shipment_a)
         self.assertEqual(novelty.detail, "SKU 8844: solo hay 2 unidades.")
@@ -604,7 +604,7 @@ class OrdersAPITests(TestCase):
         self.assertEqual(response.json()["externalWrites"], 0)
         novelty = ShipmentNovelty.objects.get(shipment=self.shipment_a)
         self.assertEqual(novelty.category, "supplier_partial")
-        self.assertEqual(novelty.detail_state, "awaiting_detail")
+        self.assertEqual(novelty.detail_state, "awaiting_item")
 
     def test_response_from_wrong_supplier_is_rejected(self):
         self.configure_supplier("573001112233")
@@ -613,7 +613,7 @@ class OrdersAPITests(TestCase):
                 shipment_id=self.shipment_a.id,
                 action="order_received",
                 provider_event_id="wamid.wrong-contact",
-                sender_phone="573045454936",
+                sender_phone="573000004936",
             )
         self.assertEqual(caught.exception.code, "supplier_contact_mismatch")
 

@@ -69,9 +69,13 @@ def shipment_dict(shipment, *, detailed=False):
             {
                 "id": str(event.id),
                 "action": event.action,
+                "action_label": event.get_action_display(),
                 "result": event.result,
                 "source": event.source,
                 "sender_suffix": event.sender_suffix,
+                "actor": f"Contacto ••••{event.sender_suffix}" if event.sender_suffix else "Sistema",
+                "warehouse": shipment.effective_warehouse_name or None,
+                "details": event.details,
                 "occurred_at": event.occurred_at.isoformat(),
             }
             for event in shipment.supplier_response_events.all()[:50]

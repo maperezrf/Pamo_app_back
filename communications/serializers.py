@@ -13,6 +13,7 @@ def draft_payload(draft):
             "id": draft.source_id,
             "order": draft.order_visible_id,
         },
+        "messageKind": draft.message_kind,
         "warehouse": draft.warehouse_reference,
         "recipient": {
             "reference": draft.contact_reference,
@@ -20,6 +21,8 @@ def draft_payload(draft):
             "phoneMasked": masked_phone(draft.recipient_phone),
         },
         "body": draft.rendered_body,
+        "interactive": draft.interactive_payload or None,
+        "autoPrepared": draft.auto_prepared,
         "document": {
             "available": bool(draft.document_source_id),
             "name": draft.document_name or None,
@@ -46,4 +49,3 @@ def outbox_payload(outbox):
         "deliveredAt": outbox.delivered_at.isoformat() if outbox.delivered_at else None,
         "readAt": outbox.read_at.isoformat() if outbox.read_at else None,
     }
-

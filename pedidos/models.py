@@ -88,7 +88,7 @@ class Shipment(models.Model):
     SUPPLIER_STATES = [
         ("pending_response", "Pendiente de respuesta"),
         ("received", "Pedido recibido"),
-        ("ready_for_guide", "Listo para enviar guia"),
+        ("ready_for_guide", "Listo para despacho"),
         ("issue_reported", "Novedad reportada"),
     ]
     GUIDE_DELIVERY_STATES = [
@@ -96,7 +96,7 @@ class Shipment(models.Model):
         ("requested", "Solicitada"),
         ("ready_to_send", "Lista para enviar"),
         ("sent", "Enviada"),
-        ("failed", "Fallo de envio"),
+        ("failed", "Fallo de envío"),
     ]
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
@@ -215,15 +215,18 @@ class LogisticsAudit(models.Model):
 class SupplierResponseEvent(models.Model):
     ACTIONS = [
         ("order_received", "Pedido recibido"),
-        ("request_guide", "Listo, enviar guia"),
+        ("request_guide", "Listo para despacho"),
+        ("report_stockout", "Agotado"),
         ("report_issue", "Reportar novedad"),
+        ("select_issue_item", "Seleccionar SKU afectado"),
+        ("provide_issue_quantity", "Informar cantidad afectada"),
         ("classify_issue", "Clasificar novedad"),
         ("provide_issue_detail", "Detallar novedad"),
     ]
     RESULTS = [
         ("applied", "Aplicada"),
         ("replayed", "Repetida"),
-        ("review", "Requiere revision"),
+        ("review", "Requiere revisión"),
         ("rejected", "Rechazada"),
     ]
 
@@ -250,13 +253,17 @@ class ShipmentNovelty(models.Model):
         ("supplier_pending_detail", "Proveedor debe detallar la novedad"),
         ("supplier_stockout", "Agotado total"),
         ("supplier_partial", "Faltante parcial"),
+        ("supplier_damage", "Producto averiado"),
+        ("supplier_guide_issue", "Problema con la guía"),
         ("supplier_delay", "Retraso de despacho"),
         ("supplier_not_recognized", "Pedido no reconocido"),
         ("supplier_other", "Otra novedad"),
     ]
     STATES = [("open", "Abierta"), ("resolved", "Resuelta")]
     DETAIL_STATES = [
-        ("awaiting_category", "Pendiente de categoria"),
+        ("awaiting_category", "Pendiente de categoría"),
+        ("awaiting_item", "Pendiente de SKU"),
+        ("awaiting_quantity", "Pendiente de cantidad"),
         ("awaiting_detail", "Pendiente de detalle"),
         ("complete", "Detalle completo"),
     ]

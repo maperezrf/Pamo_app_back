@@ -7,6 +7,7 @@ from rest_framework.views import APIView
 from accounts.permissions import RoleRequiredMixin
 
 from .models import WhatsAppChannelConfig, WhatsAppDraft, WhatsAppOutbox
+from .internal_copies import internal_copy_checkpoint, serialized_internal_recipients
 from .orders_contract import (
     DraftValidationError,
     create_order_drafts,
@@ -16,6 +17,7 @@ from .providers import (
     ExternalWritesDisabled,
     WhatsAppProviderError,
     meta_external_writes_ready,
+    normalized_phone,
 )
 from .serializers import draft_payload, outbox_payload
 from .services import InvalidDraftState, approve_draft, dispatch_outbox, enqueue_draft
@@ -156,11 +158,28 @@ class CapabilitiesAPI(RoleRequiredMixin, APIView):
     def get(self, request):
         readiness = meta_external_writes_ready()
         provider = str(settings.PAMO_WHATSAPP_PROVIDER or "mock").lower()
+        pilot = normalized_phone(settings.PAMO_WHATSAPP_PILOT_RECIPIENT)
         return Response(
             {
                 "provider": provider,
                 "mockMode": provider == "mock",
                 "humanApprovalRequired": True,
+                "automaticPilot": bool(
+                    settings.PAMO_WHATSAPP_AUTO_PREPARE_ENABLED
+                    and settings.PAMO_WHATSAPP_SUPPLIER_AUTOMATION_ENABLED
+                    and pilot.endswith("4936")
+                ),
+                "internalOrderNotificationsEnabled": bool(
+                    settings.PAMO_WHATSAPP_INTERNAL_ORDER_NOTIFICATIONS_ENABLED
+                ),
+                "deploymentTier": settings.PAMO_WHATSAPP_DEPLOYMENT_TIER,
+                "pilotRecipientMasked": f"••••{pilot[-4:]}" if pilot else None,
+                "internalRecipients": serialized_internal_recipients(),
+                "internalCopyCheckpoint": (
+                    internal_copy_checkpoint().isoformat()
+                    if internal_copy_checkpoint()
+                    else None
+                ),
                 "manualWhatsAppWebFallback": True,
                 "externalWritesEnabled": provider == "meta" and readiness["ready"],
                 "gates": {

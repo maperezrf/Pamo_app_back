@@ -17,6 +17,11 @@ from config.constants import (
 )
 from integrations.orders.base import ExternalReadFailed
 from integrations.orders.canonical import PamoCanonicalOrdersProvider
+from communications.orders_contract import (
+    auto_prepare_new_shipments,
+    dispatch_requested_guides,
+)
+from communications.internal_copies import auto_send_internal_order_copies
 from pedidos.functions.canonical_import import apply_canonical_snapshot, apply_integration_readiness
 from pedidos.functions.label_status import (
     LABEL_AVAILABLE,
@@ -99,6 +104,7 @@ class Command(BaseCommand):
                 shipments,
                 min(max(options["label_workers"], 1), 5),
             )
+            guide_delivery_counts = dispatch_requested_guides(shipments)
             self.stdout.write(
                 self.style.SUCCESS(
                     "Caché local de etiquetas completada: "
@@ -106,6 +112,7 @@ class Command(BaseCommand):
                     f"existentes={label_counts['already_cached']}, "
                     f"no_disponibles={label_counts['unavailable']}, "
                     f"codigos={label_counts['unavailable_by_code']}, "
+                    f"guias_preparadas={guide_delivery_counts['prepared']}, "
                     "externalWrites=0."
                 )
             )
@@ -136,7 +143,7 @@ class Command(BaseCommand):
                         f"La lectura se detuvo antes de escribir: detalle no disponible ({type(error).__name__})."
                     ) from error
 
-        counts, shipments = apply_canonical_snapshot(
+        counts, shipments, new_shipments = apply_canonical_snapshot(
             export_payload=export_payload,
             details=details,
             from_date=from_date.isoformat(),
@@ -155,6 +162,11 @@ class Command(BaseCommand):
                 shipments,
                 min(max(options["label_workers"], 1), 5),
             )
+        guide_delivery_counts = dispatch_requested_guides(shipments)
+        messaging_counts = auto_prepare_new_shipments(new_shipments)
+        internal_copy_counts = auto_send_internal_order_copies(
+            [shipment.order for shipment in new_shipments]
+        )
 
         self.stdout.write(
             self.style.SUCCESS(
@@ -165,6 +177,10 @@ class Command(BaseCommand):
                 f"etiquetas_cache={label_counts['cached']}, "
                 f"etiquetas_no_disponibles={label_counts['unavailable']}, "
                 f"codigos={label_counts.get('unavailable_by_code', {})}, "
+                f"mensajes_nuevos={messaging_counts['created']}, "
+                f"mensajes_simulados={messaging_counts['dispatched']}, "
+                f"copias_internas={internal_copy_counts['created']}, "
+                f"guias_preparadas={guide_delivery_counts['prepared']}, "
                 "externalWrites=0."
             )
         )

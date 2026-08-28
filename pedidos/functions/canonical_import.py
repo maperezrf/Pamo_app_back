@@ -1,6 +1,5 @@
 from collections import Counter
 from decimal import Decimal, InvalidOperation
-from hashlib import sha1
 
 from django.db import transaction
 from django.utils import timezone
@@ -100,6 +99,13 @@ def _minimal_shipment_snapshot(row, channel):
         "guide_review_required": bool(row.get("guide_review_required")),
         "label_source": label_source_metadata(row, channel),
         "label_availability": inferred_label_availability(row, channel),
+        "source_channel": channel,
+        "shopify_warehouse_location_id": (
+            _text(row.get("warehouse_location_id"), 120) if channel == "shopify" else ""
+        ),
+        "shopify_warehouse_name": (
+            _text(row.get("warehouse_name"), 160) if channel == "shopify" else ""
+        ),
         "canonicalImport": True,
         "externalWrites": 0,
     }
@@ -108,11 +114,8 @@ def _minimal_shipment_snapshot(row, channel):
 def _warehouse_for(shipment):
     name = _text(shipment.get("warehouse_name"), 160)
     external_id = _text(shipment.get("warehouse_location_id"), 120)
-    if not name:
+    if not name or not external_id:
         return None
-    if not external_id:
-        digest = sha1(name.casefold().encode("utf-8")).hexdigest()[:20]
-        external_id = f"canonical-name:{digest}"
     warehouse, _ = WarehouseLocation.objects.update_or_create(
         external_id=external_id,
         defaults={
@@ -186,6 +189,7 @@ def apply_canonical_snapshot(*, export_payload, details, from_date, to_date):
     channel_counts = Counter()
     business_origin_latest = {}
     shipment_records = []
+    new_shipment_records = []
 
     for summary in rows:
         canonical_id = _text(summary.get("id"), 80)
@@ -277,7 +281,8 @@ def apply_canonical_snapshot(*, export_payload, details, from_date, to_date):
             )
             if not preserve_manual_warehouse:
                 warehouse = _warehouse_for(shipment_data)
-                shipment.warehouse = warehouse
+                if warehouse:
+                    shipment.warehouse = warehouse
                 shipment.warehouse_name = _text(shipment_data.get("warehouse_name"), 160)
                 shipment.warehouse_reference = _text(shipment_data.get("warehouse_reference"), 120)
                 shipment.warehouse_locked = bool(shipment_data.get("warehouse_locked"))
@@ -310,6 +315,8 @@ def apply_canonical_snapshot(*, export_payload, details, from_date, to_date):
             shipment.save()
             counts["shipments_created" if shipment_created else "shipments_updated"] += 1
             shipment_records.append(shipment)
+            if shipment_created:
+                new_shipment_records.append(shipment)
 
             if not preserve_manual_warehouse:
                 ShipmentItem.objects.filter(shipment=shipment).delete()
@@ -410,4 +417,4 @@ def apply_canonical_snapshot(*, export_payload, details, from_date, to_date):
     )
     counts["orders_total"] = sum(channel_counts.values())
     counts["shipments_total"] = len(shipment_records)
-    return dict(counts), shipment_records
+    return dict(counts), shipment_records, new_shipment_records

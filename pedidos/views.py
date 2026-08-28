@@ -531,6 +531,11 @@ class ShipmentDocumentAPI(RoleRequiredMixin, APIView):
             shipment.guide_delivery_state = "ready_to_send"
         shipment.version += 1
         shipment.save(update_fields=["guide_delivery_state", "version", "updated_at"])
+        from communications.orders_contract import dispatch_requested_guides
+
+        messaging = dispatch_requested_guides(
+            [shipment], actor=f"system:guide-upload:{actor_name(request)}"
+        )
         return Response(
             {
                 "document": {
@@ -539,6 +544,7 @@ class ShipmentDocumentAPI(RoleRequiredMixin, APIView):
                     "size_bytes": document.size_bytes,
                     "url": f"/api/pedidos/shipments/{shipment.id}/document/",
                 },
+                "messaging": messaging,
                 "externalWrites": 0,
             },
             status=201,
