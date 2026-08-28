@@ -1,4 +1,5 @@
 import uuid
+from pathlib import Path
 from decimal import Decimal
 
 from django.conf import settings
@@ -113,6 +114,10 @@ class Remittance(models.Model):
     delivery_status = models.CharField(max_length=16, choices=DeliveryStatus.choices, default=DeliveryStatus.PENDING)
     invoice_status = models.CharField(max_length=24, choices=InvoiceStatus.choices, default=InvoiceStatus.PENDING_CODING)
     communication_status = models.CharField(max_length=24, choices=CommunicationStatus.choices, default=CommunicationStatus.NOT_PREPARED)
+    supplier_global_discount_percent = models.DecimalField(max_digits=7, decimal_places=4, null=True, blank=True)
+    supplier_global_discount_value = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
+    supplier_other_charges = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
+    supplier_freight_cost = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
     created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="created_remittances")
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -127,6 +132,7 @@ class Remittance(models.Model):
 
 
 class RemittanceLine(models.Model):
+    public_id = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
     remittance = models.ForeignKey(Remittance, on_delete=models.CASCADE, related_name="lines")
     line_number = models.PositiveIntegerField()
     quantity = models.DecimalField(
@@ -138,6 +144,9 @@ class RemittanceLine(models.Model):
     usage_destination = models.CharField(max_length=180, blank=True)
     supplier_sku = models.CharField(max_length=120, blank=True)
     supplier_unit_cost = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
+    supplier_line_total = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
+    supplier_discount_percent = models.DecimalField(max_digits=7, decimal_places=4, null=True, blank=True)
+    supplier_discount_value = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
     siigo_sku = models.CharField(max_length=120, blank=True)
     invoice_description = models.CharField(max_length=500, blank=True)
     invoice_unit_price = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
@@ -170,7 +179,78 @@ class RemittanceDelivery(models.Model):
     tracking_number = models.CharField(max_length=160, blank=True)
     driver_name = models.CharField(max_length=160, blank=True)
     notes = models.TextField(blank=True)
+    recipient_name = models.CharField(max_length=160, blank=True)
     completed_at = models.DateTimeField(null=True, blank=True)
+
+
+class RemittanceUsageDestination(models.Model):
+    customer = models.ForeignKey(RemittanceParty, on_delete=models.PROTECT, related_name="usage_destinations")
+    value = models.CharField(max_length=180)
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["value"]
+        constraints = [
+            models.UniqueConstraint(fields=["customer", "value"], name="unique_customer_usage_destination"),
+        ]
+
+    def save(self, *args, **kwargs):
+        self.value = self.value.strip().upper()
+        super().save(*args, **kwargs)
+
+
+class RemittanceShareLink(models.Model):
+    class Purpose(models.TextChoices):
+        RECIPIENT_COMPLETION = "RECIPIENT_COMPLETION", "Firma y destinos del cliente"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    remittance = models.ForeignKey(Remittance, on_delete=models.PROTECT, related_name="share_links")
+    purpose = models.CharField(max_length=32, choices=Purpose.choices, default=Purpose.RECIPIENT_COMPLETION)
+    token_hash = models.CharField(max_length=64, unique=True)
+    expires_at = models.DateTimeField()
+    revoked_at = models.DateTimeField(null=True, blank=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+    created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+
+def recipient_signature_upload_to(instance, filename):
+    return f"remittances/{instance.remittance_id}/recipient-signatures/{uuid.uuid4().hex}.png"
+
+
+class RemittanceRecipientAcceptance(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    remittance = models.OneToOneField(Remittance, on_delete=models.PROTECT, related_name="recipient_acceptance")
+    share_link = models.OneToOneField(RemittanceShareLink, on_delete=models.PROTECT, related_name="acceptance")
+    signer_name = models.CharField(max_length=160)
+    signature_file = models.FileField(upload_to=recipient_signature_upload_to)
+    signature_mime_type = models.CharField(max_length=40, default="image/png")
+    signature_size_bytes = models.PositiveIntegerField()
+    signature_sha256 = models.CharField(max_length=64)
+    idempotency_key = models.UUIDField(unique=True)
+    signed_at = models.DateTimeField(auto_now_add=True)
+
+    def save(self, *args, **kwargs):
+        self.signer_name = self.signer_name.strip().upper()
+        super().save(*args, **kwargs)
+
+
+class RemittanceRecipientAllocation(models.Model):
+    acceptance = models.ForeignKey(RemittanceRecipientAcceptance, on_delete=models.CASCADE, related_name="allocations")
+    line = models.ForeignKey(RemittanceLine, on_delete=models.PROTECT, related_name="recipient_allocations")
+    quantity = models.DecimalField(max_digits=12, decimal_places=3, validators=[MinValueValidator(Decimal("0.001"))])
+    destination = models.CharField(max_length=180)
+
+    class Meta:
+        ordering = ["line__line_number", "id"]
+
+    def save(self, *args, **kwargs):
+        self.destination = self.destination.strip().upper()
+        super().save(*args, **kwargs)
 
 
 class RemittanceAuditEvent(models.Model):
@@ -204,3 +284,35 @@ class RemittanceInvoiceAttempt(models.Model):
 
     class Meta:
         ordering = ["-created_at"]
+
+
+def supplier_invoice_upload_to(instance, filename):
+    extension = Path(filename).suffix.lower().lstrip(".") or "bin"
+    return f"remittances/{instance.remittance_id}/supplier-invoices/{uuid.uuid4().hex}.{extension}"
+
+
+class RemittanceSupplierInvoiceFile(models.Model):
+    """Adjunto contable privado; nunca se publica en el documento del cliente."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    remittance = models.ForeignKey(
+        Remittance,
+        on_delete=models.PROTECT,
+        related_name="supplier_invoice_files",
+    )
+    file = models.FileField(upload_to=supplier_invoice_upload_to)
+    original_name = models.CharField(max_length=180)
+    mime_type = models.CharField(max_length=120)
+    size_bytes = models.PositiveIntegerField()
+    sha256 = models.CharField(max_length=64)
+    uploaded_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["remittance", "sha256"],
+                name="unique_supplier_invoice_per_remittance_hash",
+            ),
+        ]
