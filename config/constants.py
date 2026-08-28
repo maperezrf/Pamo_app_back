@@ -59,20 +59,44 @@ SIIGO_ACCESS_KEY = config("SIIGO_ACCESS_KEY", default="")
 SIIGO_PARTNER_ID = config("SIIGO_PARTNER_ID", default="")
 
 # Meta Cloud API. Permanecen vacías en el laboratorio y nunca se exponen al
-# frontend. Los identificadores observados no se codifican como constantes.
-META_APP_ID = config("META_APP_ID", default="")
-META_APP_SECRET = config("META_APP_SECRET", default="")
-META_WABA_ID = config("META_WABA_ID", default="")
-META_PHONE_NUMBER_ID = config("META_PHONE_NUMBER_ID", default="")
-META_SYSTEM_USER_TOKEN = config("META_SYSTEM_USER_TOKEN", default="")
-META_VERIFY_TOKEN = config("META_VERIFY_TOKEN", default="")
-META_WEBHOOK_URL = config("META_WEBHOOK_URL", default="")
-META_GRAPH_API_VERSION = config("META_GRAPH_API_VERSION", default="")
+# frontend. Railway ya usa el prefijo META_WHATSAPP_; los alias mantienen
+# compatibilidad con instalaciones anteriores sin copiar ni revelar secretos.
+def _config_first(*names, default=""):
+    for name in names:
+        value = config(name, default="")
+        if value:
+            return value
+    return default
+
+
+META_APP_ID = _config_first("META_APP_ID", "META_WHATSAPP_APP_ID")
+META_APP_SECRET = _config_first("META_APP_SECRET", "META_WHATSAPP_APP_SECRET")
+META_WABA_ID = _config_first("META_WABA_ID", "META_WHATSAPP_WABA_ID")
+META_PHONE_NUMBER_ID = _config_first(
+    "META_PHONE_NUMBER_ID", "META_WHATSAPP_PHONE_NUMBER_ID"
+)
+META_SYSTEM_USER_TOKEN = _config_first(
+    "META_SYSTEM_USER_TOKEN", "META_WHATSAPP_ACCESS_TOKEN"
+)
+META_VERIFY_TOKEN = _config_first(
+    "META_VERIFY_TOKEN", "META_WHATSAPP_WEBHOOK_VERIFY_TOKEN"
+)
+META_WEBHOOK_URL = _config_first("META_WEBHOOK_URL", "META_WHATSAPP_WEBHOOK_URL")
+META_GRAPH_API_VERSION = _config_first(
+    "META_GRAPH_API_VERSION", "META_WHATSAPP_GRAPH_API_VERSION"
+)
 META_TEMPLATE_INITIAL_NAME = config("META_TEMPLATE_INITIAL_NAME", default="")
 META_TEMPLATE_INITIAL_LANGUAGE = config("META_TEMPLATE_INITIAL_LANGUAGE", default="")
 META_TEMPLATE_FOLLOWUP_NAME = config("META_TEMPLATE_FOLLOWUP_NAME", default="")
 META_TEMPLATE_FOLLOWUP_LANGUAGE = config("META_TEMPLATE_FOLLOWUP_LANGUAGE", default="")
-META_RECIPIENT_ALLOWLIST = config("META_RECIPIENT_ALLOWLIST", default="", cast=Csv())
+_META_RECIPIENT_ALLOWLIST_RAW = _config_first(
+    "META_RECIPIENT_ALLOWLIST",
+    "META_WHATSAPP_RECIPIENT_ALLOWLIST",
+    "META_WHATSAPP_ALLOWED_RECIPIENTS",
+)
+META_RECIPIENT_ALLOWLIST = [
+    item.strip() for item in _META_RECIPIENT_ALLOWLIST_RAW.split(",") if item.strip()
+]
 
 # DATABASE
 # Vacío en desarrollo local (se usa SQLite). En Railway apunta al Postgres

@@ -1,7 +1,7 @@
 # WhatsApp de Pedidos: entrega controlada a staging
 
 Estado: implementación local validada; despliegue real detenido hasta completar
-las credenciales y la persistencia aislada de `staging-whatsapp`.
+la recepción firmada y la persistencia aislada de `staging-whatsapp`.
 
 ## Destino autorizado
 
@@ -9,6 +9,12 @@ las credenciales y la persistencia aislada de `staging-whatsapp`.
 - Entorno: `staging-whatsapp` (`81d521fd-4da1-4992-82c9-51a5c38da049`).
 - Backend: `Pamo_app_back_whatsapp_staging`
   (`02e0cbe3-1469-4c90-8364-a52c359e0f9a`).
+- URL pública reservada del backend:
+  `https://pamoappbackwhatsappstaging-staging-whatsapp.up.railway.app`.
+- Endpoint previsto del webhook:
+  `https://pamoappbackwhatsappstaging-staging-whatsapp.up.railway.app/api/communications/whatsapp/webhook/meta/`.
+  La URL está reservada, pero no se considera activa hasta completar las puertas
+  y desplegar el artefacto validado.
 - Frontend: `pamo_app_front_whatsapp_staging`
   (`f17482f1-811c-403e-81c2-fb2a6c80acaa`).
 - Producción, Beta y los contactos reales de proveedores quedan fuera de alcance.
@@ -43,13 +49,18 @@ datos del cliente. El envío de PDFs permanece apagado.
 
 1. Base de datos aislada y persistente para el entorno.
 2. Dominio público HTTPS del backend.
-3. Secreto de firma, WABA, `phone_number_id`, token de sistema, token de
-   verificación y versión de Graph API almacenados como variables selladas.
+3. Secreto de firma y token de verificación almacenados como variables
+   selladas. WABA, `phone_number_id`, App ID y token de acceso saliente ya
+   existen bajo nombres `META_WHATSAPP_*`; el código admite esos alias sin
+   exponer sus valores.
 4. Webhook suscrito a `messages` y verificación GET/POST satisfactoria.
 5. Allowlist con un único número y tres puertas externas habilitadas únicamente
    durante la prueba autorizada.
 6. Prueba extremo a extremo y comprobación de replay sin duplicados.
 
-El 28 de agosto de 2026 la inspección de solo lectura encontró ambos servicios
-sin despliegues, dominios, base de datos ni credenciales Meta. No se desplegó ni
-se modificó Railway.
+El 28 de agosto de 2026 la inspección de solo lectura confirmó en el backend las
+credenciales salientes y las puertas de prueba. Siguen faltando, por nombre,
+`META_WHATSAPP_APP_SECRET`, `META_WHATSAPP_WEBHOOK_VERIFY_TOKEN` y
+`PAMO_WHATSAPP_SUPPLIER_AUTOMATION_ENABLED`. Se reservó un dominio público
+reversible, pero el servicio todavía no tiene despliegue ni persistencia
+aislada verificados. No se desplegó código.
