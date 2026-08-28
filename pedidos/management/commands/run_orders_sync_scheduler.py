@@ -35,6 +35,16 @@ def _window_for_cycle(cycle_index, frequent_days, catchup_days, catchup_every):
     return (catchup_days if is_catchup else frequent_days), is_catchup
 
 
+def _date_window(window_days, *, local_today=None, utc_today=None):
+    local_today = local_today or timezone.localdate()
+    utc_today = utc_today or timezone.now().date()
+    from_date = local_today - timedelta(days=window_days - 1)
+    # La API canónica filtra sus rangos por fecha UTC. Después de las 19:00
+    # en Bogotá, una orden nueva ya pertenece al día siguiente en UTC.
+    to_date = max(local_today, utc_today)
+    return from_date, to_date
+
+
 def _safe_error_code(error):
     name = re.sub(r"[^A-Z0-9_]+", "_", type(error).__name__.upper()).strip("_")
     return f"AUTO_SYNC_{name or 'FAILED'}"[:120]
@@ -129,8 +139,7 @@ class Command(BaseCommand):
         download_labels,
     ):
         started_at = timezone.now()
-        to_date = timezone.localdate()
-        from_date = to_date - timedelta(days=window_days - 1)
+        from_date, to_date = _date_window(window_days)
         try:
             call_command(
                 "import_pamo_orders",

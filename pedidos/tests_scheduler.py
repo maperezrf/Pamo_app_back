@@ -1,4 +1,4 @@
-from datetime import timedelta
+from datetime import date, timedelta
 from types import SimpleNamespace
 from unittest.mock import call, patch
 
@@ -8,6 +8,7 @@ from django.test import TestCase
 from django.utils import timezone
 
 from pedidos.models import IntegrationStatus
+from pedidos.management.commands.run_orders_sync_scheduler import _date_window
 
 
 SAFE_FLAGS = (
@@ -38,10 +39,11 @@ class OrdersSyncSchedulerTests(TestCase):
         )
 
         today = timezone.localdate()
+        utc_today = timezone.now().date()
         mocked_import.assert_called_once_with(
             "import_pamo_orders",
             from_date=(today - timedelta(days=1)).isoformat(),
-            to_date=today.isoformat(),
+            to_date=max(today, utc_today).isoformat(),
             workers=4,
             download_labels=True,
             label_workers=3,
@@ -71,6 +73,7 @@ class OrdersSyncSchedulerTests(TestCase):
         )
 
         today = timezone.localdate()
+        utc_today = timezone.now().date()
         self.assertEqual(mocked_import.call_count, 2)
         self.assertEqual(
             mocked_import.call_args_list,
@@ -78,7 +81,7 @@ class OrdersSyncSchedulerTests(TestCase):
                 call(
                     "import_pamo_orders",
                     from_date=(today - timedelta(days=1)).isoformat(),
-                    to_date=today.isoformat(),
+                    to_date=max(today, utc_today).isoformat(),
                     workers=4,
                     download_labels=True,
                     label_workers=3,
@@ -86,7 +89,7 @@ class OrdersSyncSchedulerTests(TestCase):
                 call(
                     "import_pamo_orders",
                     from_date=(today - timedelta(days=13)).isoformat(),
-                    to_date=today.isoformat(),
+                    to_date=max(today, utc_today).isoformat(),
                     workers=4,
                     download_labels=True,
                     label_workers=3,
@@ -94,6 +97,16 @@ class OrdersSyncSchedulerTests(TestCase):
             ],
         )
         mocked_sleep.assert_called_once_with(300)
+
+    def test_date_window_covers_evening_orders_in_next_utc_day(self):
+        from_date, to_date = _date_window(
+            2,
+            local_today=date(2026, 8, 27),
+            utc_today=date(2026, 8, 28),
+        )
+
+        self.assertEqual(from_date, date(2026, 8, 26))
+        self.assertEqual(to_date, date(2026, 8, 28))
 
     @patch("pedidos.management.commands.run_orders_sync_scheduler.fcntl.flock")
     @patch(
