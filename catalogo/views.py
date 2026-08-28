@@ -91,6 +91,7 @@ from .sodimac_catalog import (
 )
 from .sodimac_kits import reverse_sodimac_kit_import
 from .channel_refresh import get_channel_refresh_state, start_channel_refresh
+from .connections import build_connections_workspace
 from .commercial_costs import enrich_commercial_payload
 from .shopify_sync import (
     ShopifySyncError,
@@ -118,6 +119,13 @@ class CatalogChannelRefreshAPI(APIView):
             }, status=409)
         state, started = start_channel_refresh()
         return Response(state, status=202 if started else 200)
+
+
+class CatalogConnectionsAPI(APIView):
+    permission_classes = [LocalOrAuthenticatedCatalogAccess]
+
+    def get(self, request):
+        return Response(build_connections_workspace())
 
 
 CHANNEL_TABLE_CODES = {
@@ -1155,6 +1163,7 @@ class CatalogWorkspaceAPI(APIView):
             "missing_shopify": ReconciliationSerializer(missing_shopify, many=True).data,
             "history": HistorySerializer(history, many=True).data,
             "integration_statuses": IntegrationReadStatusSerializer(IntegrationReadStatus.objects.all(), many=True).data,
+            "connections": build_connections_workspace(),
             "channels": [
                 {"code": "SHOPIFY", "label": "Shopify", "phase": "local_snapshot", "connected": ChannelSnapshot.objects.filter(channel=Channel.SHOPIFY).exclude(state="STALE").exists()},
                 {"code": "SIIGO", "label": "Siigo", "phase": "local_snapshot", "connected": SiigoProductSnapshot.objects.exists()},

@@ -3,6 +3,7 @@ from django.urls import path
 from .views import (
     BulkPilotSimulationAPI,
     CatalogColumnOptionsAPI,
+    CatalogConnectionsAPI,
     CatalogChannelRefreshAPI,
     CatalogWorkspaceAPI,
     ChannelAlignmentAPI,
@@ -26,6 +27,7 @@ from .views import (
 urlpatterns = [
     path("workspace/", CatalogWorkspaceAPI.as_view(), name="catalog-workspace"),
     path("workspace/refresh-channels/", CatalogChannelRefreshAPI.as_view(), name="catalog-refresh-channels"),
+    path("workspace/connections/", CatalogConnectionsAPI.as_view(), name="catalog-connections"),
     path("workspace/column-options/", CatalogColumnOptionsAPI.as_view(), name="catalog-column-options"),
     path("alignment/", ChannelAlignmentAPI.as_view(), name="catalog-alignment"),
     path("pricing/simulate/", PricingSimulationAPI.as_view(), name="pricing-simulate"),
