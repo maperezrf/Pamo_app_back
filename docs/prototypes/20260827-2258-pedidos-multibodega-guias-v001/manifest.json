@@ -19,7 +19,7 @@
       "base_branch": "dev",
       "base_sha": "9ec356d4fc09210995320021094dc4a1c8b74839",
       "delivery_sha": "84c512df913521710e104cf0eab378c7189f85ab",
-      "pr_url": null,
+      "pr_url": "https://github.com/maperezrf/pamo_app_front/pull/11",
       "changed": true
     },
     {
@@ -29,7 +29,7 @@
       "base_branch": "dev",
       "base_sha": "580cab28c0a67e379b55fcf38e8ae5df8850701a",
       "delivery_sha": "5b91751e2d88851bfe29cdec75bee691021f2d5c",
-      "pr_url": null,
+      "pr_url": "https://github.com/maperezrf/Pamo_app_back/pull/8",
       "changed": true
     }
   ],
@@ -79,8 +79,8 @@
     }
   ],
   "prototype": {
-    "id": null,
-    "canonical_url": null
+    "id": "37431612-bdbb-48b5-820a-cc014ccf58e6",
+    "canonical_url": "https://github.com/maperezrf/Pamo_app_back/pull/8"
   },
   "webhook_owned_fields": [
     "merged_to_desarrollo",
@@ -89,5 +89,5 @@
     "github_event_id",
     "ultima_actualizacion_webhook"
   ],
-  "external_writes": 0
+  "external_writes": 6
 }

@@ -13,6 +13,9 @@ Este corte prepara para revisión el flujo local de Pedidos y logística de PAMO
 - Responsable: Mauricio Pérez
 - Origen: desarrollo local aislado en PAMO APP
 - Estado: READY_FOR_REVIEW
+- PR backend: https://github.com/maperezrf/Pamo_app_back/pull/8
+- PR frontend: https://github.com/maperezrf/pamo_app_front/pull/11
+- Registro de Prototipos: `37431612-bdbb-48b5-820a-cc014ccf58e6`
 
 ## Objetivo y alcance
 
@@ -89,6 +92,7 @@ El importador conserva el pedido comercial y crea despachos separados cuando exi
 
 - Despliegue: NO REALIZADO.
 - Merge: NO REALIZADO.
+- Los dos PR están en estado Draft contra `dev`.
 - Puntos originales: `checkpoint/pedidos-dispatch-guides-local-20260827-back` y `checkpoint/pedidos-dispatch-guides-local-20260827-front`.
 - La rama de handoff puede cerrarse sin afectar las ramas originales ni `dev`.
 
