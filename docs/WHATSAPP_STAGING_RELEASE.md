@@ -58,9 +58,17 @@ datos del cliente. El envío de PDFs permanece apagado.
    durante la prueba autorizada.
 6. Prueba extremo a extremo y comprobación de replay sin duplicados.
 
-El 28 de agosto de 2026 la inspección de solo lectura confirmó en el backend las
+El 27 de agosto de 2026 la inspección de solo lectura confirmó en el backend las
 credenciales salientes y las puertas de prueba. Siguen faltando, por nombre,
 `META_WHATSAPP_APP_SECRET`, `META_WHATSAPP_WEBHOOK_VERIFY_TOKEN` y
 `PAMO_WHATSAPP_SUPPLIER_AUTOMATION_ENABLED`. Se reservó un dominio público
 reversible, pero el servicio todavía no tiene despliegue ni persistencia
 aislada verificados. No se desplegó código.
+
+## Evidencia local del candidato
+
+- Backend: 83 pruebas aprobadas y cero migraciones pendientes.
+- Frontend: 8 pruebas de mensajería, análisis estático y compilación aprobados.
+- QA visual: 1440 x 900 y 390 x 844, con 25 pedidos visibles, sin desbordamiento,
+  errores de consola ni respuestas HTTP fallidas después de iniciar sesión.
+- Todas las pruebas se ejecutaron con escrituras externas apagadas.
