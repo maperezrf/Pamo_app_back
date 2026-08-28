@@ -9,7 +9,7 @@ from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from config.constants import GOOGLE_CLIENT_ID
+from config.constants import DEBUG, GOOGLE_CLIENT_ID, LOCAL_DEMO_AUTH_ENABLED
 
 from .functions.build_menu import build_menu_for_user
 from .models import AllowedEmail
@@ -60,6 +60,35 @@ class GoogleLoginAPI(APIView):
             "authorized": True,
             "user": {"email": user.email, "name": payload.get("name", user.email)},
         })
+
+
+class LocalDemoLoginAPI(APIView):
+    """Acceso explícito para la copia local aislada.
+
+    La doble condición impide que el endpoint funcione si una variable queda
+    habilitada accidentalmente fuera de DEBUG. No recibe correo ni permite
+    escoger identidad desde el navegador.
+    """
+
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        if not (DEBUG and LOCAL_DEMO_AUTH_ENABLED):
+            return Response({"authorized": False, "reason": "disabled"}, status=404)
+        user = User.objects.filter(username="operador.local@pamo.test").first()
+        if not user:
+            return Response(
+                {"authorized": False, "reason": "run_seed_orders_local"},
+                status=409,
+            )
+        login(request, user)
+        return Response(
+            {
+                "authorized": True,
+                "user": {"email": user.email, "name": "Operador local"},
+                "localMode": True,
+            }
+        )
 
 
 class MeAPI(APIView):

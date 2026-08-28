@@ -43,4 +43,52 @@ MENU = [
         "roles": ["Admin", "Facturacion"],
         "submodulos": [],
     },
+    {
+        "key": "catalogo-multicanal",
+        "label": "Catálogo multicanal",
+        "path": "/catalogo-multicanal",
+        "roles": ["Admin", "Comercial", "Catalogo"],
+        "submodulos": [],
+    },
+    {
+        "key": "ventas",
+        "label": "Ventas",
+        "path": "/ventas",
+        "roles": ["Admin", "Operaciones", "Logistica", "Lider Comercial", "Gerencia"],
+        "submodulos": [
+            {
+                "key": "pedidos-dashboard",
+                "label": "Dashboard de pedidos",
+                "path": "/ventas",
+                "roles": [],
+            },
+            {
+                "key": "pedidos",
+                "label": "Pedidos",
+                "path": "/ventas/pedidos",
+                "roles": [],
+            },
+        ],
+    },
+    {
+        "key": "integraciones",
+        "label": "Integraciones",
+        "path": "/integraciones/whatsapp",
+        "roles": ["Admin", "Operaciones", "Logistica", "Lider Comercial", "Gerencia"],
+        "submodulos": [
+            {
+                "key": "integraciones-whatsapp",
+                "label": "WhatsApp",
+                "path": "/integraciones/whatsapp",
+                "roles": [],
+            },
+        ],
+    },
+    {
+        "key": "envios-entrega",
+        "label": "Envíos y entrega",
+        "path": "/envios-entrega",
+        "roles": ["Admin", "Comercial", "Catalogo", "Logistica"],
+        "submodulos": [],
+    },
 ]

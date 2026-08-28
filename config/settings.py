@@ -30,6 +30,9 @@ INSTALLED_APPS = [
     'accounts',
     'feature_tracking',
     'facturacion',
+    'catalogo',
+    'pedidos',
+    'communications',
 ]
 
 MIDDLEWARE = [
@@ -115,13 +118,26 @@ STATIC_URL = 'static/'
 STATIC_ROOT = BASE_DIR / 'staticfiles'
 STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
 
-# Los adjuntos de facturas de proveedor son privados y se sirven únicamente
-# desde endpoints autenticados; no se expone MEDIA_URL.
-MEDIA_ROOT = BASE_DIR / 'private_uploads'
+# Los documentos de guía y los adjuntos de facturas son privados: no se
+# declara MEDIA_URL ni se sirven desde Django static. Sólo salen por endpoints
+# autenticados de sus módulos.
+PRIVATE_UPLOAD_ROOT = BASE_DIR / 'private_uploads'
+MEDIA_ROOT = PRIVATE_UPLOAD_ROOT
 
 # Default primary key field type
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+
+# El catálogo usa snapshots persistidos y una caché local corta.
+CACHES = {
+    "default": {
+        "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+        "LOCATION": "pamo-catalog-local",
+        "TIMEOUT": 60,
+        "OPTIONS": {"MAX_ENTRIES": 1000},
+    }
+}
+
 
 # Django REST Framework
 # Defaults explícitos a propósito: cada APIView nueva parte de "requiere

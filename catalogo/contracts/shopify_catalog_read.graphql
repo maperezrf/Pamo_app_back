@@ -1,0 +1,65 @@
+query MerciCatalogRead($first: Int!, $after: String, $updatedQuery: String) {
+  productVariants(first: $first, after: $after, query: $updatedQuery, sortKey: ID) {
+    nodes {
+      id
+      sku
+      barcode
+      title
+      price
+      compareAtPrice
+      inventoryPolicy
+      inventoryQuantity
+      updatedAt
+      selectedOptions { name value }
+      metafields(first: 50) { nodes { namespace key type jsonValue updatedAt } }
+      inventoryItem {
+        id
+        tracked
+        requiresShipping
+        unitCost { amount currencyCode }
+        measurement { weight { unit value } }
+        inventoryLevels(first: 100) {
+          nodes {
+            id
+            location {
+              id
+              name
+              isActive
+              fulfillsOnlineOrders
+              addressVerified
+              address {
+                address1
+                address2
+                city
+                province
+                provinceCode
+                zip
+                country
+                countryCode
+              }
+            }
+            quantities(names: ["available", "reserved", "committed", "incoming", "on_hand"]) { name quantity }
+            updatedAt
+          }
+        }
+      }
+      product {
+        id
+        title
+        handle
+        vendor
+        productType
+        status
+        tags
+        descriptionHtml
+        updatedAt
+        category { id name fullName }
+        featuredMedia { preview { image { url altText } } }
+        media(first: 100) { nodes { id mediaContentType alt preview { image { url altText } } } }
+        collections(first: 100) { nodes { id handle title updatedAt } }
+        metafields(first: 100) { nodes { namespace key type jsonValue updatedAt } }
+      }
+    }
+    pageInfo { hasNextPage endCursor }
+  }
+}
