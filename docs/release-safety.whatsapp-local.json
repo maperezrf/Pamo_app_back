@@ -1,0 +1,44 @@
+{
+  "repo": ".",
+  "profile": "shared+orders+integrations+release-safety",
+  "environment": "whatsapp-local-controlado",
+  "service": "pamo-app-whatsapp-local-api",
+  "test_commands": [
+    [
+      "/usr/bin/env",
+      "SECRET_KEY=qa-local-only",
+      "DEBUG=True",
+      "GOOGLE_CLIENT_ID=qa.invalid.apps.googleusercontent.com",
+      "GITHUB_WEBHOOK_SECRET=qa-disabled",
+      "MCP_API_KEY=qa-disabled",
+      "DATABASE_URL=",
+      "PAMO_WHATSAPP_DATABASE_PATH=:memory:",
+      "EXTERNAL_WRITES_ENABLED=False",
+      "MESSAGING_EXTERNAL_WRITES_ENABLED=False",
+      "PAMO_WHATSAPP_EXTERNAL_WRITES_ENABLED=False",
+      "PAMO_WHATSAPP_PROVIDER=mock",
+      "ORDERS_LOCAL_MODE=True",
+      "ORDERS_EXTERNAL_READS_ENABLED=False",
+      "ORDERS_EXTERNAL_WRITES_ENABLED=False",
+      "LOCAL_DEMO_AUTH_ENABLED=True",
+      "/Users/mauricioperez/Documents/PAMO_APP/Pamo_app_back/.venv/bin/python",
+      "manage.py",
+      "test",
+      "communications",
+      "pedidos",
+      "accounts",
+      "feature_tracking"
+    ]
+  ],
+  "url_checks": [
+    {
+      "url": "http://127.0.0.1:8020/api/auth/csrf/",
+      "allowed_status": [200]
+    },
+    {
+      "url": "http://127.0.0.1:8020/api/communications/whatsapp/capabilities/",
+      "allowed_status": [200, 401, 403],
+      "forbidden_status": [404, 405, 500, 502, 503, 504]
+    }
+  ]
+}

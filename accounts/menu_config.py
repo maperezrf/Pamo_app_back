@@ -49,4 +49,18 @@ MENU = [
             },
         ],
     },
+    {
+        "key": "integraciones",
+        "label": "Integraciones",
+        "path": "/integraciones/whatsapp",
+        "roles": ["Admin", "Operaciones", "Logistica", "Lider Comercial", "Gerencia"],
+        "submodulos": [
+            {
+                "key": "integraciones-whatsapp",
+                "label": "WhatsApp",
+                "path": "/integraciones/whatsapp",
+                "roles": [],
+            },
+        ],
+    },
 ]

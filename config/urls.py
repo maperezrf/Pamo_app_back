@@ -10,4 +10,5 @@ urlpatterns = [
     path('api/tracking/', include('feature_tracking.urls')),
     path('api/catalogo/', include('catalogo.urls')),
     path('api/pedidos/', include('pedidos.urls')),
+    path('api/communications/', include('communications.urls')),
 ]
