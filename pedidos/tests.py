@@ -102,7 +102,37 @@ class OrdersAPITests(TestCase):
         self.assertEqual(payload["orders"][0]["channel_order_id"], "19335")
         self.assertEqual(payload["orders"][0]["warehouses"], ["Barú", "Proveedores"])
         self.assertEqual(payload["orders"][0]["shipment_count"], 2)
+        self.assertEqual(
+            payload["orders"][0]["label_statuses"],
+            ["pending_provider", "pending_provider"],
+        )
         self.assertEqual(payload["externalWrites"], 0)
+
+    def test_order_detail_explains_non_printable_fulfillment_label(self):
+        self.shipment_a.source_snapshot = {
+            "canonicalImport": True,
+            "label_availability": {
+                "status": "not_printable",
+                "reason": "MERCADOLIBRE_FULFILLMENT_NO_SELLER_LABEL",
+                "checked_at": None,
+            },
+        }
+        self.shipment_a.save()
+        self.login()
+
+        response = self.client.get(f"/api/pedidos/{self.order.id}/")
+
+        self.assertEqual(response.status_code, 200)
+        shipment = next(
+            item for item in response.json()["shipments"]
+            if item["id"] == str(self.shipment_a.id)
+        )
+        self.assertFalse(shipment["has_document"])
+        self.assertEqual(shipment["label_status"], "not_printable")
+        self.assertEqual(
+            shipment["label_status_reason"],
+            "MERCADOLIBRE_FULFILLMENT_NO_SELLER_LABEL",
+        )
 
     def test_search_by_sku_finds_order(self):
         self.login()

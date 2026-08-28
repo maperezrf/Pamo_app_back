@@ -15,6 +15,10 @@ from pedidos.models import (
     TrackingEvent,
     WarehouseLocation,
 )
+from pedidos.functions.label_status import (
+    inferred_label_availability,
+    label_source_metadata,
+)
 
 
 ALLOWED_LOGISTICS_STATES = {choice for choice, _ in Shipment.LOGISTICS_STATES}
@@ -88,12 +92,14 @@ def _minimal_order_snapshot(row, channel):
     }
 
 
-def _minimal_shipment_snapshot(row):
+def _minimal_shipment_snapshot(row, channel):
     return {
         "canonical_shipment_id": _text(row.get("id"), 80),
         "canonical_external_id": _text(row.get("external_id"), 180),
         "remote_documents": row.get("documents") if isinstance(row.get("documents"), list) else [],
         "guide_review_required": bool(row.get("guide_review_required")),
+        "label_source": label_source_metadata(row, channel),
+        "label_availability": inferred_label_availability(row, channel),
         "canonicalImport": True,
         "externalWrites": 0,
     }
@@ -300,7 +306,7 @@ def apply_canonical_snapshot(*, export_payload, details, from_date, to_date):
             shipment.incident_detail = _text(shipment_data.get("incident_detail"), 10_000)
             shipment.customer_context = _text(shipment_data.get("customer_context"), 10_000)
             shipment.version = max(int(shipment_data.get("version") or 1), shipment.version or 1)
-            shipment.source_snapshot = _minimal_shipment_snapshot(shipment_data)
+            shipment.source_snapshot = _minimal_shipment_snapshot(shipment_data, channel)
             shipment.save()
             counts["shipments_created" if shipment_created else "shipments_updated"] += 1
             shipment_records.append(shipment)

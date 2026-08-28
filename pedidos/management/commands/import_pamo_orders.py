@@ -18,6 +18,14 @@ from config.constants import (
 from integrations.orders.base import ExternalReadFailed
 from integrations.orders.canonical import PamoCanonicalOrdersProvider
 from pedidos.functions.canonical_import import apply_canonical_snapshot, apply_integration_readiness
+from pedidos.functions.label_status import (
+    LABEL_AVAILABLE,
+    LABEL_NOT_PRINTABLE,
+    LABEL_PENDING_PROVIDER,
+    LABEL_TEMPORARY_ERROR,
+    serialized_label_availability,
+    set_label_availability,
+)
 from pedidos.functions.querysets import operational_orders
 from pedidos.models import IntegrationStatus, Shipment, ShipmentDocument
 
@@ -164,22 +172,33 @@ class Command(BaseCommand):
     def _cache_labels(self, provider, shipments, workers):
         candidates = []
         already_cached = 0
+        not_printable = 0
         for shipment in shipments:
-            if not shipment.tracking_number:
-                continue
             if ShipmentDocument.objects.filter(shipment=shipment).exists():
                 already_cached += 1
                 continue
-            canonical_id = str(shipment.source_snapshot.get("canonical_shipment_id") or "")
+            snapshot = shipment.source_snapshot if isinstance(shipment.source_snapshot, dict) else {}
+            availability = snapshot.get("label_availability") or {}
+            if availability.get("status") == LABEL_NOT_PRINTABLE:
+                not_printable += 1
+                continue
+            if not shipment.tracking_number:
+                continue
+            canonical_id = str(snapshot.get("canonical_shipment_id") or "")
             if canonical_id:
-                candidates.append((shipment.id, canonical_id))
+                prefer_manual = bool(snapshot.get("remote_documents"))
+                candidates.append((shipment.id, canonical_id, prefer_manual))
 
         downloaded = []
         unavailable = []
         with ThreadPoolExecutor(max_workers=workers) as executor:
             pending = {
-                executor.submit(provider.shipment_document, canonical_id): (shipment_id, canonical_id)
-                for shipment_id, canonical_id in candidates
+                executor.submit(
+                    provider.shipment_document,
+                    canonical_id,
+                    prefer_manual=prefer_manual,
+                ): (shipment_id, canonical_id)
+                for shipment_id, canonical_id, prefer_manual in candidates
             }
             for future in as_completed(pending):
                 shipment_id, _ = pending[future]
@@ -190,26 +209,59 @@ class Command(BaseCommand):
                 except Exception:
                     unavailable.append((shipment_id, "CANONICAL_LABEL_READ_FAILED"))
 
+        cached = 0
         with transaction.atomic():
             for shipment_id, document in downloaded:
                 shipment = Shipment.objects.select_for_update().get(id=shipment_id)
                 if ShipmentDocument.objects.filter(shipment=shipment).exists():
                     already_cached += 1
-                    continue
-                digest = sha256(document.content).hexdigest()
-                stored = ShipmentDocument(
-                    shipment=shipment,
-                    original_name=document.filename,
-                    mime_type=document.mime_type,
-                    size_bytes=len(document.content),
-                    sha256=digest,
-                    uploaded_by="canonical-read-only-import",
+                else:
+                    digest = sha256(document.content).hexdigest()
+                    stored = ShipmentDocument(
+                        shipment=shipment,
+                        original_name=document.filename,
+                        mime_type=document.mime_type,
+                        size_bytes=len(document.content),
+                        sha256=digest,
+                        uploaded_by="canonical-read-only-import",
+                    )
+                    stored.file.save(document.filename, ContentFile(document.content), save=True)
+                    cached += 1
+                shipment.source_snapshot = set_label_availability(
+                    shipment.source_snapshot,
+                    LABEL_AVAILABLE,
+                    "LOCAL_DOCUMENT_AVAILABLE",
+                    checked_at=timezone.now(),
                 )
-                stored.file.save(document.filename, ContentFile(document.content), save=True)
+                shipment.save(update_fields=["source_snapshot", "updated_at"])
+
+            for shipment_id, error_code in unavailable:
+                shipment = Shipment.objects.select_for_update().get(id=shipment_id)
+                snapshot = shipment.source_snapshot if isinstance(shipment.source_snapshot, dict) else {}
+                current = snapshot.get("label_availability") or {}
+                if current.get("status") == LABEL_NOT_PRINTABLE:
+                    continue
+                status = (
+                    LABEL_PENDING_PROVIDER
+                    if error_code == "CANONICAL_HTTP_404"
+                    else LABEL_TEMPORARY_ERROR
+                )
+                shipment.source_snapshot = set_label_availability(
+                    shipment.source_snapshot,
+                    status,
+                    error_code,
+                    checked_at=timezone.now(),
+                )
+                shipment.save(update_fields=["source_snapshot", "updated_at"])
+
             now = timezone.now()
             total_cached = ShipmentDocument.objects.filter(
                 uploaded_by="canonical-read-only-import"
             ).count()
+            availability_counts = Counter()
+            shipment_ids = [shipment.id for shipment in shipments]
+            for current in Shipment.objects.filter(id__in=shipment_ids).select_related("document"):
+                availability_counts[serialized_label_availability(current)["status"]] += 1
             envia_status, _ = IntegrationStatus.objects.get_or_create(provider="envia")
             envia_status.last_attempt_at = now
             envia_status.last_success_at = now
@@ -217,17 +269,23 @@ class Command(BaseCommand):
             envia_status.last_error_code = "" if not unavailable else "SOME_LABELS_UNAVAILABLE"
             envia_status.records_observed = total_cached
             envia_status.details = {
-                "cached": len(downloaded),
+                "cached": cached,
                 "cachedTotal": total_cached,
                 "alreadyCached": already_cached,
                 "unavailable": len(unavailable),
                 "unavailableByCode": dict(Counter(code for _, code in unavailable)),
+                "available": availability_counts[LABEL_AVAILABLE],
+                "pendingProvider": availability_counts[LABEL_PENDING_PROVIDER],
+                "notPrintable": availability_counts[LABEL_NOT_PRINTABLE],
+                "temporaryError": availability_counts[LABEL_TEMPORARY_ERROR],
+                "skippedNotPrintable": not_printable,
                 "externalWrites": 0,
             }
             envia_status.save()
         return {
-            "cached": len(downloaded),
+            "cached": cached,
             "already_cached": already_cached,
             "unavailable": len(unavailable),
             "unavailable_by_code": dict(Counter(code for _, code in unavailable)),
+            "not_printable": not_printable,
         }

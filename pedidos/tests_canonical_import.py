@@ -195,3 +195,40 @@ class CanonicalImportTests(TestCase):
             order.source_snapshot["business_origin_confidence"],
             "explicit_source_email_marker",
         )
+
+    def test_mercado_libre_fulfillment_is_marked_without_seller_pdf(self):
+        payload, details = self.snapshot()
+        payload["orders"][0]["channel"] = "mercado-libre"
+        payload["orders"][0]["external_id"] = "2000018144943652"
+        payload["orders"][0]["channel_order_id"] = "2000018144943652"
+        detail = details[self.order_id]
+        detail["channel"] = "mercado-libre"
+        detail["external_id"] = "2000018144943652"
+        detail["channel_order_id"] = "2000018144943652"
+        detail["shipments"][0]["external_id"] = "meli:47868842483"
+        detail["shipments"][0]["source_snapshot"] = {
+            "status": "ready_to_ship",
+            "substatus": "in_packing_list",
+            "logistic": {"mode": "me2", "type": "fulfillment"},
+        }
+
+        apply_canonical_snapshot(
+            export_payload=payload,
+            details=details,
+            from_date="2026-08-27",
+            to_date="2026-08-28",
+        )
+
+        shipment = Shipment.objects.get(external_id="meli:47868842483")
+        self.assertEqual(
+            shipment.source_snapshot["label_availability"]["status"],
+            "not_printable",
+        )
+        self.assertEqual(
+            shipment.source_snapshot["label_availability"]["reason"],
+            "MERCADOLIBRE_FULFILLMENT_NO_SELLER_LABEL",
+        )
+        self.assertEqual(
+            shipment.source_snapshot["label_source"]["logistic_type"],
+            "fulfillment",
+        )

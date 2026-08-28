@@ -1,11 +1,14 @@
 from urllib.parse import quote
 
+from pedidos.functions.label_status import serialized_label_availability
+
 
 def decimal_value(value):
     return None if value is None else str(value)
 
 
 def shipment_dict(shipment, *, detailed=False):
+    label_availability = serialized_label_availability(shipment)
     data = {
         "id": str(shipment.id),
         "order_id": str(shipment.order_id),
@@ -30,6 +33,9 @@ def shipment_dict(shipment, *, detailed=False):
         "version": shipment.version,
         "has_document": hasattr(shipment, "document"),
         "document_url": f"/api/pedidos/shipments/{shipment.id}/document/" if hasattr(shipment, "document") else None,
+        "label_status": label_availability["status"],
+        "label_status_reason": label_availability["reason"],
+        "label_status_checked_at": label_availability["checked_at"],
     }
     if detailed:
         data["items"] = [
@@ -62,6 +68,7 @@ def order_row(order):
     tracking_numbers = [item.tracking_number or "Sin guía" for item in shipments]
     logistics_states = [item.logistics_state for item in shipments]
     incident_categories = [item.incident_category for item in shipments if item.incident_category]
+    label_availability = [serialized_label_availability(item) for item in shipments]
     total_cost = sum((item.carrier_cost or 0) for item in shipments)
     source_snapshot = order.source_snapshot if isinstance(order.source_snapshot, dict) else {}
     business_origin = source_snapshot.get("business_origin") or order.channel
@@ -88,6 +95,9 @@ def order_row(order):
         "warehouses": warehouse_names,
         "carriers": carriers,
         "tracking_numbers": tracking_numbers,
+        "has_documents": [hasattr(item, "document") for item in shipments],
+        "label_statuses": [item["status"] for item in label_availability],
+        "label_status_reasons": [item["reason"] for item in label_availability],
         "carrier_cost": str(total_cost) if total_cost else None,
         "logistics_state": logistics_states,
         "incident_category": incident_categories,
