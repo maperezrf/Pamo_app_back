@@ -26,4 +26,4 @@ class ShopifyCustomerWebhookView(APIView):
             code="customers.process_webhook",
             params={"topic": topic, "payload": request.data},
         )
-        return Response(status=200)
+        return Response(status=200) 
