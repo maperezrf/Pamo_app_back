@@ -10,7 +10,7 @@ Repo hermano: **frontend** en [`pamo_app_front`](https://github.com/maperezrf/pa
 (React + Vite). Backend y frontend son repos separados que se despliegan de
 forma independiente.
 
-**Antes de escribir código, leer [`docs/GOVERNANCE.md`](docs/GOVERNANCE.md)**
+**Antes de escribir código, leer [`docs/INDEX.md`](docs/INDEX.md)**
 — reglas de arquitectura, permisos, estructura de apps, integraciones y el
 contrato con el frontend. Es de lectura obligatoria tanto para quien
 programa a mano como para quien dirige el desarrollo con IA.
@@ -77,9 +77,9 @@ class MiEndpoint(RoleRequiredMixin, APIView):
     allowed_roles = ["Admin"]
 ```
 
-Ver `docs/GOVERNANCE.md` §4 para el resto de reglas de vistas/permisos, §3
-para en qué app va cada funcionalidad nueva, y §5 para cómo conectar un
-proveedor externo.
+Ver [`docs/patterns/AUTHORIZATION.md`](docs/patterns/AUTHORIZATION.md) para
+permisos y [`docs/architecture/INTEGRATIONS.md`](docs/architecture/INTEGRATIONS.md)
+para proveedores externos.
 
 ## Notas
 
@@ -88,4 +88,4 @@ proveedor externo.
   `config/settings.py` → `DATABASES`.
 - Si backend y frontend terminan en dominios distintos, revisar CORS y
   cookie cross-domain antes del primer deploy real — ver
-  `docs/GOVERNANCE.md` §12.
+  [`docs/patterns/API_VIEWS_AND_SERIALIZERS.md`](docs/patterns/API_VIEWS_AND_SERIALIZERS.md).

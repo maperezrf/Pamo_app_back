@@ -28,7 +28,9 @@ INSTALLED_APPS = [
     'rest_framework',
     'corsheaders',
     'accounts',
-    'feature_tracking',
+    'integrations',
+    'orchestrator',
+    'customers',
 ]
 
 MIDDLEWARE = [

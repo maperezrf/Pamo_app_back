@@ -1,3 +1,4 @@
+APScheduler==3.11.3
 asgiref==3.12.1
 certifi==2026.7.22
 cffi==2.1.1
@@ -19,5 +20,6 @@ python-decouple==3.8
 requests==2.34.2
 sqlparse==0.5.5
 tzdata==2026.3
+tzlocal==5.4.4
 urllib3==2.7.0
 whitenoise==6.12.0
