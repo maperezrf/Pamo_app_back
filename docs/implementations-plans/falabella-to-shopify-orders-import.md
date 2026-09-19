@@ -4,10 +4,11 @@ Estado: Fase 0 (`orchestrator`), Fase 1 (cédula del cliente en
 `integrations/falabella`) y el reemplazo de la Fase 2 (app `customers`, ver
 [`shopify-customers-directory.md`](shopify-customers-directory.md))
 implementados y probados — `python manage.py test` completo en verde (107
-tests). Solo falta la Fase 3 (app `orders`). Este documento no reemplaza el
-código como evidencia de estado; antes de ejecutar lo que falta, releer
-`docs/INDEX.md` y confirmar que los documentos citados abajo siguen
-vigentes.
+tests). La Fase 3 se rediseñó y su plan a detalle vive en
+[`marketplace-orders-import.md`](marketplace-orders-import.md) — sin
+implementar todavía. Este documento no reemplaza el código como evidencia de
+estado; antes de ejecutar lo que falta, releer `docs/INDEX.md` y confirmar
+que los documentos citados abajo siguen vigentes.
 
 ## Alcance y decisiones ya tomadas
 
@@ -23,34 +24,43 @@ vigentes.
   este repo, que hoy es un monolito Django simple con
   `INSTALLED_APPS = [accounts, integrations]`. No se usa como base.
 
-## Hallazgo bloqueante: `orchestrator/` no está integrado a este repo
+## Hallazgo bloqueante (histórico, resuelto en la Fase 0): `orchestrator/` no estaba integrado a este repo
 
-Confirmado en código, no en documentación:
+**Ya no aplica — queda documentado solo como registro de lo que se
+encontró y corrigió.** Verificado de nuevo el 2026-09-19 contra el estado
+real: `orchestrator` está en `INSTALLED_APPS`, `orchestrator/apps.py`
+declara `name = "orchestrator"` (correcto), y son 25 archivos trackeados en
+git (`git ls-files orchestrator/`). Si algo de esto no coincide al leer
+esto en el futuro, el código manda, no este documento — confirmarlo de
+nuevo antes de asumir cualquiera de los dos estados.
 
-- `orchestrator/` está sin trackear en git (`?? orchestrator/`) y no está en
-  `INSTALLED_APPS` (`config/settings.py`).
-- `orchestrator/apps.py` declara `name = "apps.orchestrator"` — no existe
+Lo que se encontró originalmente (antes de la Fase 0, ver tabla de cambios
+abajo):
+
+- `orchestrator/` estaba sin trackear en git (`?? orchestrator/`) y no
+  estaba en `INSTALLED_APPS` (`config/settings.py`).
+- `orchestrator/apps.py` declaraba `name = "apps.orchestrator"` — no existe
   paquete `apps/` en este repo (el directorio real es top-level
   `orchestrator/`).
-- `orchestrator/apis.py` importa `from apps.users.permissions import
-  HasPermissionCode` y usa `drf_spectacular` — ninguno existe en este
+- `orchestrator/apis.py` importaba `from apps.users.permissions import
+  HasPermissionCode` y usaba `drf_spectacular` — ninguno existe en este
   backend (acá la autorización es `accounts.permissions.RoleRequiredMixin` /
   `ApiKeyRequiredMixin`, y el contrato HTTP se documenta a mano en
   `docs/contracts/API.md`, sin generación automática de OpenAPI).
-- `orchestrator/registrations.py` importa `from
+- `orchestrator/registrations.py` importaba `from
   apps.reports.f11.core.orchestrator import generate_report` — módulo
   inexistente.
-- `orchestrator/core/runner.py` importa `from core_tools.logs import
+- `orchestrator/core/runner.py` importaba `from core_tools.logs import
   report_error` — paquete inexistente.
-- `orchestrator/tests/*.py` importan todo bajo `apps.orchestrator...` y
+- `orchestrator/tests/*.py` importaban todo bajo `apps.orchestrator...` y
   `apps.users.models` — inexistentes.
-- Falta en `requirements.txt`: `APScheduler` (lo usa `core/scheduler.py`) y
-  `drf-spectacular` (si se conservan los decoradores).
+- Faltaba en `requirements.txt`: `APScheduler` (lo usa `core/scheduler.py`)
+  y `drf-spectacular` (si se conservaban los decoradores).
 
 El resto (`core/registry.py`, `core/concurrency_manager.py`,
 `core/cancellation.py`, `core/recovery.py`, `core/constants.py`,
-`models.py`, `serializers.py`) es autocontenido y portable tal cual — bajo
-acoplamiento real, no requiere cambios de fondo.
+`models.py`, `serializers.py`) era autocontenido y portable tal cual — bajo
+acoplamiento real, no necesitó cambios de fondo.
 
 ## Fase 0 — Adaptar `orchestrator` a Pamo (prerrequisito)
 
@@ -137,63 +147,27 @@ acepta `tags`** — no requiere cambios. Solo hay que pasar el tag de origen
 (ej. `["falabella"]`) desde el orquestador de negocio; esto no se vio
 afectado por el hallazgo de arriba.
 
-## Fase 3 — App nueva `orders`
+## Fase 3 — reemplazada: app nueva `orders`
 
-Primera app de negocio "real" de este repo aparte de `accounts` (hoy
-`accounting`/`facturacion`/`logistics` son carpetas vacías, sin
-`INSTALLED_APPS`, sin código fuente — solo "Pendiente" en `docs/INDEX.md`).
-Estructura:
+**Rediseñada el 2026-09-19, sin implementar todavía.** El diseño original
+de esta sección (un único modelo `FalabellaOrderImport` como ledger simple)
+se reemplazó por un modelo general multi-marketplace
+(`MarketplaceOrder`/`MarketplaceOrderItem`), decisión explícita para que un
+canal futuro (Mercado Libre, etc.) reutilice la misma estructura. Incluye
+también un hallazgo real de esa misma fecha: pedidos reales de Falabella
+(`ShippingType: Dropshipping`) llegaron sin email ni teléfono del
+comprador, lo que `create_customer()` exige — el diseño nuevo lo maneja
+como un estado de error explícito, no lo asume como caso raro.
 
-- `orders/models.py` — `FalabellaOrderImport`: `falabella_order_id` (único),
-  `falabella_order_number`, `customer_identification`,
-  `shopify_customer_id`, `shopify_order_id` (null hasta confirmarse),
-  `status` (pending/imported/failed), `error_message`, `created_at`,
-  `imported_at`. Es el dato de negocio (ledger de idempotencia) que le
-  pertenece a `orders`, no a `integrations` — evita reimportar el mismo
-  pedido si `orderCreate` no tiene clave de idempotencia propia (ya
-  documentado como riesgo en `create_order.py`).
-- `orders/functions/import_falabella_order.py` — por cada pedido:
-  `get_order_items` → resolver variantes (`get_variant_by_sku`) →
-  `customers.find_by_identification` (lookup **local**, ver
-  [`shopify-customers-directory.md`](shopify-customers-directory.md) — ya
-  no se busca contra Shopify en vivo) → si no existe, `create_customer` +
-  `create_customer_address` (Shopify) y upsert local inmediato →
-  `create_order(..., tags=["falabella"])` → registrar en
-  `FalabellaOrderImport`. Firma compatible con el contrato del orchestrator:
-  `(params, progress_callback=None, cancellation_token=None)`.
-- Depende de que la app `customers` (ver documento enlazado) exista primero
-  — es un prerrequisito de esta fase, igual que `orchestrator` lo fue de la
-  Fase 1.
-- `orders/apps.py::ready()` — `register_process("orders.import_falabella",
-  import_falabella_orders)` (autorregistro, sin que `orchestrator` conozca a
-  `orders`).
-- Alta del `ProcessType` (`code="orders.import_falabella"`) — vía admin o
-  data migration.
-- `orders/admin.py` — registrar `FalabellaOrderImport` (visibilidad/soporte).
-- `orders/tests.py` — camino feliz (cliente nuevo, cliente existente) y
-  rechazo de permisos si se agrega un endpoint propio.
-- Endpoint propio: no es obligatorio si el disparo es 100% vía
-  `orchestrator` (launch genérico `POST
-  /api/orchestrator/process-types/orders.import_falabella/launch/` +
-  programación CRON vía `/api/orchestrator/schedules/`). Si luego se quiere
-  un endpoint dedicado (`GET /api/orders/falabella/importar/`), sigue el
-  mismo patrón documentado en la guía del orquestador (llama a
-  `launch_process` con permiso propio).
-- `INSTALLED_APPS`: agregar `'orders'`.
+Plan completo, con modelos, funciones, riesgos y puntos abiertos, en
+[`marketplace-orders-import.md`](marketplace-orders-import.md) — ese
+documento reemplaza esta fase.
 
 ## Documentación a actualizar en el mismo cambio
 
-- `docs/architecture/APP_BOUNDARIES.md`: agregar fila `orders` (área de
-  negocio, dueña del ledger de importación) — `orchestrator` y `customers`
-  ya se documentan en sus propios cambios (ver documentos enlazados).
-- `docs/apps/orders.md`: expediente nuevo.
-- `docs/architecture/INTEGRATIONS.md` y `docs/apps/integrations.md`:
-  agregar las funciones nuevas de Falabella a la tabla de proveedores (las
-  de Shopify se documentan como parte de `shopify-customers-directory.md`).
-- `docs/contracts/API.md`: si se agrega el endpoint dedicado de `orders`,
-  documentarlo; si no, documentar solo el uso de `orders.import_falabella`
-  sobre el contrato ya existente del orquestador.
-- `docs/INDEX.md`: fila nueva para `orders`.
+Ver la sección "Documentación a actualizar" de
+[`marketplace-orders-import.md`](marketplace-orders-import.md) — ese
+documento tiene la lista vigente para la app `orders`.
 
 ## Puntos abiertos que exigen verificación en vivo antes de programar
 

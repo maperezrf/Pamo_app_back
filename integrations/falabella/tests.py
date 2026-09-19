@@ -139,6 +139,21 @@ class GetOrdersTests(SimpleTestCase):
         self.assertEqual(result[0]["customer_email"], "")
 
     @patch("integrations.falabella.client.requests.get")
+    def test_returns_an_empty_list_when_falabella_reports_no_orders(self, mock_get):
+        # Falabella manda "Orders": "" (string vacío, no un objeto) cuando
+        # no hay pedidos en el rango -- confirmado contra una respuesta
+        # real el 2026-09-19.
+        mock_get.return_value.raise_for_status.return_value = None
+        mock_get.return_value.json.return_value = {
+            "SuccessResponse": {"Body": {"Orders": ""}}
+        }
+        result = get_orders(
+            created_after=datetime(2027, 1, 1, tzinfo=timezone.utc),
+            created_before=datetime(2027, 1, 2, tzinfo=timezone.utc),
+        )
+        self.assertEqual(result, [])
+
+    @patch("integrations.falabella.client.requests.get")
     def test_falls_back_to_requires_attention_for_an_unknown_status(self, mock_get):
         mock_get.return_value.raise_for_status.return_value = None
         mock_get.return_value.json.return_value = {

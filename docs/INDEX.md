@@ -51,6 +51,7 @@ contrasta y, si aplica, se incorpora a la documentación versionada.
 | Integraciones | `integrations/` | Transporte y estado de conexión con proveedores externos. | [`apps/integrations.md`](apps/integrations.md) |
 | Orquestador de procesos | `orchestrator/` | Ejecución/programación en segundo plano de procesos de negocio registrados por su app dueña. | [`apps/orchestrator.md`](apps/orchestrator.md) |
 | Directorio de clientes de Shopify | `customers/` | Tabla local sincronizada con Shopify (webhook + reconciliación); resuelve "¿existe este cliente?" por cédula. | [`apps/customers.md`](apps/customers.md) |
+| Importación de pedidos de marketplace | `orders/` | Trae pedidos de un marketplace (Falabella, y a futuro otros) y los crea en Shopify. | [`apps/orders.md`](apps/orders.md) |
 | Contabilidad | `accounting/` | Área de negocio contable. | Pendiente |
 | Facturación | `facturacion/` | Área de negocio de facturación. | Pendiente |
 | Logística | `logistics/` | Área de negocio logística. | Pendiente |

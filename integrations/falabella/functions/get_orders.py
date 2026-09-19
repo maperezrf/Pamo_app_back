@@ -51,12 +51,14 @@ def get_orders(*, created_after, created_before, status=None, limit=100, offset=
 
 def _extract_orders(response):
     # Verificado contra una respuesta real el 2026-09-11.
-    orders = (
-        (response.get("SuccessResponse") or {})
-        .get("Body", {})
-        .get("Orders", {})
-        .get("Order", [])
-    )
+    orders = (response.get("SuccessResponse") or {}).get("Body", {}).get("Orders", {})
+    # Cuando no hay pedidos en el rango, Falabella manda "Orders": "" (string
+    # vacío), no un objeto -- confirmado contra una respuesta real el
+    # 2026-09-19 (rango sin pedidos). Sin este chequeo, `.get("Order", [])`
+    # revienta con AttributeError porque un string no tiene `.get()`.
+    if not isinstance(orders, dict):
+        return []
+    orders = orders.get("Order", [])
     # Con una sola orden, Falabella devuelve un diccionario suelto en vez
     # de una lista de uno.
     return [orders] if isinstance(orders, dict) else orders
