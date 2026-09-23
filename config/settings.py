@@ -70,6 +70,7 @@ WSGI_APPLICATION = 'config.wsgi.application'
 # Sin DATABASE_URL (desarrollo local): SQLite, sin fricción para levantar el
 # proyecto. Con DATABASE_URL seteada (Railway): Postgres del proyecto.
 if DATABASE_URL:
+    print ('************************* conectado a db railway *************************')
     DATABASES = {
         'default': dj_database_url.parse(DATABASE_URL, conn_max_age=600),
     }
