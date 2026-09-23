@@ -26,7 +26,7 @@ def upsert_from_shopify_customer(data):
     Devuelve la instancia de `ShopifyCustomer` creada o actualizada.
     """
     defaults = {
-        "identification": data.get("identification", ""),
+        "identification": data.get("identification", "")[0:32],
         "first_name": data.get("first_name", ""),
         "last_name": data.get("last_name", ""),
         "email": data.get("email", ""),
