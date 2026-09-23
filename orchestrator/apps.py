@@ -20,6 +20,7 @@ class OrchestratorConfig(AppConfig):
         # desde su propio `AppConfig.ready()` (ver `docs/apps/orchestrator.md`).
         # `orchestrator` no importa apps de negocio -- mismo límite que ya
         # aplica a `integrations` (ver `docs/architecture/APP_BOUNDARIES.md`).
+        from . import registrations
         from .core.recovery import recover_orphan_executions
         from .core.scheduler import start_scheduler
 
