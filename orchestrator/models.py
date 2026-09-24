@@ -12,9 +12,8 @@ class ProcessType(models.Model):
     """Catálogo declarativo de procesos ejecutables vía el orquestador.
 
     El callable real que ejecuta el proceso NO se guarda aquí (no se serializa
-    código): se resuelve en runtime vía `core.registry`, poblado por cada app
-    dueña del proceso en su propio `AppConfig.ready()` (ver
-    `apps/orchestrator/registrations.py` para el caso de reports.f11).
+    código): se resuelve en runtime vía `core.registry`, poblado en
+    `orchestrator/registrations.py`.
     """
 
     code = models.CharField(max_length=100, unique=True)

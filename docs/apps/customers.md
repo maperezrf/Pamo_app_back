@@ -5,8 +5,10 @@ Shopify. Existe porque la API de Shopify **no permite buscar un cliente por
 `company`** (donde vive la cédula/NIT en este proyecto) — ver
 [`../implementations-plans/shopify-customers-directory.md`](../implementations-plans/shopify-customers-directory.md)
 para la evidencia completa. Cualquier canal que necesite resolver "¿ya
-existe este cliente?" por cédula (Falabella, y a futuro Mercado Libre u
-otros) consulta esta tabla local, nunca Shopify en vivo.
+existe este cliente?" por cédula consulta esta tabla local, nunca Shopify en
+vivo. Falabella (`orders`) **ya no la consume**: sus pedidos van a un
+cliente fijo de Shopify (ver
+[`../implementations-plans/falabella-fixed-customer.md`](../implementations-plans/falabella-fixed-customer.md)).
 
 ## Capacidades
 

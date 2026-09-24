@@ -83,7 +83,19 @@ class GetOrdersTests(SimpleTestCase):
                             "CustomerFirstName": "Ana",
                             "CustomerLastName": "Gomez",
                             "NationalRegistrationNumber": "1234567890",
-                            "AddressBilling": {"CustomerEmail": "ana.gomez@example.com"},
+                            "AddressBilling": {
+                                "CustomerEmail": "ana.gomez@example.com",
+                                "Address1": "Calle 10 # 20-30",
+                                "Address2": "",
+                                "Address3": "Apto 101",
+                                "Address4": "",
+                                "Address5": "",
+                                "City": "MEDELLIN",
+                                "Ward": "El Poblado",
+                                "Region": "ANTIOQUIA",
+                                "Phone": "",
+                                "Phone2": "3001234567",
+                            },
                         }
                     }
                 }
@@ -108,6 +120,10 @@ class GetOrdersTests(SimpleTestCase):
                     "customer_last_name": "Gomez",
                     "customer_identification": "1234567890",
                     "customer_email": "ana.gomez@example.com",
+                    "customer_address": "Calle 10 # 20-30, Apto 101",
+                    "customer_city": "MEDELLIN",
+                    "customer_region": "ANTIOQUIA",
+                    "customer_phone": "3001234567",
                 }
             ],
         )
@@ -137,6 +153,10 @@ class GetOrdersTests(SimpleTestCase):
         )
         self.assertEqual(result[0]["customer_identification"], "")
         self.assertEqual(result[0]["customer_email"], "")
+        self.assertEqual(result[0]["customer_address"], "")
+        self.assertEqual(result[0]["customer_city"], "")
+        self.assertEqual(result[0]["customer_region"], "")
+        self.assertEqual(result[0]["customer_phone"], "")
 
     @patch("integrations.falabella.client.requests.get")
     def test_returns_an_empty_list_when_falabella_reports_no_orders(self, mock_get):

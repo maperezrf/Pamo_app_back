@@ -27,30 +27,39 @@ lanza. Guía operativa completa en
 
 ## Cómo se registra un proceso
 
-`orchestrator` **no importa apps de negocio** — mismo límite que ya aplica a
-`integrations` (ver [`../architecture/APP_BOUNDARIES.md`](../architecture/APP_BOUNDARIES.md)).
-Cada app dueña de un proceso se autorregistra en su propio
-`AppConfig.ready()`:
+**Todos los procesos en segundo plano se registran en un único archivo:
+[`orchestrator/registrations.py`](../../orchestrator/registrations.py).** Las
+apps de negocio no se autorregistran en su `AppConfig.ready()`; así el
+inventario completo de procesos se lee en un solo lugar.
 
 ```python
-# orders/apps.py
-from django.apps import AppConfig
+# orchestrator/registrations.py
+from orchestrator.core.registry import register_process
+from orders.functions.import_falabella_orders import import_falabella_orders
+from customers.functions.reconcile_from_shopify import reconcile_from_shopify
+from customers.functions.process_customer_webhook import process_customer_webhook
 
-
-class OrdersConfig(AppConfig):
-    name = "orders"
-
-    def ready(self):
-        from orchestrator.core.registry import register_process
-        from .functions.import_falabella_order import import_falabella_orders
-
-        register_process("orders.import_falabella", import_falabella_orders)
+register_process("orders.import_falabella", import_falabella_orders)
+register_process("customers.reconcile_shopify", reconcile_from_shopify)
+register_process("customers.process_webhook", process_customer_webhook)
 ```
+
+`OrchestratorConfig.ready()` (`orchestrator/apps.py`) importa este módulo
+antes de recuperar huérfanos y arrancar el scheduler. Ese `ready()` solo
+corre con `RUN_MAIN=true` (proceso hijo de `runserver`) o con
+`ORCHESTRATOR_FORCE_READY` definido; fuera de esos casos el registro queda
+vacío y el runner no encuentra el callable.
+
+Límite que se mantiene: `registrations.py` es el **único** punto donde
+`orchestrator` importa código de negocio, y solo importa la función pública
+registrada de `<app>/functions/`. El resto de `orchestrator/` (`core/`,
+`services.py`, `apis.py`, modelos) no importa apps de negocio, y
+`registrations.py` nunca importa modelos ni submódulos internos de otra app.
 
 El callable registrado debe tener la firma `(params, progress_callback=None,
 cancellation_token=None)`. Además del registro en memoria, el `ProcessType`
-correspondiente debe existir en base de datos (vía `/admin/` o la API) con
-el mismo `code` exacto.
+correspondiente debe existir en base de datos (data migration de la app
+dueña, `/admin/` o la API) con el mismo `code` exacto.
 
 ## Rutas actuales
 
@@ -61,6 +70,9 @@ hoy: `Admin` u `Operaciones`. Detalle completo de endpoints en la guía de uso.
 
 ## Reglas de cambio
 
+- Un proceso nuevo se registra agregando su `register_process(...)` en
+  `orchestrator/registrations.py`; no se crea `ready()` en la app dueña para
+  esto.
 - No mover checkpoints de cancelación a submódulos internos de lógica de
   negocio: van en la función registrada, después de cada paso costoso.
 - No guardar aquí datos de negocio (pedidos, clientes, facturas): solo el

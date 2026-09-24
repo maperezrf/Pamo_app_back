@@ -87,6 +87,10 @@ se eliminó en vez de vaciarse — cada app de negocio se autorregistra en su
 propio `AppConfig.ready()` (ver `docs/apps/orchestrator.md`), así
 `orchestrator` nunca importa una app de negocio.
 
+> Actualización posterior: esta decisión se revirtió. Hoy todos los procesos
+> se registran de forma centralizada en `orchestrator/registrations.py`
+> (ver `docs/apps/orchestrator.md`).
+
 Documentación creada/actualizada: `docs/apps/orchestrator.md` (expediente
 nuevo), `docs/architecture/APP_BOUNDARIES.md` y `docs/INDEX.md` (fila nueva),
 `docs/patterns/orchestrator-usage-guide.md` (rutas, permisos y ejemplos

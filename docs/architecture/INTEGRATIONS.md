@@ -23,8 +23,9 @@ documentación ni las respuestas de la API muestran sus valores.
 
 | Proveedor | Transporte principal | Estado técnico conocido |
 | --- | --- | --- |
-| Shopify | GraphQL | `ShopifyClient.request_graphql()` y catálogo de consultas. También `ShopifyClient.verify_webhook_signature()` (webhooks entrantes, ver `docs/patterns/PROVIDER_WEBHOOKS.md`) y funciones de cliente (`create_customer`, `create_customer_address`, `update_customer_address`, `list_customers_page`) que consume la app `customers`. |
+| Shopify | GraphQL | `ShopifyClient.request_graphql()` y catálogo de consultas. También `ShopifyClient.verify_webhook_signature()` (webhooks entrantes, ver `docs/patterns/PROVIDER_WEBHOOKS.md`) y funciones de cliente (`create_customer`, `create_customer_address`, `update_customer_address`, `list_customers_page`) que consume la app `customers`. `get_variant_inventory_by_sku` devuelve la variante con unidades disponibles por bodega (`Location`), usada por `orders` para elegir bodega de despacho. |
 | Falabella | REST firmada HMAC | `FalabellaClient.request()` firma y envía acciones. |
+| Mercado Libre | REST OAuth2 (Bearer) | `MercadoLibreClient.get()` usa el token de `MercadoLibreToken` y lo renueva antes de vencer o ante un 401 (un reintento). El refresh token es de un solo uso y rota: la renovación bloquea la fila y guarda el nuevo antes de usarlo. Sin fila o con `invalid_grant` → `MercadoLibreAuthError` (volver a conectar en `GET /api/integrations/mercadolibre/connect/`). |
 | Sodimac | REST con subscription key | `SodimacClient.post()` envía solicitudes JSON. |
 | Envía | REST Bearer | `EnviaClient` valida respuestas, redirecciones y tamaño máximo. |
 | Siigo | REST Bearer con token cacheado | `SiigoClient.request()` reutiliza `SiigoToken` vigente. |

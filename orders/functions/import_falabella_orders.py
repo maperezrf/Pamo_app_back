@@ -1,14 +1,12 @@
-from customers.functions.reconcile_from_shopify import reconcile_from_shopify
-
 from .fetch_falabella_orders import fetch_falabella_orders
 from .process_pending_orders import process_pending_orders
 
 
 def import_falabella_orders(params=None, progress_callback=None, cancellation_token=None):
     """Proceso registrado en orchestrator como `orders.import_falabella`.
-    Tres etapas, en orden: refrescar el directorio de clientes, descubrir
-    pedidos nuevos de Falabella, y procesar todo lo pendiente (nuevo o en
-    error) hacia Shopify. Contrato de proceso:
+    Dos etapas, en orden: descubrir pedidos nuevos de Falabella, y procesar
+    todo lo pendiente (nuevo o en error) hacia Shopify, a nombre del
+    cliente fijo. Contrato de proceso:
     `(params, progress_callback=None, cancellation_token=None)`.
 
     `params` opcional:
@@ -25,22 +23,16 @@ def import_falabella_orders(params=None, progress_callback=None, cancellation_to
     params = params or {}
     progress_callback = progress_callback or (lambda percent, step=None: None)
 
-    progress_callback(0, "Reconciliando directorio de clientes")
-    reconcile_from_shopify(
-        progress_callback=lambda percent, step=None: progress_callback(int(percent * 0.3), step),
-        cancellation_token=cancellation_token,
-    )
-
-    progress_callback(30, "Trayendo pedidos nuevos de Falabella")
+    progress_callback(0, "Trayendo pedidos nuevos de Falabella")
     fetch_falabella_orders(
-        progress_callback=lambda percent, step=None: progress_callback(30 + int(percent * 0.2), step),
+        progress_callback=lambda percent, step=None: progress_callback(int(percent * 0.4), step),
         cancellation_token=cancellation_token,
         created_after=params.get("created_after"),
     )
 
-    progress_callback(50, "Procesando pedidos pendientes")
+    progress_callback(40, "Procesando pedidos pendientes")
     process_pending_orders(
-        progress_callback=lambda percent, step=None: progress_callback(50 + int(percent * 0.5), step),
+        progress_callback=lambda percent, step=None: progress_callback(40 + int(percent * 0.6), step),
         cancellation_token=cancellation_token,
         limit=params.get("limit"),
     )

@@ -15,17 +15,28 @@ vista ni duplicar autenticación en una app de negocio.
 
 `integrations/models.py` reexporta los modelos técnicos de proveedores para
 que Django los detecte. Actualmente `SiigoToken` conserva el token cacheado
-y su expiración; es estado de conexión, no información de clientes o
-facturas.
+y su expiración, y `MercadoLibreToken` el access/refresh token OAuth2 y el
+seller id; es estado de conexión, no información de clientes o facturas.
 
 ## Proveedores
 
 - `shopify/`: cliente GraphQL, funciones y catálogo `QUERIES.md`. Incluye
   funciones de cliente (`create_customer`, `create_customer_address`,
   `update_customer_address`, `list_customers_page`) que consume la app
-  `customers`, y verificación de firma de webhook
-  (`ShopifyClient.verify_webhook_signature`).
+  `customers`, verificación de firma de webhook
+  (`ShopifyClient.verify_webhook_signature`), y
+  `get_variant_inventory_by_sku` (variante + unidades disponibles por
+  bodega) que consume `orders`.
 - `falabella/`: cliente REST firmado y funciones de pedidos.
+- `mercadolibre/`: cliente OAuth2 con token en BD (`MercadoLibreToken`,
+  refresh token rotativo renovado bajo bloqueo de fila) y funciones de
+  lectura `get_order`, `get_billing_info`, `get_shipment` (formas aún sin
+  verificar contra datos reales; traen `raw` mientras dura el
+  levantamiento). La cuenta se conecta desde el navegador con
+  `GET /api/integrations/mercadolibre/connect/` → `callback/` (rol
+  `Admin`, `state` de un solo uso en la sesión), en
+  `mercadolibre/apis.py`; rutas en `integrations/urls.py`. Plan:
+  [`../implementations-plans/mercadolibre-orders-import.md`](../implementations-plans/mercadolibre-orders-import.md).
 - `sodimac/`: cliente REST y funciones de pedidos.
 - `envia/`: cliente REST, cotización y validación de payload logístico.
 - `siigo/`: cliente REST, token cacheado y funciones de clientes/facturas.

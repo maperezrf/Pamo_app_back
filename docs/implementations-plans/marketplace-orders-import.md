@@ -12,6 +12,11 @@ diseño original de la Fase 3 en
 un diseño más general, decidido explícitamente para que un marketplace
 futuro (Mercado Libre, etc.) reutilice la misma estructura sin duplicarla.
 
+> **Actualización (2026-09-23)**: la resolución y creación de clientes en
+> Shopify (decisión 6, las filas de cliente de la tabla de reutilización y
+> la etapa `reconcile_from_shopify`) quedó reemplazada por un cliente fijo.
+> Ver [`falabella-fixed-customer.md`](falabella-fixed-customer.md).
+
 ## Decisiones tomadas en esta conversación
 
 1. **Disparo**: un proceso en `orchestrator`, programado varias veces al día
@@ -152,8 +157,10 @@ Todo lo que necesita esta fase ya existe y ya está probado:
 
 ## Registro en `orchestrator`
 
-- `orders/apps.py::ready()` — `register_process("orders.import_falabella",
-  import_falabella_orders)` (autorregistro, mismo patrón que `customers`).
+- `orchestrator/registrations.py` — `register_process("orders.import_falabella",
+  import_falabella_orders)`. (El plan original lo ponía en
+  `orders/apps.py::ready()`; se centralizó: todos los procesos se registran
+  en `registrations.py`, ver `docs/apps/orchestrator.md`.)
 - `orders/migrations/0002_seed_process_types.py` — data migration que da de
   alta `ProcessType(code="orders.import_falabella", allow_concurrent=False)`
   (mismo patrón que `customers/migrations/0002_seed_process_types.py`).

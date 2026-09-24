@@ -52,6 +52,10 @@ def fetch_falabella_orders(progress_callback=None, cancellation_token=None, crea
                 "customer_first_name": raw_order["customer_first_name"],
                 "customer_last_name": raw_order["customer_last_name"],
                 "customer_email": raw_order["customer_email"],
+                "customer_address": raw_order["customer_address"],
+                "customer_city": raw_order["customer_city"],
+                "customer_region": raw_order["customer_region"],
+                "customer_phone": raw_order["customer_phone"],
             },
         )
         if created:

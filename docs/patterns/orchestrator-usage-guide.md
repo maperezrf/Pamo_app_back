@@ -66,7 +66,7 @@ Pasada por orchestrator/core/runner.py
 Regla de oro: un proceso existe para el orquestador solo si tiene dos partes, y ambas deben usar el mismo code:
 
 Un registro en la tabla ProcessType (code="orders.import_falabella").
-Un register_process("orders.import_falabella", mi_funcion) en el AppConfig.ready() de la app dueña del proceso.
+Un register_process("orders.import_falabella", mi_funcion) en orchestrator/registrations.py (único archivo donde se registran todos los procesos en segundo plano).
 
 
 2. Cómo registrar un proceso nuevo
@@ -88,26 +88,22 @@ Los checkpoints de cancelación (cancellation_token.raise_if_cancelled()) van so
 Ponlos después de cada paso costoso: conectar, consultar, procesar, generar archivo, enviar correo.
 Un error inesperado (excepción no capturada) lo recoge orchestrator/core/runner.py, que marca la ejecución como ERROR y guarda error_message — no hace falta capturarlo a mano dentro del proceso salvo que quieras un mensaje más específico.
 
-Paso 2 — Registra el callable en el AppConfig.ready() de tu propia app
-`orchestrator` no importa apps de negocio (mismo límite que ya aplica a
-`integrations/`, ver docs/architecture/APP_BOUNDARIES.md): cada app se
-autorregistra.
-# orders/apps.py
-from django.apps import AppConfig
+Paso 2 — Registra el callable en orchestrator/registrations.py
+Todos los procesos en segundo plano se registran en ese único archivo; las
+apps de negocio no se autorregistran en su propio `AppConfig.ready()`.
+Agrega el import de la función pública (`<app>/functions/...`) y su
+`register_process`:
+# orchestrator/registrations.py
+from orchestrator.core.registry import register_process
+from orders.functions.import_falabella_orders import import_falabella_orders
 
-
-class OrdersConfig(AppConfig):
-    name = "orders"
-
-    def ready(self):
-        from orchestrator.core.registry import register_process
-        from .functions.import_falabella_order import import_falabella_orders
-
-        register_process("orders.import_falabella", import_falabella_orders)
-Esto se ejecuta automáticamente al arrancar Django (Django llama a `ready()`
-de cada app en `INSTALLED_APPS` durante `django.setup()`; el orden entre
-apps no importa porque `register_process` solo llena un diccionario en
-memoria).
+register_process("orders.import_falabella", import_falabella_orders)
+Límite: `registrations.py` es el único módulo de `orchestrator` que importa
+código de negocio, y solo la función registrada — nunca modelos ni
+submódulos internos de la app dueña (ver docs/apps/orchestrator.md).
+`OrchestratorConfig.ready()` importa `registrations.py` al arrancar Django,
+solo cuando `RUN_MAIN=true` (proceso hijo de `runserver`) o
+`ORCHESTRATOR_FORCE_READY` está definido.
 Paso 3 — Crea el ProcessType en base de datos
 Vía /admin/orchestrator/processtype/ o por shell/migración de datos:
 from orchestrator.models import ProcessType
@@ -383,6 +379,11 @@ Solución
 ProcessType.DoesNotExist al lanzar
 No se creó el ProcessType en BD, o code no coincide exacto
 Crear el registro (sección 2, paso 3); revisar mayúsculas/puntos en el code
+
+
+La ejecución falla porque no encuentra la función del proceso
+Falta el register_process en orchestrator/registrations.py, el code no coincide con el ProcessType, o el servidor arrancó sin RUN_MAIN=true ni ORCHESTRATOR_FORCE_READY (registrations.py no se cargó)
+Agregar el registro en orchestrator/registrations.py con el code exacto; en despliegue, definir ORCHESTRATOR_FORCE_READY
 
 
 409 ProcessAlreadyRunningError

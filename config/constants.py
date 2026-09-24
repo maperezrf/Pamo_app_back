@@ -25,6 +25,27 @@ SHOPIFY_WEBHOOK_SECRET = config("SHOPIFY_WEBHOOK_SECRET")
 # por firma HMAC (sin token Bearer).
 FALABELLA_USER_ID = config("FALABELLA_USER_ID")
 FALABELLA_API_KEY = config("FALABELLA_API_KEY")
+# Cliente fijo de Shopify al que se asignan todos los pedidos de Falabella
+# (app orders). Id numérico, sin prefijo gid://. No es secreto, pero cambia
+# entre tiendas/entornos.
+FALABELLA_SHOPIFY_CUSTOMER_ID = config("FALABELLA_SHOPIFY_CUSTOMER_ID", default="")
+# Bodega (Location de Shopify) que se prefiere para despachar pedidos de
+# marketplace (app orders). Id numérico sin prefijo gid://. Vacía = sin
+# prioridad.
+FULFILLMENT_PRIORITY_LOCATION_ID = config("FULFILLMENT_PRIORITY_LOCATION_ID", default="")
+
+# MERCADO LIBRE (integrations/mercadolibre/) -- OAuth2. El token (access +
+# refresh, que rota en cada renovación) vive en BD
+# (integrations.mercadolibre.models.MercadoLibreToken), no en entorno; se
+# obtiene conectando la cuenta en GET /api/integrations/mercadolibre/connect/.
+# MERCADOLIBRE_REDIRECT_URI debe ser la URL pública de
+# /api/integrations/mercadolibre/callback/, igual a la registrada en la app.
+# Vacías por defecto para que el backend arranque sin Mercado Libre.
+MERCADOLIBRE_CLIENT_ID = config("MERCADOLIBRE_CLIENT_ID", default="")
+MERCADOLIBRE_CLIENT_SECRET = config("MERCADOLIBRE_CLIENT_SECRET", default="")
+MERCADOLIBRE_REDIRECT_URI = config("MERCADOLIBRE_REDIRECT_URI", default="")
+MERCADOLIBRE_API_BASE_URL = config("MERCADOLIBRE_API_BASE_URL", default="https://api.mercadolibre.com")
+MERCADOLIBRE_AUTH_URL = config("MERCADOLIBRE_AUTH_URL", default="https://auth.mercadolibre.com.co/authorization")
 
 # SODIMAC (integrations/sodimac/) -- autenticación por subscription key
 # (Azure APIM), no token Bearer.

@@ -19,7 +19,9 @@ def get_orders(*, created_after, created_before, status=None, limit=100, offset=
     Devuelve una lista de:
         {"order_id", "order_number", "created_at", "updated_at",
          "status", "status_raw", "total", "customer_first_name",
-         "customer_last_name", "customer_identification", "customer_email"}
+         "customer_last_name", "customer_identification", "customer_email",
+         "customer_address", "customer_city", "customer_region",
+         "customer_phone"}
     `created_at`/`updated_at` quedan como texto tal cual los manda
     Falabella (ej. "2026-09-09 15:31:39") -- no se confirmó su huso
     horario, así que no se convierten a datetime todavía.
@@ -28,7 +30,14 @@ def get_orders(*, created_after, created_before, status=None, limit=100, offset=
     viene en `NationalRegistrationNumber` a nivel de la orden (no dentro de
     `AddressBilling`), confirmado contra 5 pedidos reales el 2026-09-15
     (siempre presente, 8-10 dígitos). `customer_email` viene de
-    `AddressBilling.CustomerEmail`. Si algún pedido no trae alguno de estos
+    `AddressBilling.CustomerEmail`. Los datos de facturación salen también
+    de `AddressBilling` (llaves confirmadas contra 5 pedidos reales el
+    2026-09-23): `customer_address` une las partes no vacías de
+    `Address1`..`Address5` (`Address3` trae un complemento distinto de
+    ciudad/barrio/departamento); `customer_city` = `City`;
+    `customer_region` = `Region` (departamento); `customer_phone` =
+    `Phone`, o `Phone2` si el primero viene vacío -- en esos 5 pedidos
+    ambos venían vacíos. Si algún pedido no trae alguno de estos
     campos, se devuelve `""` -- decidir qué hacer con un pedido incompleto
     es responsabilidad de quien orquesta la importación, no de esta función.
     """
@@ -79,4 +88,14 @@ def _normalize_order(raw):
         "customer_last_name": raw.get("CustomerLastName", ""),
         "customer_identification": raw.get("NationalRegistrationNumber", ""),
         "customer_email": billing.get("CustomerEmail", ""),
+        "customer_address": ", ".join(
+            part.strip()
+            for part in (billing.get(f"Address{number}") or "" for number in range(1, 6))
+            if part.strip()
+        ),
+        "customer_city": billing.get("City", ""),
+        "customer_region": billing.get("Region", ""),
+        "customer_phone": billing.get("Phone") or billing.get("Phone2") or "",
     }
+
+{'OrderId': '8001538127', 'CustomerFirstName': 'Esmit yurley', 'CustomerLastName': 'Espinosa', 'OrderNumber': '3252252249', 'PaymentMethod': 'ecommPay', 'Remarks': '', 'ManifestId': '', 'DeliveryInfo': '', 'Price': '100480.00', 'GiftOption': '0', 'GiftMessage': '', 'VoucherCode': '', 'CreatedAt': '2026-09-17 20:56:09', 'UpdatedAt': '2026-09-22 09:41:10', 'AddressUpdatedAt': '2026-09-17 20:56:09', 'AddressBilling': {'FirstName': 'Esmit yurley', 'LastName': 'Espinosa', 'Address1': 'Anillo vial oriental, conjunto cerrado Siena', 'Address2': '', 'Address3': 'Casa E15', 'Address4': '', 'Address5': '', 'CustomerEmail': '', 'City': 'los patios', 'Ward': 'LOS PATIOS', 'Region': 'NORTE DE SANTANDER', 'PostCode': '54405','Country': 'CO', 'Phone': '', 'Phone2': ''}, 'AddressShipping': {'FirstName': 'Esmit yurley Espinosa', 'LastName': 'Espinosa', 'Phone': '', 'Phone2': '', 'Address1': 'Anillo vial oriental, conjunto cerrado Siena', 'Address2': '', 'Address3': 'Casa E15', 'Address4': '', 'Address5': '', 'CustomerEmail': '', 'City': 'los patios', 'Ward': 'LOS PATIOS', 'Region': 'NORTE DE SANTANDER', 'PostCode': '', 'Country': 'CO', 'Latitude': '', 'Longitude': ''}, 'NationalRegistrationNumber': '27603274', 'ItemsCount': '2', 'PromisedShippingTime': '2026-09-18 13:00:00', 'ExtraAttributes': '', 'ExtraBillingAttributes': {'LegalId': '', 'FiscalPerson': '', 'DocumentType': '', 'ReceiverRegion': '', 'ReceiverAddress': '', 'ReceiverPostcode': '-', 'ReceiverLegalName': '', 'ReceiverMunicipality': '', 'ReceiverTypeRegimen': '', 'CustomerVerifierDigit': '', 'ReceiverPhonenumber': '', 'ReceiverEmail': '', 'ReceiverLocality': ''}, 'InvoiceRequired': 'false', 'OperatorCode': 'faco', 'ShippingType': 'Dropshipping', 'GrandTotal': '100,480.00', 'ProductTotal': '100,480.00', 'TaxAmount': '16,044.00', 'ShippingFeeTotal': '0.00', 'ShippingTax': '1437.00', 'Voucher': '0.00', 'VoucherDetails': {'CmrDiscount': '0.00', 'OtherDiscount': '0.00'},'Statuses': {'Status': 'delivered'}, 'Warehouse': {'FacilityId': 'GSC-SC6CB98AB754A03', 'SellerWarehouseId': ''}},

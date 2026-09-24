@@ -2,6 +2,10 @@
 # revisar integrations/shopify/QUERIES.md -- puede que ya exista una
 # consulta reutilizable para lo que hace falta.
 
+# `inventoryItem` (bodegas y unidades disponibles) verificado contra la
+# cuenta real el 2026-09-23 (API 2024-07): `inventoryLevels` solo lista las
+# bodegas donde el ítem está dado de alta; `quantities(names:)` reemplaza
+# al campo `available` obsoleto. Costo real ~8 puntos.
 GET_VARIANT_BY_SKU = """
 query GetVariantBySku($query: String!) {
   productVariants(first: 1, query: $query) {
@@ -12,6 +16,23 @@ query GetVariantBySku($query: String!) {
         product {
           id
           title
+        }
+        inventoryItem {
+          tracked
+          inventoryLevels(first: 20) {
+            edges {
+              node {
+                location {
+                  id
+                  name
+                }
+                quantities(names: ["available"]) {
+                  name
+                  quantity
+                }
+              }
+            }
+          }
         }
       }
     }

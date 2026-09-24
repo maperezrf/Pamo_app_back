@@ -15,11 +15,9 @@ class OrchestratorConfig(AppConfig):
         ):
             return
 
-        # Los procesos de negocio se registran solos: cada app dueña de un
-        # proceso llama a `orchestrator.core.registry.register_process(...)`
-        # desde su propio `AppConfig.ready()` (ver `docs/apps/orchestrator.md`).
-        # `orchestrator` no importa apps de negocio -- mismo límite que ya
-        # aplica a `integrations` (ver `docs/architecture/APP_BOUNDARIES.md`).
+        # Todos los procesos en segundo plano se registran en
+        # `registrations.py`, único módulo de `orchestrator` que importa
+        # funciones de negocio (ver `docs/apps/orchestrator.md`).
         from . import registrations
         from .core.recovery import recover_orphan_executions
         from .core.scheduler import start_scheduler

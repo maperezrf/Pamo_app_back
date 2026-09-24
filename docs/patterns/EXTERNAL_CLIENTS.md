@@ -34,5 +34,9 @@ requieren reglas, campos o normalización de una operación concreta.
 
 Shopify usa GraphQL y distingue errores superiores del documento. Falabella
 firma parámetros con HMAC. Envía rechaza redirecciones y limita el tamaño de
-respuesta. Siigo reutiliza un token persistido mientras siga vigente. Estas
+respuesta. Siigo reutiliza un token persistido mientras siga vigente. Mercado Libre
+también persiste su token, pero no puede pedir otro con credenciales
+fijas: depende de un refresh token rotativo, así que toda renovación pasa
+por `MercadoLibreClient._refresh` (bloqueo de fila) y nunca se renueva por
+fuera del cliente. Estas
 decisiones se conservan al añadir operaciones del proveedor respectivo.

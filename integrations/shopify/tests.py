@@ -15,6 +15,7 @@ from .functions.create_customer_address import (
 )
 from .functions.create_order import ShopifyOrderCreationError, create_order
 from .functions.get_variant_by_sku import get_variant_by_sku
+from .functions.get_variant_inventory_by_sku import get_variant_inventory_by_sku
 from .functions.list_customers_page import list_customers_page
 from .functions.update_customer_address import update_customer_address
 
@@ -65,6 +66,84 @@ class GetVariantBySkuTests(SimpleTestCase):
         _, kwargs = mock_post.call_args
         self.assertNotIn('ABC" OR sku:*', kwargs["json"]["query"])
         self.assertEqual(kwargs["json"]["variables"]["query"], 'sku:ABC" OR sku:*')
+
+
+def _level(location_id, name, available):
+    return {
+        "node": {
+            "location": {"id": f"gid://shopify/Location/{location_id}", "name": name},
+            "quantities": [{"name": "available", "quantity": available}],
+        }
+    }
+
+
+def _inventory_node(sku="16164783", tracked=True, levels=None):
+    node = _node("gid://shopify/ProductVariant/47993005441301", sku)
+    node["node"]["inventoryItem"] = {
+        "tracked": tracked,
+        "inventoryLevels": {"edges": levels if levels is not None else []},
+    }
+    return node
+
+
+class GetVariantInventoryBySkuTests(SimpleTestCase):
+    @patch("integrations.shopify.client.requests.post")
+    def test_normalizes_the_real_response_shape(self, mock_post):
+        # Forma verificada contra la cuenta real el 2026-09-23.
+        _mock_response(
+            mock_post,
+            [
+                _inventory_node(
+                    levels=[
+                        _level("94018535701", "Proveedores", 45),
+                        _level("97615380757", "Bodega Envia", 25),
+                    ]
+                )
+            ],
+        )
+        self.assertEqual(
+            get_variant_inventory_by_sku("16164783"),
+            {
+                "variant_id": "47993005441301",
+                "sku": "16164783",
+                "tracked": True,
+                "locations": [
+                    {"location_id": "94018535701", "name": "Proveedores", "available": 45},
+                    {"location_id": "97615380757", "name": "Bodega Envia", "available": 25},
+                ],
+            },
+        )
+
+    @patch("integrations.shopify.client.requests.post")
+    def test_returns_none_without_an_exact_sku_match(self, mock_post):
+        _mock_response(mock_post, [_inventory_node(sku="16164783-OTHER")])
+        self.assertIsNone(get_variant_inventory_by_sku("16164783"))
+
+    @patch("integrations.shopify.client.requests.post")
+    def test_returns_none_when_there_are_no_matches(self, mock_post):
+        _mock_response(mock_post, [])
+        self.assertIsNone(get_variant_inventory_by_sku("16164783"))
+
+    @patch("integrations.shopify.client.requests.post")
+    def test_reports_untracked_items(self, mock_post):
+        _mock_response(mock_post, [_inventory_node(tracked=False)])
+        result = get_variant_inventory_by_sku("16164783")
+        self.assertFalse(result["tracked"])
+        self.assertEqual(result["locations"], [])
+
+    @patch("integrations.shopify.client.requests.post")
+    def test_tolerates_a_missing_inventory_item(self, mock_post):
+        _mock_response(mock_post, [_node("gid://shopify/ProductVariant/1", "16164783")])
+        result = get_variant_inventory_by_sku("16164783")
+        self.assertFalse(result["tracked"])
+        self.assertEqual(result["locations"], [])
+
+    @patch("integrations.shopify.client.requests.post")
+    def test_available_defaults_to_zero_when_not_reported(self, mock_post):
+        level = _level("1", "Baru", 3)
+        level["node"]["quantities"] = [{"name": "on_hand", "quantity": 3}]
+        _mock_response(mock_post, [_inventory_node(levels=[level])])
+        self.assertEqual(get_variant_inventory_by_sku("16164783")["locations"][0]["available"], 0)
 
 
 class CreateOrderTests(SimpleTestCase):

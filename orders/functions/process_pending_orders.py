@@ -1,11 +1,9 @@
-from customers.functions.find_by_identification import find_by_identification
-from customers.functions.upsert_from_shopify_customer import upsert_from_shopify_customer
-from integrations.shopify.functions.create_customer import ShopifyCustomerCreationError, create_customer
-from integrations.shopify.functions.create_customer_address import create_customer_address
+from config.constants import FALABELLA_SHOPIFY_CUSTOMER_ID, FULFILLMENT_PRIORITY_LOCATION_ID
 from integrations.shopify.functions.create_order import ShopifyOrderCreationError, create_order
-from integrations.shopify.functions.get_variant_by_sku import get_variant_by_sku
+from integrations.shopify.functions.get_variant_inventory_by_sku import get_variant_inventory_by_sku
 
 from ..models import MarketplaceOrder
+from .select_fulfillment_location import select_fulfillment_location
 
 # Los pedidos de marketplace llegan ya pagados por el comprador -- no se
 # está cobrando nada a través de Shopify, solo se registra la venta.
@@ -15,17 +13,30 @@ FINANCIAL_STATUS = "PAID"
 def process_pending_orders(progress_callback=None, cancellation_token=None, limit=None):
     """Por cada MarketplaceOrder sin `shopify_order_id` (nuevo o de un
     error anterior -- mismo criterio, sin distinción, ver
-    docs/implementations-plans/marketplace-orders-import.md), intenta
-    resolver el cliente, los SKUs, y crear la orden en Shopify.
+    docs/implementations-plans/marketplace-orders-import.md), resuelve los
+    SKUs y crea la orden en Shopify a nombre del cliente fijo
+    (`FALABELLA_SHOPIFY_CUSTOMER_ID`). Los datos reales del comprador
+    quedan en el MarketplaceOrder y en el `note` de la orden -- ver
+    docs/implementations-plans/falabella-fixed-customer.md.
+
+    Antes de crear la orden elige la bodega de despacho del pedido completo
+    (`select_fulfillment_location`) con el inventario por bodega que trae
+    la misma consulta del SKU. Sin bodega que cubra el pedido queda como
+    novedad, pero la orden se crea igual -- ver
+    docs/implementations-plans/shopify-inventory-by-location.md.
 
     Un pedido que falla queda marcado con su estado de error y no detiene
-    el resto del lote.
+    el resto del lote. Sin cliente fijo configurado, falla antes de tocar
+    cualquier pedido.
 
     `limit`: si se da, procesa como máximo esa cantidad de pedidos
     pendientes (los más antiguos primero) -- pensado para una primera
     corrida controlada contra la cuenta real (ej. `limit=1`), no para uso
     normal. `None` procesa todos los pendientes.
     """
+    if not FALABELLA_SHOPIFY_CUSTOMER_ID:
+        raise ValueError("FALABELLA_SHOPIFY_CUSTOMER_ID no está configurado")
+
     progress_callback = progress_callback or (lambda percent, step=None: None)
     pending_queryset = MarketplaceOrder.objects.filter(shopify_order_id="").order_by("created_at").prefetch_related(
         "items"
@@ -39,7 +50,7 @@ def process_pending_orders(progress_callback=None, cancellation_token=None, limi
     for index, order in enumerate(pending):
         if cancellation_token:
             cancellation_token.raise_if_cancelled()
-        _process_one_order(order)
+        _process_one_order(order, FALABELLA_SHOPIFY_CUSTOMER_ID)
         progress_callback(
             5 + int(90 * (index + 1) / total),
             f"Pedido {order.marketplace_order_number or order.marketplace_order_id}",
@@ -48,23 +59,20 @@ def process_pending_orders(progress_callback=None, cancellation_token=None, limi
     progress_callback(100, f"{len(pending)} pedidos pendientes procesados")
 
 
-def _process_one_order(order):
-    shopify_customer = find_by_identification(order.customer_identification)
-    if shopify_customer is None:
-        shopify_customer = _create_shopify_customer(order)
-        if shopify_customer is None:
-            return  # ya quedó marcado error_creando_cliente
-
-    line_items = _resolve_line_items(order)
-    if line_items is None:
+def _process_one_order(order, customer_id):
+    resolved = _resolve_line_items(order)
+    if resolved is None:
         return  # ya quedó marcado error_creando_orden
+    line_items, inventory_lines = resolved
+
+    _assign_fulfillment_location(order, inventory_lines)
 
     try:
         result = create_order(
             items=line_items,
-            customer_id=shopify_customer.shopify_id,
+            customer_id=customer_id,
             financial_status=FINANCIAL_STATUS,
-            note=f"{order.get_marketplace_display()} #{order.marketplace_order_number}",
+            note=_order_note(order),
             tags=[order.marketplace],
         )
     except ShopifyOrderCreationError as error:
@@ -74,7 +82,7 @@ def _process_one_order(order):
         return
 
     order.status = MarketplaceOrder.Status.CREATED
-    order.shopify_customer_id = shopify_customer.shopify_id
+    order.shopify_customer_id = customer_id
     order.shopify_order_id = result["order_id"]
     order.shopify_order_name = result["order_name"]
     order.error_description = ""
@@ -90,50 +98,60 @@ def _process_one_order(order):
     )
 
 
-def _create_shopify_customer(order):
-    try:
-        shopify_id = create_customer(
-            email=order.customer_email,
-            first_name=order.customer_first_name,
-            last_name=order.customer_last_name,
-        )
-    except (ValueError, ShopifyCustomerCreationError) as error:
-        order.status = MarketplaceOrder.Status.ERROR_CUSTOMER
-        order.error_description = str(error)
-        order.save(update_fields=["status", "error_description", "updated_at"])
-        return None
+def _order_note(order):
+    # En Shopify todas las órdenes muestran el mismo cliente fijo; la nota
+    # es lo que le dice al equipo quién compró realmente.
+    buyer = " ".join(part for part in (order.customer_first_name, order.customer_last_name) if part)
+    note = f"{order.get_marketplace_display()} #{order.marketplace_order_number}"
+    if buyer:
+        note += f" — {buyer}"
+    if order.customer_identification:
+        note += f" CC {order.customer_identification}"
+    return note
 
-    address_id = create_customer_address(
-        customer_id=shopify_id,
-        company=order.customer_identification,
-        first_name=order.customer_first_name,
-        last_name=order.customer_last_name,
+
+def _assign_fulfillment_location(order, inventory_lines):
+    # Una decisión manual no se pisa (solo llegaría acá si el pedido se
+    # reintenta tras un error al crear la orden).
+    if order.fulfillment_status == MarketplaceOrder.FulfillmentStatus.RESOLVED:
+        return
+    selection = select_fulfillment_location(inventory_lines, FULFILLMENT_PRIORITY_LOCATION_ID)
+    order.fulfillment_status = (
+        MarketplaceOrder.FulfillmentStatus.NOVEDAD if selection["reason"] else MarketplaceOrder.FulfillmentStatus.ASSIGNED
     )
-    return upsert_from_shopify_customer(
-        {
-            "shopify_id": shopify_id,
-            "identification": order.customer_identification,
-            "first_name": order.customer_first_name,
-            "last_name": order.customer_last_name,
-            "email": order.customer_email,
-            "phone": "",
-            "default_address_id": address_id,
-            "shopify_updated_at": None,
-        }
+    order.fulfillment_location_id = selection["location_id"]
+    order.fulfillment_location_name = selection["name"]
+    order.fulfillment_note = selection["reason"]
+    order.save(
+        update_fields=[
+            "fulfillment_status",
+            "fulfillment_location_id",
+            "fulfillment_location_name",
+            "fulfillment_note",
+            "updated_at",
+        ]
     )
 
 
 def _resolve_line_items(order):
+    """Consulta cada SKU en Shopify SIEMPRE (aunque el variant id ya esté
+    cacheado): la misma consulta trae el stock por bodega, que cambia.
+    Devuelve (line_items para create_order, líneas de inventario para
+    elegir bodega), o None si algún SKU no resuelve."""
     line_items = []
+    inventory_lines = []
     for item in order.items.all():
-        variant_id = item.shopify_variant_id or get_variant_by_sku(item.marketplace_sku)
-        if not variant_id:
+        inventory = get_variant_inventory_by_sku(item.marketplace_sku)
+        if inventory is None:
             order.status = MarketplaceOrder.Status.ERROR_ORDER
             order.error_description = f"SKU no encontrado en Shopify: {item.marketplace_sku}"
             order.save(update_fields=["status", "error_description", "updated_at"])
             return None
-        if not item.shopify_variant_id:
-            item.shopify_variant_id = variant_id
-            item.save(update_fields=["shopify_variant_id"])
-        line_items.append({"variant_id": variant_id, "quantity": item.quantity, "price": item.unit_price})
-    return line_items
+        item.shopify_variant_id = inventory["variant_id"]
+        item.inventory_snapshot = inventory["locations"]
+        item.save(update_fields=["shopify_variant_id", "inventory_snapshot"])
+        line_items.append(
+            {"variant_id": inventory["variant_id"], "quantity": item.quantity, "price": item.unit_price}
+        )
+        inventory_lines.append({**inventory, "quantity": item.quantity})
+    return line_items, inventory_lines

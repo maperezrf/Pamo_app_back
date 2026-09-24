@@ -1,9 +1,8 @@
 """Registro declarativo de tipos de proceso -> callable ejecutable.
 
-Cada app dueña de un proceso (ej. `apps/reports/f11`) se registra a sí misma
-llamando a `register_process` desde `apps/orchestrator/registrations.py`
-(cargado en `OrchestratorConfig.ready()`), o desde su propio `AppConfig.ready()`.
-`apps/orchestrator` no importa lógica de negocio directamente.
+Todos los procesos se registran llamando a `register_process` desde
+`orchestrator/registrations.py` (cargado en `OrchestratorConfig.ready()`).
+Fuera de ese archivo, `orchestrator` no importa lógica de negocio.
 
 Contrato del callable registrado (requerimiento 8 del diseño):
 

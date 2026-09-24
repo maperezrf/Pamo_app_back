@@ -7,7 +7,7 @@ campo si aplica) en vez de duplicarla.
 
 | Nombre | Tipo | Usada en | Qué trae/hace | Agregada |
 |---|---|---|---|---|
-| `GET_VARIANT_BY_SKU` | query | `functions/get_variant_by_sku.py` | id de variante, SKU e id/título del producto, a partir de un SKU (con verificación de coincidencia exacta en la función que la usa) | 2026-09-10 |
+| `GET_VARIANT_BY_SKU` | query | `functions/get_variant_by_sku.py`, `functions/get_variant_inventory_by_sku.py` | id de variante, SKU e id/título del producto, a partir de un SKU (con verificación de coincidencia exacta en la función que la usa). Ampliada el 2026-09-23 con `inventoryItem { tracked inventoryLevels { location { id name } quantities(names: ["available"]) } }` — unidades disponibles por bodega, verificado contra la cuenta real (costo ~8 puntos). | 2026-09-10 |
 | `CREATE_ORDER` | mutation | `functions/create_order.py` | crea un pedido (`orderCreate`): line items (variante, cantidad, precio), cliente asociado, estado financiero, nota, tags. Campos de `OrderCreateOrderInput`/`OrderCreateLineItemInput` verificados por introspección contra el schema real (API 2024-07) el 2026-09-10, no adivinados. | 2026-09-10 |
 | `CREATE_CUSTOMER` | mutation | `functions/create_customer.py` | crea un cliente (`customerCreate`): email, phone, nombre. `CustomerInput` verificado por introspección el 2026-09-15 -- **no tiene ningún campo de dirección**, por eso la cédula se escribe aparte. | 2026-09-15 |
 | `CREATE_CUSTOMER_ADDRESS` | mutation | `functions/create_customer_address.py` | agrega la primera dirección de un cliente (`customerAddressCreate`), con `company` (cédula) y `setAsDefault`. `MailingAddressInput` verificado por introspección el 2026-09-15. | 2026-09-15 |
