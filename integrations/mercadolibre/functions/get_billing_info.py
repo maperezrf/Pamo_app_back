@@ -1,46 +1,48 @@
 from ..client import MercadoLibreClient
 
+SITE_ID = "MCO"  # Mercado Libre Colombia
 
-def get_billing_info(order_id):
-    """Datos de facturación del comprador de un pedido
-    (`GET /orders/{id}/billing_info`), normalizados.
+
+def get_billing_info(billing_info_id):
+    """Datos de facturación del comprador
+    (`GET /orders/billing-info/MCO/{billing_info_id}`, header
+    `x-version: 2`), normalizados. `billing_info_id` sale del pedido
+    (`get_order()["billing_info_id"]`, `buyer.billing_info.id`).
 
     Devuelve:
         {"customer_identification_type", "customer_identification",
          "customer_first_name", "customer_last_name", "customer_address",
-         "customer_city", "customer_region", "raw"}
-    Campo ausente -> `""` (decidir qué hacer con datos incompletos no es
-    responsabilidad del normalizador).
+         "customer_city", "customer_region", "customer_type"}
+    Campo ausente -> `""`.
 
-    **Sin verificar contra un pedido real** (levantamiento de la fase 0,
-    ver docs/implementations-plans/mercadolibre-orders-import.md):
-    - Endpoint: Mercado Libre anunció uno nuevo
-      (`/orders/billing-info/{site_id}/{billing_info_id}`); si este
-      responde error en la cuenta real, hay que migrar.
-    - Forma esperada: `billing_info.doc_type`, `billing_info.doc_number` y
-      `billing_info.additional_info` como lista de `{"type", "value"}`
-      (FIRST_NAME, LAST_NAME, STREET_NAME, STREET_NUMBER, CITY_NAME,
-      STATE_NAME…). Las llaves exactas se confirman con `raw`.
-
-    `raw` es el JSON crudo, solo mientras dura el levantamiento de datos.
+    Verificado contra 8 pedidos reales el 2026-09-24 (requiere el permiso
+    de facturación habilitado en la app de Mercado Libre; sin él responde
+    403 `PA_UNAUTHORIZED_RESULT_FROM_POLICIES`):
+    - `identification.type` / `.number`: siempre; tipos vistos `CC`, `NIT`.
+    - `name` siempre; `last_name` vacío en los 2 NIT de la muestra (ahí
+      `name` sería la razón social).
+    - `address.street_name` + `street_number` (unidos con espacio),
+      `city_name`, `state.name`: siempre.
+    - `attributes.cust_type`: `CO` en los 6 CC y `BU` en los 2 NIT
+      (consumidor / empresa); se entrega tal cual en `customer_type`.
+    - **No trae email ni teléfono.**
+    Se prefirió a `GET /orders/{id}/billing_info` (clásico, también
+    responde) porque trae dirección y tipo de cliente.
     """
-    raw = MercadoLibreClient().get(f"/orders/{order_id}/billing_info")
-    billing = raw.get("billing_info") or {}
-    extra = {
-        entry.get("type"): _text(entry.get("value"))
-        for entry in billing.get("additional_info") or []
-        if isinstance(entry, dict)
-    }
-    address = " ".join(part for part in (extra.get("STREET_NAME", ""), extra.get("STREET_NUMBER", "")) if part)
+    raw = MercadoLibreClient().get(f"/orders/billing-info/{SITE_ID}/{billing_info_id}", headers={"x-version": "2"})
+    billing = (raw.get("buyer") or {}).get("billing_info") or {}
+    identification = billing.get("identification") or {}
+    address = billing.get("address") or {}
+    street = " ".join(part for part in (_text(address.get("street_name")), _text(address.get("street_number"))) if part)
     return {
-        "customer_identification_type": _text(billing.get("doc_type")),
-        "customer_identification": _text(billing.get("doc_number")),
-        "customer_first_name": extra.get("FIRST_NAME", ""),
-        "customer_last_name": extra.get("LAST_NAME", ""),
-        "customer_address": address,
-        "customer_city": extra.get("CITY_NAME", ""),
-        "customer_region": extra.get("STATE_NAME", ""),
-        "raw": raw,
+        "customer_identification_type": _text(identification.get("type")),
+        "customer_identification": _text(identification.get("number")),
+        "customer_first_name": _text(billing.get("name")),
+        "customer_last_name": _text(billing.get("last_name")),
+        "customer_address": street,
+        "customer_city": _text(address.get("city_name")),
+        "customer_region": _text((address.get("state") or {}).get("name")),
+        "customer_type": _text((billing.get("attributes") or {}).get("cust_type")),
     }
 
 

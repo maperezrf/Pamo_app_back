@@ -30,9 +30,11 @@ seller id; es estado de conexión, no información de clientes o facturas.
 - `falabella/`: cliente REST firmado y funciones de pedidos.
 - `mercadolibre/`: cliente OAuth2 con token en BD (`MercadoLibreToken`,
   refresh token rotativo renovado bajo bloqueo de fila) y funciones de
-  lectura `get_order`, `get_billing_info`, `get_shipment` (formas aún sin
-  verificar contra datos reales; traen `raw` mientras dura el
-  levantamiento). La cuenta se conecta desde el navegador con
+  lectura `get_order`, `get_billing_info`, `get_shipment` y `get_pack`
+  (verificadas contra pedidos reales el 2026-09-24). `get_billing_info`
+  requiere el permiso de facturación
+  habilitado en la app de Mercado Libre (sin él, 403). Mercado Libre no
+  entrega email ni teléfono del comprador. La cuenta se conecta desde el navegador con
   `GET /api/integrations/mercadolibre/connect/` → `callback/` (rol
   `Admin`, `state` de un solo uso en la sesión), en
   `mercadolibre/apis.py`; rutas en `integrations/urls.py`. Plan:

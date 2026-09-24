@@ -12,7 +12,7 @@ en el área dueña del dato y de sus reglas, no en la app que la consume.
 | Integraciones | `integrations/` | Transporte hacia proveedores y estado técnico de conexión. |
 | Orquestador de procesos | `orchestrator/` | Ejecución/programación en segundo plano de procesos de negocio. Todos los procesos se registran en `orchestrator/registrations.py`, único punto que importa la función pública de la app dueña (`<app>/functions/`); no conoce la lógica de negocio ni persiste sus datos. |
 | Directorio de clientes de Shopify | `customers/` | Tabla local sincronizada con los clientes de Shopify (webhook + reconciliación); resuelve "¿existe este cliente?" por cédula para cualquier canal, porque Shopify no permite buscarlo en vivo por ese campo. |
-| Importación de pedidos de marketplace | `orders/` | Orquesta traer pedidos de un marketplace (Falabella y a futuro otros) y crearlos en Shopify a nombre de un cliente fijo, usando `integrations/<provider>/`. Guarda los datos del comprador para facturar. No es transporte de proveedor ni dueña del directorio de clientes. |
+| Importación de pedidos de marketplace | `orders/` | Orquesta traer pedidos de un marketplace (Falabella por lote programado, Mercado Libre por webhook) y crearlos en Shopify a nombre de un cliente fijo por canal, usando `integrations/<provider>/`. Guarda los datos del comprador para facturar. No es transporte de proveedor ni dueña del directorio de clientes. |
 | Contabilidad | `accounting/` | Reglas y datos contables. |
 | Facturación | `facturacion/` | Reglas y datos de facturación. |
 | Logística | `logistics/` | Reglas y datos logísticos. |

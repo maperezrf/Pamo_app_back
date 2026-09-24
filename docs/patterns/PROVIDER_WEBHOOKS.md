@@ -41,6 +41,23 @@ las APIs internas de la app, en su propio archivo.
   otro proceso del orquestador. No duplicar esa capacidad con un log propio
   de la app.
 
+## Excepción: proveedor que no firma (Mercado Libre)
+
+Mercado Libre no firma sus notificaciones. Cuando no hay firma que
+verificar, el webhook debe cumplir tres condiciones en su lugar (caso
+aplicado: `orders/webhooks.py`, `MercadoLibreOrderWebhookView`):
+
+1. **El payload nunca se usa como dato.** Solo se extrae el identificador
+   del recurso y el dato real se lee de la API del proveedor con el token
+   propio. Un payload falso, a lo sumo, provoca una lectura.
+2. **Validar todo lo que el payload permite**: tópico, formato del
+   recurso, id de la app propia y id de la cuenta conectada.
+3. **Responder `200` también a lo inválido**, sin lanzar proceso: no
+   provocar reintentos ni dar pistas sobre qué se valida.
+
+El proceso lanzado debe ser idempotente: estos proveedores suelen mandar
+una notificación por cada cambio del recurso.
+
 ## Estructura de archivos resultante
 
 En la app dueña de los datos que trae el webhook:

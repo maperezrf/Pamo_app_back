@@ -12,6 +12,7 @@ ni datos de entorno.
 | `POST /api/auth/logout/` | Sesión | — | `detail: logged_out`. |
 | `GET /api/auth/menu/` | Sesión | — | Árbol de áreas filtrado por roles. |
 | `GET /api/auth/ping-admin/` | Rol `Admin` | — | `is_admin: true`. |
+| `POST /api/orders/webhooks/mercadolibre/` | Público (`AllowAny`), lo llama Mercado Libre; sin firma, se valida tópico, app y cuenta | Notificación `orders_v2` (`resource`, `topic`, `user_id`, `application_id`). | Siempre `200`, vacío; solo una notificación válida lanza `orders.process_mercadolibre_notification`. |
 | `GET /api/integrations/mercadolibre/connect/` | Rol `Admin` | — (navegación del navegador, no XHR) | `302` a la autorización de Mercado Libre; `503` si faltan credenciales. |
 | `GET /api/integrations/mercadolibre/callback/` | Rol `Admin` (misma sesión que `connect/`) | Query `code`, `state` o `error` (los pone Mercado Libre). | `connected: true`, `seller_id`; `400` si `state` inválido/vencido/reusado, el vendedor rechazó o el código fue rechazado; `502` si Mercado Libre falla. |
 

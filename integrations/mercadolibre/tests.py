@@ -12,6 +12,7 @@ from .apis import STATE_SESSION_KEY
 from .client import MercadoLibreAPIError, MercadoLibreAuthError, MercadoLibreClient
 from .functions.get_billing_info import get_billing_info
 from .functions.get_order import get_order
+from .functions.get_pack import get_pack
 from .functions.get_shipment import get_shipment
 from .models import MercadoLibreToken
 
@@ -230,7 +231,7 @@ class ReadFunctionTests(TestCase):
             "date_created": "2026-09-23T10:00:00.000-04:00",
             "pack_id": None,
             "shipping": {"id": 4400001},
-            "buyer": {"id": 99, "nickname": "COMPRADOR"},
+            "buyer": {"id": 99, "nickname": "COMPRADOR", "first_name": "Ana", "billing_info": {"id": 555}},
             "order_items": [
                 {"item": {"id": "MCO1", "title": "Taladro", "seller_sku": "SKU-1", "variation_id": 7}, "quantity": 2, "unit_price": 150000},
                 {"item": {"id": "MCO2", "title": "Broca", "seller_sku": None}, "quantity": 1, "unit_price": 9900.5},
@@ -241,40 +242,54 @@ class ReadFunctionTests(TestCase):
         self.assertEqual(order["order_id"], "2000001")
         self.assertEqual(order["pack_id"], "")
         self.assertEqual(order["shipment_id"], "4400001")
-        self.assertEqual(order["buyer"], {"id": "99", "nickname": "COMPRADOR"})
+        self.assertEqual(order["billing_info_id"], "555")
+        self.assertEqual(
+            order["buyer"], {"id": "99", "nickname": "COMPRADOR", "first_name": "Ana", "last_name": ""}
+        )
         self.assertEqual(order["items"][0]["sku"], "SKU-1")
         self.assertEqual(order["items"][0]["variation_id"], "7")
         self.assertEqual(order["items"][0]["quantity"], 2)
         self.assertEqual(order["items"][1]["sku"], "")  # nunca el item.id
         self.assertEqual(order["items"][1]["price"], "9900.5")
+        self.assertNotIn("raw", order)
 
-    def test_get_billing_info_maps_additional_info(self, mock_get):
+    def test_get_billing_info_reads_the_new_endpoint(self, mock_get):
         mock_get.return_value = {
-            "billing_info": {
-                "doc_type": "CC",
-                "doc_number": "1000000000",
-                "additional_info": [
-                    {"type": "FIRST_NAME", "value": "Ana"},
-                    {"type": "LAST_NAME", "value": "Pérez"},
-                    {"type": "STREET_NAME", "value": "Calle 1"},
-                    {"type": "STREET_NUMBER", "value": "2-3"},
-                    {"type": "CITY_NAME", "value": "Bogotá"},
-                    {"type": "STATE_NAME", "value": "Cundinamarca"},
-                ],
-            }
+            "id": 555,
+            "site_id": "MCO",
+            "buyer": {
+                "cust_id": 99,
+                "billing_info": {
+                    "name": "Ana",
+                    "last_name": "Pérez",
+                    "identification": {"type": "CC", "number": "1000000000"},
+                    "address": {
+                        "street_name": "Calle 1",
+                        "street_number": "#2-3",
+                        "city_name": "Bogotá",
+                        "state": {"code": "CO-DC", "name": "Bogotá D.C."},
+                        "neighborhood": "Centro",
+                        "country_id": "CO",
+                    },
+                    "attributes": {"cust_type": "CO"},
+                },
+            },
         }
-        billing = get_billing_info("2000001")
-        mock_get.assert_called_once_with("/orders/2000001/billing_info")
+        billing = get_billing_info("555")
+        mock_get.assert_called_once_with("/orders/billing-info/MCO/555", headers={"x-version": "2"})
         self.assertEqual(billing["customer_identification_type"], "CC")
         self.assertEqual(billing["customer_identification"], "1000000000")
         self.assertEqual(billing["customer_first_name"], "Ana")
-        self.assertEqual(billing["customer_address"], "Calle 1 2-3")
+        self.assertEqual(billing["customer_last_name"], "Pérez")
+        self.assertEqual(billing["customer_address"], "Calle 1 #2-3")
         self.assertEqual(billing["customer_city"], "Bogotá")
-        self.assertEqual(billing["customer_region"], "Cundinamarca")
+        self.assertEqual(billing["customer_region"], "Bogotá D.C.")
+        self.assertEqual(billing["customer_type"], "CO")
+        self.assertNotIn("raw", billing)
 
     def test_get_billing_info_with_missing_data_returns_empty_strings(self, mock_get):
         mock_get.return_value = {}
-        billing = get_billing_info("2000001")
+        billing = get_billing_info("555")
         self.assertEqual(billing["customer_identification"], "")
         self.assertEqual(billing["customer_address"], "")
 
@@ -290,13 +305,37 @@ class ReadFunctionTests(TestCase):
                 "city": {"name": "Bogotá"},
                 "state": {"name": "Cundinamarca"},
             },
+            "shipping_items": [{"id": "MCO1", "quantity": 1}, {"id": "MCO2", "quantity": 3}],
         }
         shipment = get_shipment("4400001")
         mock_get.assert_called_once_with("/shipments/4400001")
         self.assertEqual(shipment["logistic_type"], "fulfillment")
+        self.assertEqual(shipment["items"], [{"item_id": "MCO1", "quantity": 1}, {"item_id": "MCO2", "quantity": 3}])
         self.assertEqual(shipment["receiver"]["city"], "Bogotá")
         self.assertEqual(shipment["receiver"]["phone"], "XXXXXXX")
+        self.assertNotIn("raw", shipment)
 
     def test_get_shipment_falls_back_to_new_format_logistic(self, mock_get):
         mock_get.return_value = {"id": 1, "logistic": {"type": "xd_drop_off"}}
-        self.assertEqual(get_shipment("1")["logistic_type"], "xd_drop_off")
+        shipment = get_shipment("1")
+        self.assertEqual(shipment["logistic_type"], "xd_drop_off")
+        self.assertEqual(shipment["items"], [])
+
+    def test_get_pack_lists_its_orders_and_shipment(self, mock_get):
+        mock_get.return_value = {
+            "id": 2000015141464455,
+            "status": "released",
+            "orders": [{"id": 2000018574199206, "static_tags": []}, {"id": 2000018574204682, "static_tags": []}],
+            "shipment": {"id": 48068520540},
+        }
+        pack = get_pack("2000015141464455")
+        mock_get.assert_called_once_with("/packs/2000015141464455")
+        self.assertEqual(
+            pack,
+            {
+                "pack_id": "2000015141464455",
+                "order_ids": ["2000018574199206", "2000018574204682"],
+                "shipment_id": "48068520540",
+                "status": "released",
+            },
+        )

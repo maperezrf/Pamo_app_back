@@ -46,6 +46,10 @@ MERCADOLIBRE_CLIENT_SECRET = config("MERCADOLIBRE_CLIENT_SECRET", default="")
 MERCADOLIBRE_REDIRECT_URI = config("MERCADOLIBRE_REDIRECT_URI", default="")
 MERCADOLIBRE_API_BASE_URL = config("MERCADOLIBRE_API_BASE_URL", default="https://api.mercadolibre.com")
 MERCADOLIBRE_AUTH_URL = config("MERCADOLIBRE_AUTH_URL", default="https://auth.mercadolibre.com.co/authorization")
+# Cliente fijo de Shopify al que se asignan todos los pedidos de Mercado
+# Libre (app orders), igual que FALABELLA_SHOPIFY_CUSTOMER_ID: Mercado Libre
+# no entrega email ni teléfono del comprador. Id numérico, sin gid://.
+MERCADOLIBRE_SHOPIFY_CUSTOMER_ID = config("MERCADOLIBRE_SHOPIFY_CUSTOMER_ID", default="")
 
 # SODIMAC (integrations/sodimac/) -- autenticación por subscription key
 # (Azure APIM), no token Bearer.

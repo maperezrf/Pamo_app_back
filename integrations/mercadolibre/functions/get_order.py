@@ -5,25 +5,25 @@ def get_order(order_id):
     """Trae un pedido de Mercado Libre (`GET /orders/{id}`), normalizado.
 
     Devuelve:
-        {"order_id", "pack_id", "shipment_id", "status", "created_at",
-         "buyer": {"id", "nickname"},
+        {"order_id", "pack_id", "shipment_id", "billing_info_id", "status",
+         "created_at", "buyer": {"id", "nickname", "first_name",
+         "last_name"},
          "items": [{"sku", "quantity", "price", "title", "item_id",
-                    "variation_id"}],
-         "raw"}
+                    "variation_id"}]}
 
-    Campos tomados de la documentación de Mercado Libre, **sin verificar
-    todavía contra un pedido real** (levantamiento de la fase 0, ver
+    Verificado contra 8 pedidos reales el 2026-09-24 (ver
     docs/implementations-plans/mercadolibre-orders-import.md):
-    - `sku` = `order_items[].item.seller_sku`. Si viene vacío queda `""`
-      -- a propósito NO se usa el `item.id` como SKU (nunca resolvería en
-      Shopify). Falta confirmar que en una variación trae el SKU de la
-      variación.
-    - `buyer` solo con id y apodo: qué otros datos del comprador expone el
-      pedido (email, teléfono, nombre) es justamente lo que se levanta.
-    - `pack_id` vacío si el pedido no es parte de un carrito.
-
-    `raw` es el JSON crudo, solo mientras dura el levantamiento de datos;
-    se retira al cerrar la fase 0.
+    - `sku` = `order_items[].item.seller_sku`, presente siempre, también
+      en variantes (`variation_id` venía vacío aunque había
+      `variation_attributes`). Si viene vacío queda `""` -- a propósito NO
+      se usa el `item.id` como SKU (nunca resolvería en Shopify).
+    - El pedido no trae email ni teléfono del comprador; `last_name` puede
+      venir vacío.
+    - `billing_info_id` (`buyer.billing_info.id`) es la llave de
+      `get_billing_info`.
+    - `pack_id` vacío si el pedido no pasó por el carrito. Tenerlo no
+      implica varias órdenes: casi todos los packs tienen una sola (ver
+      `get_pack`).
     """
     raw = MercadoLibreClient().get(f"/orders/{order_id}")
     buyer = raw.get("buyer") or {}
@@ -31,11 +31,16 @@ def get_order(order_id):
         "order_id": str(raw["id"]),
         "pack_id": _text(raw.get("pack_id")),
         "shipment_id": _text((raw.get("shipping") or {}).get("id")),
+        "billing_info_id": _text((buyer.get("billing_info") or {}).get("id")),
         "status": _text(raw.get("status")),
         "created_at": _text(raw.get("date_created")),
-        "buyer": {"id": _text(buyer.get("id")), "nickname": _text(buyer.get("nickname"))},
+        "buyer": {
+            "id": _text(buyer.get("id")),
+            "nickname": _text(buyer.get("nickname")),
+            "first_name": _text(buyer.get("first_name")),
+            "last_name": _text(buyer.get("last_name")),
+        },
         "items": [_normalize_item(entry) for entry in raw.get("order_items") or []],
-        "raw": raw,
     }
 
 

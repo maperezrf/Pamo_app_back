@@ -26,7 +26,7 @@ que los documentos citados abajo siguen vigentes.
 
 ## Hallazgo bloqueante (histórico, resuelto en la Fase 0): `orchestrator/` no estaba integrado a este repo
 
-**Ya no aplica — queda documentado solo como registro de lo que se
+**Ya no aplica — queda documentado solo como registro de lo que se 
 encontró y corrigió.** Verificado de nuevo el 2026-09-19 contra el estado
 real: `orchestrator` está en `INSTALLED_APPS`, `orchestrator/apps.py`
 declara `name = "orchestrator"` (correcto), y son 25 archivos trackeados en

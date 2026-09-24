@@ -14,10 +14,17 @@ class MarketplaceOrder(models.Model):
 
     class Marketplace(models.TextChoices):
         FALABELLA = "falabella", "Falabella"
+        MERCADOLIBRE = "mercadolibre", "Mercado Libre"
         # futuros marketplaces se agregan acá, no se crea un modelo por canal
 
     class Status(models.TextChoices):
         PENDING = "pending", "Pendiente"
+        # Reclamado por un proceso que está creando la orden en Shopify (solo
+        # Mercado Libre, donde varios webhooks del mismo pedido pueden llegar
+        # a la vez). Si el proceso muere acá, no se sabe si la orden quedó
+        # creada: NO se reintenta solo, se revisa a mano -- ver
+        # docs/implementations-plans/mercadolibre-orders-import.md (decisión F).
+        PROCESSING = "procesando", "Procesando"
         # Obsoleto: ya no se crean clientes en Shopify (todos los pedidos van
         # al cliente fijo). Se conserva por las filas históricas; la próxima
         # corrida las reintenta porque no tienen shopify_order_id.
@@ -35,10 +42,18 @@ class MarketplaceOrder(models.Model):
     marketplace_order_id = models.CharField(max_length=64)
     marketplace_order_number = models.CharField(max_length=64, blank=True)
 
+    # Envío del marketplace (solo Mercado Libre). Un envío = una guía = una
+    # bodega = una orden de Shopify: las órdenes con el mismo shipment_id
+    # (packs) se procesan juntas. Vacío en Falabella (un pedido = un envío).
+    shipment_id = models.CharField(max_length=32, blank=True, db_index=True)
+
     # Datos del comprador tal cual los reporta el marketplace. En Shopify la
-    # orden queda a nombre de un cliente fijo (FALABELLA_SHOPIFY_CUSTOMER_ID);
-    # estos campos son la fuente para facturar en Siigo -- ver
+    # orden queda a nombre de un cliente fijo por canal
+    # (FALABELLA_SHOPIFY_CUSTOMER_ID, MERCADOLIBRE_SHOPIFY_CUSTOMER_ID); estos
+    # campos son la fuente para facturar en Siigo -- ver
     # docs/implementations-plans/falabella-fixed-customer.md.
+    customer_identification_type = models.CharField(max_length=16, blank=True)  # CC, NIT... (Mercado Libre)
+    customer_type = models.CharField(max_length=8, blank=True)  # CO persona / BU empresa (Mercado Libre)
     customer_identification = models.CharField(max_length=32, blank=True)
     customer_first_name = models.CharField(max_length=150, blank=True)
     customer_last_name = models.CharField(max_length=150, blank=True)
