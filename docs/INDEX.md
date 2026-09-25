@@ -52,6 +52,7 @@ contrasta y, si aplica, se incorpora a la documentación versionada.
 | Orquestador de procesos | `orchestrator/` | Ejecución/programación en segundo plano de procesos de negocio, todos registrados en `orchestrator/registrations.py`. | [`apps/orchestrator.md`](apps/orchestrator.md) |
 | Directorio de clientes de Shopify | `customers/` | Tabla local sincronizada con Shopify (webhook + reconciliación); resuelve "¿existe este cliente?" por cédula. | [`apps/customers.md`](apps/customers.md) |
 | Importación de pedidos de marketplace | `orders/` | Trae pedidos de marketplaces (Falabella y Madecentro por lote, Mercado Libre por webhook) y los crea en Shopify. El webhook de Madecentro está en captura. | [`apps/orders.md`](apps/orders.md) |
+| Catálogo de productos | `products/` | Productos, kits y equivalencias de SKU por marketplace; API JSON de carga y descarga para el Excel del frontend. | [`apps/products.md`](apps/products.md) |
 | Contabilidad | `accounting/` | Área de negocio contable. | Pendiente |
 | Facturación | `facturacion/` | Área de negocio de facturación. | Pendiente |
 | Logística | `logistics/` | Área de negocio logística. | Pendiente |

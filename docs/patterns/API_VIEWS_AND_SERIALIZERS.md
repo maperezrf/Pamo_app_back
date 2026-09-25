@@ -9,6 +9,12 @@ token CSRF en `accounts.views.csrf`.
 
 ## Reglas
 
+- Los `APIView` de una app viven en `<app>/apis.py`, no en `views.py`
+  (ejemplos: `orchestrator/apis.py`, `orders/apis.py`,
+  `products/apis.py`). `views.py` queda como boilerplate de `startapp` o
+  no existe. Los webhooks de proveedor van en `<app>/webhooks.py` (ver
+  [`PROVIDER_WEBHOOKS.md`](PROVIDER_WEBHOOKS.md)). `accounts/views.py` es
+  anterior a esta regla.
 - Mantener la lógica de negocio fuera de la vista: delegar en `functions/`
   o en la app dueña del concepto.
 - Declarar el permiso de cada endpoint. Una excepción pública debe usar

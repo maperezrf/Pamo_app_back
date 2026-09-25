@@ -49,6 +49,12 @@ futuro (Mercado Libre, etc.) reutilice la misma estructura sin duplicarla.
 
 ## Pospuesto explícitamente: modelo de equivalencias de SKU
 
+> **Actualización 2026-09-25**: resuelto en la app `products` (catálogo
+> general con equivalencias por marketplace y kits). Ver
+> [`products-catalog.md`](products-catalog.md) y
+> [`../apps/products.md`](../apps/products.md). Ningún canal lo consume
+> todavía; Sodimac será el primero.
+
 La idea real (`sku_shopify` / `sku_falabella` / `sku_sodimac` / ...) queda
 fuera de esta fase por decisión del usuario — tiene matices propios (un SKU
 de marketplace no siempre coincide con el de Shopify, ya lo vimos en un

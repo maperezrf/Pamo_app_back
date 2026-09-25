@@ -1,5 +1,7 @@
 from django.db import models
 
+from products.models import Marketplace
+
 
 class MarketplaceOrder(models.Model):
     """Pedido de un marketplace (Falabella, y a futuro otros) pendiente de
@@ -12,11 +14,10 @@ class MarketplaceOrder(models.Model):
     corrida vuelve a intentarlo sin lógica aparte.
     """
 
-    class Marketplace(models.TextChoices):
-        FALABELLA = "falabella", "Falabella"
-        MERCADOLIBRE = "mercadolibre", "Mercado Libre"
-        MADECENTRO = "madecentro", "Madecentro"
-        # futuros marketplaces se agregan acá, no se crea un modelo por canal
+    # Alias: la lista de canales vive en `products.models.Marketplace` (el
+    # catálogo también la usa y `products` no depende de `orders`). Un
+    # marketplace nuevo se agrega allá, no se crea un modelo por canal.
+    Marketplace = Marketplace
 
     class Status(models.TextChoices):
         PENDING = "pending", "Pendiente"

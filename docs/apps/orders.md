@@ -19,7 +19,9 @@ y
   específico de Falabella) que registra cada pedido de marketplace, sus
   ítems, y el resultado de intentar llevarlo a Shopify. El campo
   `marketplace` (`TextChoices`) es lo que distingue el canal — un
-  marketplace nuevo agrega un valor ahí, no una tabla nueva.
+  marketplace nuevo agrega un valor ahí, no una tabla nueva. La lista vive
+  en `products.models.Marketplace`; `MarketplaceOrder.Marketplace` es un
+  alias (ver [`products.md`](products.md)).
 - **El indicador de "falta procesar" es `shopify_order_id == ""`** — no hay
   checkpoint de fechas. Un pedido nuevo y uno que quedó en error en una
   corrida anterior se tratan igual: la siguiente corrida los reintenta sin

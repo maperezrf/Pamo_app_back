@@ -32,6 +32,7 @@ INSTALLED_APPS = [
     'orchestrator',
     'customers',
     'orders',
+    'products',
 ]
 
 MIDDLEWARE = [
