@@ -2,6 +2,8 @@
 docs/patterns/PROVIDER_WEBHOOKS.md: `AllowAny`, trabajo real despachado a
 segundo plano vía `orchestrator`, respuesta inmediata."""
 
+import logging
+
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -11,6 +13,12 @@ from integrations.mercadolibre.functions.get_connected_seller_id import get_conn
 from orchestrator.services import launch_process
 
 from .functions.parse_mercadolibre_notification import parse_mercadolibre_notification
+
+logger = logging.getLogger(__name__)
+
+# Tope del body registrado por el webhook de captura de Madecentro: un
+# envío grande o malicioso no debe llenar los logs.
+MADECENTRO_CAPTURE_MAX_BYTES = 20 * 1024
 
 
 class MercadoLibreOrderWebhookView(APIView):
@@ -31,4 +39,32 @@ class MercadoLibreOrderWebhookView(APIView):
         )
         if order_id:
             launch_process(code="orders.process_mercadolibre_notification", params={"order_id": order_id})
+        return Response(status=200)
+
+
+class MadecentroOrderWebhookView(APIView):
+    """TEMPORAL (fase 0): captura los webhooks de pedidos de Madecentro
+    (Shipturtle, order create/update) para conocer su forma real.
+
+    Solo registra headers y body en los logs y responde `200`: no valida,
+    no persiste y no lanza procesos. Se lee `request.body` (bytes crudos),
+    no `request.data`, porque el cuerpo puede no ser JSON y porque una
+    firma futura se calcularía sobre esos bytes. Nivel `warning` porque el
+    proyecto no configura `LOGGING` y `info` no aparecería en Railway.
+    Ver docs/implementations-plans/madecentro-orders-import.md.
+    """
+
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        body = request.body
+        truncated = len(body) > MADECENTRO_CAPTURE_MAX_BYTES
+        logger.warning(
+            "Madecentro webhook capturado: content_type=%s headers=%s body_bytes=%s truncated=%s body=%s",
+            request.content_type,
+            dict(request.headers),
+            len(body),
+            truncated,
+            body[:MADECENTRO_CAPTURE_MAX_BYTES].decode("utf-8", errors="replace"),
+        )
         return Response(status=200)

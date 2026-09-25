@@ -39,6 +39,16 @@ seller id; es estado de conexión, no información de clientes o facturas.
   `Admin`, `state` de un solo uso en la sesión), en
   `mercadolibre/apis.py`; rutas en `integrations/urls.py`. Plan:
   [`../implementations-plans/mercadolibre-orders-import.md`](../implementations-plans/mercadolibre-orders-import.md).
+- `madecentro/`: API de Shipturtle (plataforma del marketplace
+  Madecentro), con token Bearer fijo que no vence.
+  - Shipturtle entrega un token por dominio. `MadecentroClient(token)`
+    recibe el que corresponde; hoy solo se usa `MADECENTRO_ORDERS_TOKEN`.
+  - Funciones de lectura `get_order(order_id)` y
+    `list_orders(start_date, end_date, page=, limit=)`
+    (`/all-orders/fetchData`, fechas `M/D/YYYY`). Devuelven el JSON sin
+    normalizar hasta conocer los campos reales.
+  - Plan:
+    [`../implementations-plans/madecentro-orders-import.md`](../implementations-plans/madecentro-orders-import.md).
 - `sodimac/`: cliente REST y funciones de pedidos.
 - `envia/`: cliente REST, cotización y validación de payload logístico.
 - `siigo/`: cliente REST, token cacheado y funciones de clientes/facturas.

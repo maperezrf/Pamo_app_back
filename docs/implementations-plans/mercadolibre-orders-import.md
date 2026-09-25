@@ -6,7 +6,17 @@ Fase 1: webhook, procesamiento por envío y recuperación, con pruebas sin
 red en verde (`python manage.py test orders integrations.mercadolibre`,
 salvo la falla conocida del registro en memoria). Decisiones C (cliente
 fijo), E (envío = una bodega = una orden de Shopify) y G (recuperación)
-confirmadas. Pendiente operativo: ver "Para ponerlo en marcha" al final.
+confirmadas. **En producción desde el 2026-09-24**: webhook configurado en
+Mercado Libre Developers y recibiendo notificaciones reales
+(`orders.process_mercadolibre_notification`); orquestador verificado en
+Railway (programación de Falabella disparada por el scheduler). Pendiente:
+programar `orders.recover_mercadolibre`, dejar la hora definitiva de
+`orders.import_falabella`, y vigilar filas en `procesando` (revisión
+manual). Lecciones del despliegue: aplicar migraciones solo desplegando
+el código que las acompaña (el `.env` local apunta a la base de Railway;
+un `migrate` local dejó columnas obligatorias que el código desplegado no
+conocía), y cambiar horarios por la API del orquestador, no en la base ni
+en `/admin/` (el scheduler solo relee la base al arrancar).
 Reutiliza el modelo
 `MarketplaceOrder`, la creación de la orden en Shopify y la selección de
 bodega de la app `orders` (ver

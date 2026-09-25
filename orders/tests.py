@@ -829,3 +829,42 @@ class MercadoLibreWebhookTests(TestCase):
         self.client.post(WEBHOOK_URL, self._payload(), content_type="application/json")
 
         launch.assert_not_called()
+
+
+MADECENTRO_WEBHOOK_URL = "/api/orders/webhooks/madecentro/"
+
+
+@patch("orders.webhooks.launch_process")
+class MadecentroWebhookCaptureTests(TestCase):
+    """Fase 0: el webhook solo registra lo que llega y responde 200."""
+
+    def test_anonymous_json_is_logged_and_answered_200(self, launch):
+        with self.assertLogs("orders.webhooks", level="WARNING") as logs:
+            response = self.client.post(
+                MADECENTRO_WEBHOOK_URL,
+                {"order_id": 17707107, "event": "order/create"},
+                content_type="application/json",
+                HTTP_X_SHIPTURTLE_TOPIC="order/create",
+            )
+
+        self.assertEqual(response.status_code, 200)
+        output = "\n".join(logs.output)
+        self.assertIn("X-Shipturtle-Topic", output)
+        self.assertIn("17707107", output)
+        launch.assert_not_called()
+
+    def test_non_json_body_is_accepted(self, launch):
+        with self.assertLogs("orders.webhooks", level="WARNING") as logs:
+            response = self.client.post(MADECENTRO_WEBHOOK_URL, "no es json", content_type="text/plain")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("no es json", "\n".join(logs.output))
+
+    @patch("orders.webhooks.MADECENTRO_CAPTURE_MAX_BYTES", 10)
+    def test_large_body_is_truncated_in_the_log(self, launch):
+        with self.assertLogs("orders.webhooks", level="WARNING") as logs:
+            self.client.post(MADECENTRO_WEBHOOK_URL, "A" * 10 + "COLA", content_type="text/plain")
+
+        output = "\n".join(logs.output)
+        self.assertIn("truncated=True", output)
+        self.assertNotIn("COLA", output)

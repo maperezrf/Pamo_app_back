@@ -51,6 +51,13 @@ MERCADOLIBRE_AUTH_URL = config("MERCADOLIBRE_AUTH_URL", default="https://auth.me
 # no entrega email ni teléfono del comprador. Id numérico, sin gid://.
 MERCADOLIBRE_SHOPIFY_CUSTOMER_ID = config("MERCADOLIBRE_SHOPIFY_CUSTOMER_ID", default="")
 
+# MADECENTRO (integrations/madecentro/) -- API de Shipturtle, token Bearer
+# fijo que no vence. Shipturtle entrega un token por dominio (pedidos,
+# productos); por ahora solo se usa el de pedidos. Vacío por defecto para
+# que el backend arranque sin Madecentro.
+MADECENTRO_API_BASE_URL = config("MADECENTRO_API_BASE_URL", default="https://api.shipturtle.com/api/v1")
+MADECENTRO_ORDERS_TOKEN = config("MADECENTRO_ORDERS_TOKEN", default="")
+
 # SODIMAC (integrations/sodimac/) -- autenticación por subscription key
 # (Azure APIM), no token Bearer.
 SODIMAC_SUBSCRIPTION_KEY = config("SODIMAC_SUBSCRIPTION_KEY")

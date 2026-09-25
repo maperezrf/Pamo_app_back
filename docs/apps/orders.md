@@ -92,6 +92,24 @@ Plan: [`../implementations-plans/mercadolibre-orders-import.md`](../implementati
   Nunca toca `procesando`. Reporta packs incompletos hace más de 6 h. Si
   algún pedido falla, la ejecución termina en error con el resumen.
 
+## Madecentro (fase 0: captura)
+
+Plan: [`../implementations-plans/madecentro-orders-import.md`](../implementations-plans/madecentro-orders-import.md).
+
+- **Endpoint temporal**: `POST /api/orders/webhooks/madecentro/`
+  (`MadecentroOrderWebhookView`, `orders/webhooks.py`), registrado en
+  Shipturtle para order create/update.
+- **Qué hace**: solo registra en los logs (nivel `warning`) los headers y
+  el body crudo, recortado a 20 KB (`MADECENTRO_CAPTURE_MAX_BYTES`), y
+  responde `200`.
+- **Qué no hace**: no valida (Shipturtle no ofrece secreto ni firma, a
+  confirmar con los avisos reales), no persiste, no lanza procesos y no
+  toca Shopify.
+- **Riesgo aceptado**: los logs de Railway guardan datos del comprador
+  mientras dure la captura. En la fase 1 se reemplaza por el procesamiento
+  real y se quita el log del payload completo.
+- Madecentro todavía no es un valor de `MarketplaceOrder.marketplace`.
+
 ## Bodega de despacho
 
 Plan: [`../implementations-plans/shopify-inventory-by-location.md`](../implementations-plans/shopify-inventory-by-location.md).
@@ -176,6 +194,10 @@ pedidos viejos, exclusiones (recientes, `procesando`, creados, Falabella),
 un fallo no detiene el resto pero marca error, reporte de packs
 incompletos. Webhook: válido lanza el proceso; app, cuenta, tópico o
 recurso inválidos y sin cuenta conectada responden `200` sin lanzar.
+
+Madecentro (captura): una petición anónima con JSON responde `200` y queda
+en el log (headers y body), un cuerpo que no es JSON se acepta, un body
+grande queda recortado, y nunca se lanza un proceso.
 
 Esa última prueba (`test_process_registered_in_orchestrator_registry`)
 falla hoy: `orchestrator/registrations.py` solo se carga con
