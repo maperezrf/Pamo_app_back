@@ -15,6 +15,7 @@ class MarketplaceOrder(models.Model):
     class Marketplace(models.TextChoices):
         FALABELLA = "falabella", "Falabella"
         MERCADOLIBRE = "mercadolibre", "Mercado Libre"
+        MADECENTRO = "madecentro", "Madecentro"
         # futuros marketplaces se agregan acá, no se crea un modelo por canal
 
     class Status(models.TextChoices):
@@ -49,7 +50,7 @@ class MarketplaceOrder(models.Model):
 
     # Datos del comprador tal cual los reporta el marketplace. En Shopify la
     # orden queda a nombre de un cliente fijo por canal
-    # (FALABELLA_SHOPIFY_CUSTOMER_ID, MERCADOLIBRE_SHOPIFY_CUSTOMER_ID); estos
+    # (FALABELLA_, MERCADOLIBRE_, MADECENTRO_SHOPIFY_CUSTOMER_ID); estos
     # campos son la fuente para facturar en Siigo -- ver
     # docs/implementations-plans/falabella-fixed-customer.md.
     customer_identification_type = models.CharField(max_length=16, blank=True)  # CC, NIT... (Mercado Libre)

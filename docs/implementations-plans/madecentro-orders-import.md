@@ -6,8 +6,10 @@ verde (`python manage.py test integrations.madecentro orders`, salvo la
 falla conocida del registro en memoria del orquestador). Pendiente:
 - desplegar;
 - registrar la URL en Shipturtle;
-- poner `MADECENTRO_ORDERS_TOKEN` en Railway y en `.env`;
-- hacer la verificación real de solo lectura (abajo). Madecentro es
+- poner `MADECENTRO_ORDERS_TOKEN` en Railway.
+
+Verificación real de solo lectura hecha el 2026-09-24; los hallazgos están
+abajo. Madecentro es
 un marketplace que opera sobre la plataforma Shipturtle: los webhooks y la
 API de pedidos son de Shipturtle, pero la cuenta y los tokens son de
 Madecentro. Este plan cubre solo la fase 0 (captura y conexión); las
@@ -191,9 +193,123 @@ Anotar en este plan (sin datos del comprador):
 - dónde viene el total o la paginación;
 - el formato de un error, pidiendo un id inexistente.
 
+#### Hallazgos de la verificación real (2026-09-24)
+
+Pedido de prueba `17707107`, leído con `get_order` y `list_orders`:
+
+- **Autenticación**: el token de pedidos funciona.
+- **Envoltorio**:
+  - `get_order` → `{"data": {...pedido...}}`.
+  - `list_orders` → `{"data": [...], "count": N}`. `count` es el total del
+    rango; se pagina con `page`/`limit`.
+- **Errores**: un id inexistente devuelve HTTP `404` (`MADECENTRO_HTTP_404`).
+  No se vio un error de negocio con HTTP 200, así que el cliente queda
+  como está.
+- **Identificadores del pedido**:
+  - `id`: id interno de Shipturtle. Es el que usa `/orders/{id}`.
+  - `order_id`: id del pedido en la tienda Shopify de Madecentro.
+  - `name`: número visible, por ejemplo `#1001114236`.
+  - `order_number`.
+- **Estado**:
+  - `financial_status` (`paid`), `confirmed`.
+  - `status`: estado de Shipturtle, por ejemplo `New Orders`, junto con
+    `status_sequence`.
+  - `cancelled_at`, `cancellation_reason`.
+  - `type_of_order` (`forward_order`, con guion bajo, aunque el filtro de
+    `fetchData` usa `"forward order"`).
+- **Tienda y vendedor**:
+  - `store_id` (`3022`) y `line_items[].shop.name` (`Madecentro`) son la
+    tienda del marketplace.
+  - `company` (`id`, `company_name`, `brand_name`) parece ser la cuenta de
+    vendedor dueña del token, **por confirmar**.
+  - `vendor_id` viene `null` tanto en el pedido como en las líneas.
+- **Líneas** (`line_items[]`):
+  - `sku` **con el formato de Pamo** (`PMO-…`), `quantity`, `price` (COP,
+    entero), `title`.
+  - `variant_id` y `product_id` de Madecentro.
+  - `fulfillment_status`, `vendor`.
+- **Comprador**:
+  - `billing_address` y `shipping_address` (`first_name`, `last_name`,
+    `name`, `company`, `address1`, `address2`, `city`, `province`, `phone`).
+  - `customer_email`, `customer_phone`, `customer_first_name`,
+    `customer_last_name`.
+  - **No se encontró un campo de documento (cédula o NIT)**. Pendiente
+    para la factura en Siigo: puede venir en `note_attributes` (nulo en
+    este pedido) o en `company`/`name` cuando es empresa.
+- **Fechas**: `created_at` / `processed_at` en formato
+  `YYYY-MM-DD HH:MM:SS` sin zona. `customer_address` trae `-05:00`, lo que
+  sugiere hora de Colombia, **por confirmar**.
+- **Otros**: `errors` (validaciones internas de Shipturtle para generar la
+  guía) y `order_push_error` (`Vendor Shop not found`) son de la operación
+  de Shipturtle y no afectan la lectura.
+
 **Solo lecturas.** Recordatorio del plan de Mercado Libre: el `.env` local
 apunta a la base de Railway. Esta fase no tiene migraciones, así que no
 hay riesgo por esa vía.
+
+## Fase 1a — rutina de importación (2026-09-25)
+
+Estado: **implementada, sin desplegar**. Pruebas sin red en verde, salvo
+la falla conocida del registro en memoria. Pendiente:
+- configurar `MADECENTRO_SHOPIFY_CUSTOMER_ID` en Railway. Ya está en
+  `.env` y se verificó en Shopify el 2026-09-25: el cliente existe y es
+  distinto del de Falabella y Mercado Libre;
+- desplegar, para que las migraciones `0007`/`0008` se apliquen con el
+  código;
+- primera corrida controlada con `{"limit": 1}`;
+- programar `orders.import_madecentro` por la API del orquestador.
+
+Mientras se conoce el webhook, una rutina del orquestador trae los pedidos
+por API y los crea en Shopify. Después queda como recuperación de los
+avisos que se pierdan, igual que `orders.recover_mercadolibre`.
+
+### Decisiones
+
+- **Cliente fijo** (confirmado por el negocio el 2026-09-25): todo a nombre
+  de un mismo cliente de Shopify, `MADECENTRO_SHOPIFY_CUSTOMER_ID`, como
+  Falabella y Mercado Libre. Sin él, la rutina falla antes de tocar nada.
+- **Identificador**: `marketplace_order_id` = `id` de Shipturtle (el de
+  `/orders/{id}`). `marketplace_order_number` = `name` sin `#`.
+- **Qué se crea**: solo `financial_status == "paid"` y sin `cancelled_at`.
+  Los `voided` (anulados; 7 de 13 en los últimos 30 días) se ignoran.
+- **El listado es resumido**: sus líneas vienen sin SKU ni precio. Por eso
+  se lee cada pedido pagado con `get_order`. Solo se lee si no está ya
+  creado localmente.
+- **Un pedido = un envío**: `process_shipment([pedido], cliente_fijo)`,
+  que resuelve SKU, bodega y crea la orden.
+- **Sin duplicados**: se reutiliza el reclamo atómico de Mercado Libre
+  (`procesando`), movido a `orders/functions/claim_orders.py` para que lo
+  usen los dos canales. Un pedido ya creado o en `procesando` no se toca;
+  si el proceso muere en `procesando`, se revisa a mano, como en Mercado
+  Libre. Así el webhook futuro y la rutina pueden coincidir sin crear dos
+  órdenes.
+- **Reintentos**: además del rango de días, la rutina reintenta los
+  pedidos de Madecentro guardados en `pending`/`error_creando_orden`,
+  aunque ya estén fuera del rango. Si al releer un pedido pendiente ya no
+  está pagado, se descarta la fila.
+- **Parámetros** (`params` del orquestador):
+  - `days`: por defecto `1`, es decir de ayer a hoy en hora de Colombia
+    (`fetchData` filtra por día, inclusive).
+  - `limit`: máximo de pedidos a procesar en la corrida, para una primera
+    corrida controlada.
+- **Resultado**: un fallo en un pedido no detiene el resto. Al final, si
+  hubo fallos, la ejecución termina en error con el resumen.
+- **Riesgo conocido**: un pedido que se paga después de que su fecha salió
+  del rango no se descubre. Se mitiga corriendo con un `days` mayor.
+
+### Archivos
+
+| Archivo | Cambio |
+| --- | --- |
+| `config/constants.py` | `MADECENTRO_SHOPIFY_CUSTOMER_ID` (default `""`). |
+| `integrations/madecentro/functions/get_order.py` | Devuelve el pedido normalizado (id, número, estado de pago, cancelado, comprador, ítems). |
+| `integrations/madecentro/functions/list_orders.py` | Devuelve `{"orders": [{order_id, order_number, financial_status}], "count"}`. |
+| `orders/models.py` + migración | `Marketplace.MADECENTRO = "madecentro"`. |
+| `orders/migrations/…_seed_madecentro_process_type.py` | `orders.import_madecentro`, `allow_concurrent=False`. |
+| `orders/functions/claim_orders.py` | `claim_orders(marketplace, order_ids)` y `RETRYABLE_STATUSES`, extraídos de `process_mercadolibre_order`. |
+| `orders/functions/process_madecentro_order.py` | Procesa un pedido de forma idempotente. Lo reutilizará el webhook. |
+| `orders/functions/import_madecentro_orders.py` | El proceso registrado. |
+| `orchestrator/registrations.py` | `register_process("orders.import_madecentro", …)`. |
 
 ## Documentación que actualiza el desarrollador
 
@@ -221,10 +337,18 @@ Se responden con los datos capturados:
    multivendedor: ¿un pedido puede traer líneas de otros vendedores?
 3. ¿Qué estado significa "pagado" o "listo para crear en Shopify"? ¿Qué
    trae un update (cancelaciones, cambios de estado)?
-4. ¿Qué datos del comprador trae (documento, email, teléfono, dirección)?
-   Son la fuente de la factura en Siigo.
-5. ¿Los SKU coinciden con Shopify? ¿Hay kits? (El modelo de composición de
-   kits está pendiente.)
+4. ¿Dónde viene el documento (cédula o NIT) del comprador? La API trae
+   nombre, dirección, email y teléfono, pero no se encontró un campo de
+   documento. Es la fuente de la factura en Siigo.
+5. **Bloqueante para crear órdenes (verificado el 2026-09-25)**: el SKU
+   del pedido real `PMO-028-MP` **no existe en Shopify**, y tampoco
+   `PMO-028` ni `PMO028`. Mientras no se resuelva, la rutina deja esos
+   pedidos en `error_creando_orden` ("SKU no encontrado en Shopify") y los
+   reintenta en cada corrida, sin crear órdenes parciales. Falta que el
+   negocio diga a qué producto de Shopify corresponde cada SKU de
+   Madecentro, o si `-MP` es un kit (el modelo de composición de kits está
+   pendiente). Con esa respuesta se decide entre corregir el SKU en
+   Shipturtle o crear una tabla de equivalencias.
 6. ¿Quién despacha: nosotros o Madecentro?
 7. Cliente fijo `MADECENTRO_SHOPIFY_CUSTOMER_ID` y valor `MADECENTRO` en
    `MarketplaceOrder.marketplace`, siguiendo el patrón de Falabella y

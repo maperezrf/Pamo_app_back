@@ -11,6 +11,38 @@ from .functions.list_orders import list_orders
 BASE_URL = "https://shipturtle.test/api/v1"
 
 
+def _raw_order(**overrides):
+    """Forma real (reducida) de `GET /orders/{id}` -> `data`, verificada el
+    2026-09-24. Datos del comprador inventados."""
+    data = {
+        "id": 17707107,
+        "order_id": 1925041443712,
+        "name": "#1001114236",
+        "order_number": "114236",
+        "financial_status": "paid",
+        "cancelled_at": None,
+        "email": "ana@example.com",
+        "customer_email": "ana@example.com",
+        "customer_phone": "3000000000",
+        "customer_first_name": "Ana",
+        "customer_last_name": "Gómez",
+        "billing_address": {
+            "first_name": "Ana",
+            "last_name": "Gómez",
+            "name": "Ana Gómez",
+            "company": "",
+            "address1": "Calle 1 # 2-3",
+            "address2": "Apto 4",
+            "city": "Medellín",
+            "province": "Antioquia",
+            "phone": "3001234567",
+        },
+        "line_items": [{"sku": "PMO-028-MP", "quantity": 2, "price": 221335, "vendor_id": None}],
+    }
+    data.update(overrides)
+    return data
+
+
 def _response(status_code=200, payload=None, *, is_redirect=False, invalid_json=False):
     response = Mock(status_code=status_code, is_redirect=is_redirect)
     if invalid_json:
@@ -65,19 +97,55 @@ class MadecentroClientTests(SimpleTestCase):
 @patch("integrations.madecentro.client.requests.get")
 class MadecentroOrderFunctionsTests(SimpleTestCase):
     @patch("integrations.madecentro.functions.get_order.MADECENTRO_ORDERS_TOKEN", "ORDERS")
-    def test_get_order_reads_the_order_with_the_orders_token(self, get):
-        get.return_value = _response(payload={"id": 17707107})
+    def test_get_order_reads_the_order_with_the_orders_token_and_normalizes_it(self, get):
+        get.return_value = _response(payload={"data": _raw_order()})
 
-        self.assertEqual(get_order(17707107), {"id": 17707107})
+        order = get_order(17707107)
+
         args, kwargs = get.call_args
         self.assertEqual(args[0], f"{BASE_URL}/orders/17707107")
         self.assertEqual(kwargs["headers"]["Authorization"], "Bearer ORDERS")
+        self.assertEqual(
+            order,
+            {
+                "order_id": "17707107",
+                "order_number": "1001114236",
+                "financial_status": "paid",
+                "cancelled": False,
+                "customer_first_name": "Ana",
+                "customer_last_name": "Gómez",
+                "customer_email": "ana@example.com",
+                "customer_phone": "3001234567",
+                "customer_address": "Calle 1 # 2-3, Apto 4",
+                "customer_city": "Medellín",
+                "customer_region": "Antioquia",
+                "items": [{"sku": "PMO-028-MP", "quantity": 2, "price": "221335"}],
+            },
+        )
+
+    @patch("integrations.madecentro.functions.get_order.MADECENTRO_ORDERS_TOKEN", "ORDERS")
+    def test_get_order_company_buyer_uses_the_billing_name_and_flags_cancellation(self, get):
+        raw = _raw_order(cancelled_at="2026-09-24 10:00:00")
+        raw["billing_address"].update(first_name="", last_name="", name="EMPRESA SAS")
+        raw.update(customer_first_name="", customer_last_name="")
+        get.return_value = _response(payload={"data": raw})
+
+        order = get_order(17707107)
+
+        self.assertEqual((order["customer_first_name"], order["customer_last_name"]), ("EMPRESA SAS", ""))
+        self.assertTrue(order["cancelled"])
 
     @patch("integrations.madecentro.functions.list_orders.MADECENTRO_ORDERS_TOKEN", "ORDERS")
     def test_list_orders_builds_the_shipturtle_query(self, get):
-        get.return_value = _response(payload={"data": []})
+        get.return_value = _response(
+            payload={"data": [{"id": 5, "name": "#1001", "financial_status": "voided"}], "count": 7}
+        )
 
-        list_orders(date(2023, 11, 1), date(2023, 11, 16), page=2, limit=1)
+        result = list_orders(date(2023, 11, 1), date(2023, 11, 16), page=2, limit=1)
+
+        self.assertEqual(
+            result, {"orders": [{"order_id": "5", "order_number": "1001", "financial_status": "voided"}], "count": 7}
+        )
 
         args, kwargs = get.call_args
         self.assertEqual(args[0], f"{BASE_URL}/all-orders/fetchData")

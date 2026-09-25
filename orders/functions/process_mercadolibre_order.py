@@ -1,6 +1,5 @@
 from collections import Counter
 
-from django.db import transaction
 from django.utils import timezone
 
 from config.constants import MERCADOLIBRE_SHOPIFY_CUSTOMER_ID
@@ -10,11 +9,11 @@ from integrations.mercadolibre.functions.get_pack import get_pack
 from integrations.mercadolibre.functions.get_shipment import LOGISTIC_TYPE_FULFILLMENT, get_shipment
 
 from ..models import MarketplaceOrder, MarketplaceOrderItem
+from .claim_orders import RETRYABLE_STATUSES, claim_orders
 from .process_shipment import process_shipment
 
 MARKETPLACE = MarketplaceOrder.Marketplace.MERCADOLIBRE
 PAID = "paid"
-RETRYABLE_STATUSES = (MarketplaceOrder.Status.PENDING, MarketplaceOrder.Status.ERROR_ORDER)
 INCOMPLETE_PREFIX = "Envío incompleto"
 
 # Resultados posibles (texto para el progreso del orquestador y las pruebas).
@@ -95,48 +94,60 @@ def _process(order_id, marker):
         _mark_incomplete(order_ids, f"{INCOMPLETE_PREFIX}: los ítems de las órdenes no suman lo que lleva el envío")
         return INCOMPLETE
 
-    rows = _claim(order_ids)
+    rows = claim_orders(MARKETPLACE, order_ids)
     if rows is None:
         return CLAIMED_ELSEWHERE
+    # Los ítems se crean ya reclamadas: dos avisos simultáneos del mismo
+    # pedido no pueden duplicarlos.
+    fetched_by_id = {str(data["order_id"]): data for data in fetched.values()}
+    for row in rows:
+        if not row.items.exists():
+            _create_items(row, fetched_by_id[row.marketplace_order_id]["items"])
     process_shipment(rows, MERCADOLIBRE_SHOPIFY_CUSTOMER_ID)
     return MarketplaceOrder.objects.get(pk=marker.pk).status
 
 
 def _upsert(data, number, shipment_id):
-    """Guarda (o completa) una orden pagada. Una orden ya creada en
-    Shopify o en proceso no se toca. Los datos de facturación se piden una
-    sola vez; los ítems de una orden pagada no cambian."""
+    """Guarda (o completa) los datos de una orden pagada. Una orden ya
+    creada en Shopify o en proceso no se toca. Los datos de facturación se
+    piden una sola vez. Los ítems se crean después del reclamo.
+
+    Se guarda con un `update` condicionado al estado, nunca con
+    `row.save()`: entre la lectura de la fila y el guardado otro proceso
+    puede haberla reclamado (`procesando`), y un `save()` completo
+    devolvería el estado a `pending` y permitiría un segundo reclamo --
+    así se duplicó en Shopify el pedido 2000018635989514 (2026-09-25)."""
     row, _ = MarketplaceOrder.objects.get_or_create(marketplace=MARKETPLACE, marketplace_order_id=data["order_id"])
     if row.shopify_order_id or row.status == MarketplaceOrder.Status.PROCESSING:
-        return row
+        return
 
-    row.marketplace_order_number = number
-    row.shipment_id = shipment_id
+    fields = {"marketplace_order_number": number, "shipment_id": shipment_id}
     if not row.customer_identification and data["billing_info_id"]:
         billing = get_billing_info(data["billing_info_id"])
-        row.customer_identification_type = billing["customer_identification_type"]
-        row.customer_identification = billing["customer_identification"]
-        row.customer_type = billing["customer_type"]
-        # Nombre de facturación (razón social en NIT); si no viene, el del pedido.
-        row.customer_first_name = billing["customer_first_name"] or data["buyer"]["first_name"]
-        row.customer_last_name = billing["customer_last_name"] or (
-            "" if billing["customer_first_name"] else data["buyer"]["last_name"]
+        fields.update(
+            customer_identification_type=billing["customer_identification_type"],
+            customer_identification=billing["customer_identification"],
+            customer_type=billing["customer_type"],
+            # Nombre de facturación (razón social en NIT); si no viene, el del pedido.
+            customer_first_name=billing["customer_first_name"] or data["buyer"]["first_name"],
+            customer_last_name=billing["customer_last_name"]
+            or ("" if billing["customer_first_name"] else data["buyer"]["last_name"]),
+            customer_address=billing["customer_address"],
+            customer_city=billing["customer_city"],
+            customer_region=billing["customer_region"],
         )
-        row.customer_address = billing["customer_address"]
-        row.customer_city = billing["customer_city"]
-        row.customer_region = billing["customer_region"]
-    row.save()
+    MarketplaceOrder.objects.filter(pk=row.pk, shopify_order_id="", status__in=RETRYABLE_STATUSES).update(
+        **fields, updated_at=timezone.now()
+    )
 
-    if not row.items.exists():
-        MarketplaceOrderItem.objects.bulk_create(
-            [
-                MarketplaceOrderItem(
-                    order=row, marketplace_sku=item["sku"], quantity=item["quantity"], unit_price=item["price"]
-                )
-                for item in data["items"]
-            ]
-        )
-    return row
+
+def _create_items(row, items):
+    MarketplaceOrderItem.objects.bulk_create(
+        [
+            MarketplaceOrderItem(order=row, marketplace_sku=item["sku"], quantity=item["quantity"], unit_price=item["price"])
+            for item in items
+        ]
+    )
 
 
 def _items_match(orders, shipment_items):
@@ -151,28 +162,6 @@ def _items_match(orders, shipment_items):
     for item in shipment_items:
         shipped[item["item_id"]] += item["quantity"]
     return ordered == shipped
-
-
-def _claim(order_ids):
-    """Pasa a `procesando` TODAS las órdenes del envío o ninguna. Si alguna
-    ya no está pendiente/en error (otro proceso la tomó o ya se creó),
-    devuelve None."""
-    with transaction.atomic():
-        rows = list(
-            MarketplaceOrder.objects.select_for_update()
-            .filter(marketplace=MARKETPLACE, marketplace_order_id__in=order_ids)
-            .order_by("pk")
-        )
-        if len(rows) != len(set(order_ids)):
-            return None
-        if any(row.shopify_order_id or row.status not in RETRYABLE_STATUSES for row in rows):
-            return None
-        MarketplaceOrder.objects.filter(pk__in=[row.pk for row in rows]).update(
-            status=MarketplaceOrder.Status.PROCESSING, updated_at=timezone.now()
-        )
-        for row in rows:
-            row.status = MarketplaceOrder.Status.PROCESSING
-    return rows
 
 
 def _mark_incomplete(order_ids, description):

@@ -714,6 +714,26 @@ class ProcessMercadoLibreOrderTests(TestCase):
 
         create_order.assert_not_called()
 
+    def test_order_claimed_by_another_notification_meanwhile_is_not_created_twice(self, get_order, get_shipment, get_pack, get_billing, variant, create_order):
+        # Regresión del 2026-09-25 (pedido 2000018635989514): otra
+        # notificación reclama la fila mientras esta consulta la facturación;
+        # guardar los datos no debe devolverla a `pending`.
+        from .functions.process_mercadolibre_order import CLAIMED_ELSEWHERE
+
+        def claimed_meanwhile(billing_info_id):
+            MarketplaceOrder.objects.filter(marketplace_order_id="2001").update(
+                status=MarketplaceOrder.Status.PROCESSING
+            )
+            return _ml_billing()
+
+        get_billing.side_effect = claimed_meanwhile
+
+        self.assertEqual(self._process(), CLAIMED_ELSEWHERE)
+        order = MarketplaceOrder.objects.get()
+        self.assertEqual(order.status, MarketplaceOrder.Status.PROCESSING)
+        self.assertFalse(order.items.exists())  # los ítems los crea quien reclamó
+        create_order.assert_not_called()
+
 
 RECOVER = "orders.functions.recover_mercadolibre_orders"
 
@@ -868,3 +888,215 @@ class MadecentroWebhookCaptureTests(TestCase):
         output = "\n".join(logs.output)
         self.assertIn("truncated=True", output)
         self.assertNotIn("COLA", output)
+
+
+# ---------------------------------------------------------------- Madecentro
+
+MC = "orders.functions.process_madecentro_order"
+MC_IMPORT = "orders.functions.import_madecentro_orders"
+
+
+def _mc_order(order_id="17707107", financial_status="paid", cancelled=False, items=None):
+    return {
+        "order_id": order_id,
+        "order_number": "1001114236",
+        "financial_status": financial_status,
+        "cancelled": cancelled,
+        "customer_first_name": "Ana",
+        "customer_last_name": "Gómez",
+        "customer_email": "ana@example.com",
+        "customer_phone": "3001234567",
+        "customer_address": "Calle 1 # 2-3",
+        "customer_city": "Medellín",
+        "customer_region": "Antioquia",
+        "items": [{"sku": "SKU-1", "quantity": 2, "price": "221335"}] if items is None else items,
+    }
+
+
+@patch(PRIORITY_LOCATION_PATCH, "97615380757")
+@patch(f"{MC}.MADECENTRO_SHOPIFY_CUSTOMER_ID", "666")
+@patch(SHIPMENT_CREATE_ORDER, return_value={"order_id": "777", "order_name": "#1001"})
+@patch(SHIPMENT_VARIANT, return_value=_inventory())
+@patch(f"{MC}.get_order", return_value=_mc_order())
+class ProcessMadecentroOrderTests(TestCase):
+    def _process(self, order_id="17707107"):
+        from .functions.process_madecentro_order import process_madecentro_order
+
+        return process_madecentro_order(order_id)
+
+    def test_paid_order_is_persisted_and_created_for_the_fixed_customer(self, get_order, variant, create_order):
+        self.assertEqual(self._process(), MarketplaceOrder.Status.CREATED)
+
+        order = MarketplaceOrder.objects.get()
+        self.assertEqual(order.marketplace, MarketplaceOrder.Marketplace.MADECENTRO)
+        self.assertEqual((order.marketplace_order_id, order.marketplace_order_number), ("17707107", "1001114236"))
+        self.assertEqual((order.customer_email, order.customer_city), ("ana@example.com", "Medellín"))
+        self.assertEqual((order.shopify_order_id, order.shopify_customer_id), ("777", "666"))
+        item = order.items.get()
+        self.assertEqual((item.marketplace_sku, item.quantity, item.unit_price), ("SKU-1", 2, "221335"))
+        kwargs = create_order.call_args.kwargs
+        self.assertEqual(kwargs["customer_id"], "666")
+        self.assertEqual(kwargs["tags"], ["madecentro"])
+        self.assertEqual(kwargs["note"], "Madecentro #1001114236 — Ana Gómez")
+
+    def test_created_order_is_not_read_again(self, get_order, variant, create_order):
+        from .functions.process_madecentro_order import ALREADY_HANDLED
+
+        self._process()
+        get_order.reset_mock()
+
+        self.assertEqual(self._process(), ALREADY_HANDLED)
+        get_order.assert_not_called()
+        create_order.assert_called_once()
+
+    def test_order_in_processing_is_left_alone(self, get_order, variant, create_order):
+        from .functions.process_madecentro_order import ALREADY_HANDLED
+
+        MarketplaceOrder.objects.create(
+            marketplace=MarketplaceOrder.Marketplace.MADECENTRO,
+            marketplace_order_id="17707107",
+            status=MarketplaceOrder.Status.PROCESSING,
+        )
+
+        self.assertEqual(self._process(), ALREADY_HANDLED)
+        get_order.assert_not_called()
+        create_order.assert_not_called()
+
+    def test_unpaid_or_cancelled_orders_leave_nothing_behind(self, get_order, variant, create_order):
+        from .functions.process_madecentro_order import NOT_PAID
+
+        for data in (_mc_order(financial_status="voided"), _mc_order(cancelled=True)):
+            MarketplaceOrder.objects.create(
+                marketplace=MarketplaceOrder.Marketplace.MADECENTRO, marketplace_order_id="17707107"
+            )
+            get_order.return_value = data
+            self.assertEqual(self._process(), NOT_PAID)
+            self.assertFalse(MarketplaceOrder.objects.exists())
+        create_order.assert_not_called()
+
+    def test_unknown_sku_marks_error_and_a_retry_creates_it(self, get_order, variant, create_order):
+        variant.return_value = None
+        self.assertEqual(self._process(), MarketplaceOrder.Status.ERROR_ORDER)
+        self.assertIn("SKU-1", MarketplaceOrder.objects.get().error_description)
+
+        variant.return_value = _inventory()
+        self.assertEqual(self._process(), MarketplaceOrder.Status.CREATED)
+        self.assertEqual(MarketplaceOrder.objects.get().items.count(), 1)  # los ítems no se duplican
+
+    def test_api_failure_is_recorded_on_the_existing_row_and_raised(self, get_order, variant, create_order):
+        MarketplaceOrder.objects.create(
+            marketplace=MarketplaceOrder.Marketplace.MADECENTRO,
+            marketplace_order_id="17707107",
+            status=MarketplaceOrder.Status.ERROR_ORDER,
+        )
+        get_order.side_effect = RuntimeError("MADECENTRO_HTTP_500")
+
+        with self.assertRaises(RuntimeError):
+            self._process()
+        self.assertIn("MADECENTRO_HTTP_500", MarketplaceOrder.objects.get().error_description)
+
+    def test_order_claimed_by_another_process_meanwhile_is_not_created_twice(self, get_order, variant, create_order):
+        from .functions.process_madecentro_order import CLAIMED_ELSEWHERE
+
+        MarketplaceOrder.objects.create(
+            marketplace=MarketplaceOrder.Marketplace.MADECENTRO, marketplace_order_id="17707107"
+        )
+
+        def claimed_meanwhile(order_id):
+            MarketplaceOrder.objects.filter(marketplace_order_id=order_id).update(
+                status=MarketplaceOrder.Status.PROCESSING
+            )
+            return _mc_order()
+
+        get_order.side_effect = claimed_meanwhile
+
+        self.assertEqual(self._process(), CLAIMED_ELSEWHERE)
+        order = MarketplaceOrder.objects.get()
+        self.assertEqual(order.status, MarketplaceOrder.Status.PROCESSING)
+        self.assertFalse(order.items.exists())
+        create_order.assert_not_called()
+
+    def test_without_fixed_customer_fails_before_reading(self, get_order, variant, create_order):
+        with patch(f"{MC}.MADECENTRO_SHOPIFY_CUSTOMER_ID", ""):
+            with self.assertRaises(ValueError):
+                self._process()
+        get_order.assert_not_called()
+
+
+@patch(f"{MC_IMPORT}.process_madecentro_order", return_value=MarketplaceOrder.Status.CREATED)
+@patch(f"{MC_IMPORT}.list_orders")
+class ImportMadecentroOrdersTests(TestCase):
+    def _listing(self, *statuses, count=None):
+        orders = [
+            {"order_id": str(index), "order_number": str(index), "financial_status": status}
+            for index, status in enumerate(statuses, start=1)
+        ]
+        return {"orders": orders, "count": len(orders) if count is None else count}
+
+    def _run(self, params=None):
+        from .functions.import_madecentro_orders import import_madecentro_orders
+
+        import_madecentro_orders(params=params)
+
+    def test_only_paid_orders_are_processed_and_default_range_is_one_day(self, list_orders, process):
+        from django.utils import timezone
+
+        list_orders.return_value = self._listing("paid", "voided", "paid")
+
+        self._run()
+
+        self.assertEqual([call.args[0] for call in process.call_args_list], ["1", "3"])
+        start, end = list_orders.call_args.args
+        self.assertEqual(end, timezone.localdate())
+        self.assertEqual((end - start).days, 1)
+
+    def test_days_param_widens_the_range_and_all_pages_are_read(self, list_orders, process):
+        page_2 = {"orders": [{"order_id": "2", "order_number": "2", "financial_status": "paid"}], "count": 2}
+        list_orders.side_effect = [self._listing("paid", count=2), page_2]
+
+        self._run({"days": 7})
+
+        self.assertEqual(list_orders.call_count, 2)
+        start, end = list_orders.call_args.args
+        self.assertEqual((end - start).days, 7)
+        self.assertEqual([call.args[0] for call in process.call_args_list], ["1", "2"])
+
+    def test_stored_pending_or_failed_orders_are_retried_without_duplicates(self, list_orders, process):
+        for order_id, status in (
+            ("1", MarketplaceOrder.Status.ERROR_ORDER),  # también en el listado
+            ("50", MarketplaceOrder.Status.PENDING),  # fuera del rango
+            ("60", MarketplaceOrder.Status.PROCESSING),  # revisión manual
+            ("70", MarketplaceOrder.Status.CREATED),
+        ):
+            MarketplaceOrder.objects.create(
+                marketplace=MarketplaceOrder.Marketplace.MADECENTRO,
+                marketplace_order_id=order_id,
+                status=status,
+                shopify_order_id="9" if status == MarketplaceOrder.Status.CREATED else "",
+            )
+        MarketplaceOrder.objects.create(marketplace=MarketplaceOrder.Marketplace.FALABELLA, marketplace_order_id="80")
+        list_orders.return_value = self._listing("paid")
+
+        self._run()
+
+        self.assertEqual([call.args[0] for call in process.call_args_list], ["1", "50"])
+
+    def test_limit_caps_the_orders_processed(self, list_orders, process):
+        list_orders.return_value = self._listing("paid", "paid", "paid")
+
+        self._run({"limit": 1})
+
+        process.assert_called_once_with("1")
+
+    def test_a_failure_does_not_stop_the_rest_but_fails_the_run(self, list_orders, process):
+        list_orders.return_value = self._listing("paid", "paid")
+        process.side_effect = [RuntimeError("MADECENTRO_HTTP_500"), MarketplaceOrder.Status.CREATED]
+
+        with self.assertRaisesRegex(RuntimeError, "fallaron 1: 1"):
+            self._run()
+        self.assertEqual(process.call_count, 2)
+
+    def test_process_type_seeded_by_migration(self, list_orders, process):
+        from orchestrator.models import ProcessType
+
+        self.assertFalse(ProcessType.objects.get(code="orders.import_madecentro").allow_concurrent)

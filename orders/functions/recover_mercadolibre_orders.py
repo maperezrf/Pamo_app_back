@@ -6,8 +6,9 @@ from django.utils import timezone
 from integrations.mercadolibre.functions.get_missed_feeds import get_missed_feeds
 
 from ..models import MarketplaceOrder
+from .claim_orders import RETRYABLE_STATUSES
 from .parse_mercadolibre_notification import TOPIC, order_id_from_resource
-from .process_mercadolibre_order import INCOMPLETE_PREFIX, RETRYABLE_STATUSES, process_mercadolibre_order
+from .process_mercadolibre_order import INCOMPLETE_PREFIX, process_mercadolibre_order
 
 # Un pedido pendiente más reciente que esto puede estar procesándolo un
 # webhook en este momento; se deja para la siguiente corrida.

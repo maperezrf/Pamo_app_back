@@ -1,7 +1,7 @@
 # App `orders`
 
 `orders/` orquesta la importación de pedidos de marketplaces hacia Shopify:
-Falabella por lote programado y Mercado Libre por webhook. No es
+Falabella y Madecentro por lote programado, y Mercado Libre por webhook. No es
 transporte de proveedor (eso vive en `integrations/`) y no depende de
 `customers/`: los pedidos de cada canal se crean en Shopify a nombre de un
 **cliente fijo por canal**, y los datos reales del comprador se guardan
@@ -9,7 +9,9 @@ aquí para facturar después en Siigo. Planes en
 [`../implementations-plans/marketplace-orders-import.md`](../implementations-plans/marketplace-orders-import.md),
 [`../implementations-plans/falabella-fixed-customer.md`](../implementations-plans/falabella-fixed-customer.md)
 (cliente fijo, vigente) y
-[`../implementations-plans/mercadolibre-orders-import.md`](../implementations-plans/mercadolibre-orders-import.md).
+[`../implementations-plans/mercadolibre-orders-import.md`](../implementations-plans/mercadolibre-orders-import.md)
+y
+[`../implementations-plans/madecentro-orders-import.md`](../implementations-plans/madecentro-orders-import.md).
 
 ## Capacidades
 
@@ -58,6 +60,22 @@ aquí para facturar después en Siigo. Planes en
   equivalencias todavía), elige **una** bodega para todo el envío y crea
   **una** orden de Shopify con todas las líneas. El resultado (estado,
   `shopify_order_id`, bodega) queda igual en cada orden del envío.
+- `claim_orders(marketplace, order_ids)` (`orders/functions/claim_orders.py`):
+  **reclamo atómico** compartido por Mercado Libre y Madecentro. Pasa a
+  `procesando` todas las órdenes del envío o ninguna, bajo bloqueo de
+  fila, y solo si están en `RETRYABLE_STATUSES` (`pending` /
+  `error_creando_orden`) sin `shopify_order_id`. Es lo que evita crear
+  dos órdenes en Shopify cuando dos procesos llegan a la vez al mismo
+  pedido. Un canal nuevo con webhook y recuperación lo reutiliza; no se
+  reimplementa.
+- **Regla junto al reclamo**: antes de reclamar, los datos de una fila se
+  guardan con un `update` condicionado a `shopify_order_id=""` y
+  `status__in=RETRYABLE_STATUSES`, **nunca con `row.save()`**. Un `save()`
+  completo con una copia leída antes del reclamo de otro proceso devuelve
+  la fila a `pending` y permite un segundo reclamo. Así se duplicó en
+  Shopify el pedido de Mercado Libre 2000018635989514 (#20131 y #20132) el
+  2026-09-25, con dos avisos que llegaron a 100 ms uno del otro. Los ítems
+  se crean **después** del reclamo, por el proceso que lo ganó.
 
 ## Mercado Libre (webhook)
 
@@ -92,11 +110,42 @@ Plan: [`../implementations-plans/mercadolibre-orders-import.md`](../implementati
   Nunca toca `procesando`. Reporta packs incompletos hace más de 6 h. Si
   algún pedido falla, la ejecución termina en error con el resumen.
 
-## Madecentro (fase 0: captura)
+## Madecentro (rutina por API + webhook en captura)
 
 Plan: [`../implementations-plans/madecentro-orders-import.md`](../implementations-plans/madecentro-orders-import.md).
 
-- **Endpoint temporal**: `POST /api/orders/webhooks/madecentro/`
+- **Rutina** `orders.import_madecentro`
+  (`orders/functions/import_madecentro_orders.py`, `allow_concurrent=False`,
+  se programa por la API del orquestador):
+  - Lista los pedidos de los últimos `days` días (`params`, por defecto
+    `1`: de ayer a hoy en hora de Colombia) con `list_orders`, recorriendo
+    todas las páginas, y se queda con los `paid`. Los `voided` se ignoran.
+  - Suma los pedidos de Madecentro guardados en `pending` /
+    `error_creando_orden`, aunque estén fuera del rango.
+  - `params={"limit": N}` limita cuántos pedidos se procesan en la
+    corrida.
+  - Un fallo en un pedido no detiene el resto; al final la ejecución
+    termina en error con el resumen.
+  - Sirve de importación mientras no hay webhook y, después, de
+    recuperación.
+- **`process_madecentro_order(order_id)`** (idempotente; lo reutilizará el
+  webhook):
+  - Ya creado o en `procesando` → no se toca y no se llama a la API.
+  - Si no, lee el pedido con `get_order`. No pagado o cancelado → se
+    descarta la fila pendiente, si existe.
+  - Guarda el comprador y los ítems (los ítems una sola vez), reclama la
+    fila con `claim_orders` y llama `process_shipment([pedido])`: un pedido
+    = un envío.
+  - Si falla la API, deja el detalle en `error_description` de la fila
+    existente y relanza.
+- **Identificadores**: `marketplace_order_id` = id de Shipturtle;
+  `marketplace_order_number` = `name` sin `#`.
+- **Comprador**: nombre (en empresas, el `name` de facturación), email,
+  teléfono, dirección, ciudad y departamento. **Shipturtle no entrega
+  documento** (cédula/NIT), así que la nota no lo lleva.
+- **Cliente fijo**: `MADECENTRO_SHOPIFY_CUSTOMER_ID`; sin él, falla antes
+  de leer nada. Nota en Shopify: `"Madecentro #<name> — <nombre>"`.
+- **Webhook temporal**: `POST /api/orders/webhooks/madecentro/`
   (`MadecentroOrderWebhookView`, `orders/webhooks.py`), registrado en
   Shipturtle para order create/update.
 - **Qué hace**: solo registra en los logs (nivel `warning`) los headers y
@@ -108,7 +157,6 @@ Plan: [`../implementations-plans/madecentro-orders-import.md`](../implementation
 - **Riesgo aceptado**: los logs de Railway guardan datos del comprador
   mientras dure la captura. En la fase 1 se reemplaza por el procesamiento
   real y se quita el log del payload completo.
-- Madecentro todavía no es un valor de `MarketplaceOrder.marketplace`.
 
 ## Bodega de despacho
 
@@ -141,7 +189,7 @@ Plan: [`../implementations-plans/shopify-inventory-by-location.md`](../implement
 | Estado | Significado |
 | --- | --- |
 | `pending` | Recién descubierto, no procesado todavía. En Mercado Libre también el marcador que deja el proceso antes de llamar a la API (si `error_description` tiene detalle, el proceso falló y la recuperación lo reintenta) y el pack que espera a sus demás órdenes (`error_description` empieza por "Envío incompleto"). |
-| `procesando` | Solo Mercado Libre: reclamado por un proceso que está creando la orden en Shopify. Si se queda así, el proceso murió a mitad y no se sabe si la orden quedó creada: **revisar a mano** en Shopify y corregir la fila; nada lo reintenta solo. |
+| `procesando` | Mercado Libre y Madecentro (`claim_orders`): reclamado por un proceso que está creando la orden en Shopify. Si se queda así, el proceso murió a mitad y no se sabe si la orden quedó creada: **revisar a mano** en Shopify y corregir la fila; nada lo reintenta solo. |
 | `error_creando_cliente` | **Obsoleto** — ningún código lo asigna desde el cambio a cliente fijo. Se conserva por filas históricas; como no tienen `shopify_order_id`, la siguiente corrida las reintenta. |
 | `error_creando_orden` | Falló la creación de la orden (SKU sin resolver, o Shopify rechazó la orden). `error_description` tiene el detalle. |
 | `orden_creada` | Éxito — `shopify_order_id`/`shopify_order_name` quedan guardados junto con `marketplace_order_number`. |
@@ -187,6 +235,9 @@ no pagado y Full sin rastro, notificación repetida sin efecto, pedido en
 `procesando` intacto, pack en una sola orden y una sola bodega, pack sin
 bodega que cubra todo → novedad en todas, pack con orden sin pagar o
 ítems que no suman el envío → espera, pack reclamado por otro proceso,
+otra notificación que reclama la fila mientras esta consulta la
+facturación → no se crea dos veces (regresión del duplicado del
+2026-09-25; igual en Madecentro),
 fallo de Mercado Libre que deja marcador, reintento por SKU sin volver a
 pedir facturación, fallo temprano sin cliente fijo, y que el lote de
 Falabella ignora pedidos de Mercado Libre. Recuperación: missed feeds y
@@ -194,6 +245,24 @@ pedidos viejos, exclusiones (recientes, `procesando`, creados, Falabella),
 un fallo no detiene el resto pero marca error, reporte de packs
 incompletos. Webhook: válido lanza el proceso; app, cuenta, tópico o
 recurso inválidos y sin cuenta conectada responden `200` sin lanzar.
+
+Madecentro (mocks de `integrations.madecentro` y Shopify):
+- `process_madecentro_order`:
+  - pedido pagado creado con el cliente fijo, la nota y la etiqueta;
+  - un pedido ya creado o en `procesando` no se relee;
+  - un pedido `voided` o cancelado descarta la fila pendiente;
+  - un error de SKU queda marcado y el reintento crea la orden sin
+    duplicar ítems;
+  - un fallo de la API queda en la fila y se relanza;
+  - falla temprano sin cliente fijo.
+- Rutina:
+  - solo procesa pagados, con rango por defecto de un día;
+  - `days` amplía el rango y se leen todas las páginas;
+  - se reintentan los guardados pendientes o en error sin duplicar, y se
+    excluyen `procesando`, creados y otros canales;
+  - `limit` tope de pedidos;
+  - un fallo no detiene el resto pero marca error;
+  - el `ProcessType` queda sembrado.
 
 Madecentro (captura): una petición anónima con JSON responde `200` y queda
 en el log (headers y body), un cuerpo que no es JSON se acepta, un body

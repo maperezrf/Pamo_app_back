@@ -57,6 +57,10 @@ MERCADOLIBRE_SHOPIFY_CUSTOMER_ID = config("MERCADOLIBRE_SHOPIFY_CUSTOMER_ID", de
 # que el backend arranque sin Madecentro.
 MADECENTRO_API_BASE_URL = config("MADECENTRO_API_BASE_URL", default="https://api.shipturtle.com/api/v1")
 MADECENTRO_ORDERS_TOKEN = config("MADECENTRO_ORDERS_TOKEN", default="")
+# Cliente fijo de Shopify al que se asignan todos los pedidos de
+# Madecentro (app orders), igual que Falabella y Mercado Libre. Id
+# numérico, sin gid://.
+MADECENTRO_SHOPIFY_CUSTOMER_ID = config("MADECENTRO_SHOPIFY_CUSTOMER_ID", default="")
 
 # SODIMAC (integrations/sodimac/) -- autenticación por subscription key
 # (Azure APIM), no token Bearer.

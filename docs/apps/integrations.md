@@ -43,10 +43,14 @@ seller id; es estado de conexión, no información de clientes o facturas.
   Madecentro), con token Bearer fijo que no vence.
   - Shipturtle entrega un token por dominio. `MadecentroClient(token)`
     recibe el que corresponde; hoy solo se usa `MADECENTRO_ORDERS_TOKEN`.
-  - Funciones de lectura `get_order(order_id)` y
-    `list_orders(start_date, end_date, page=, limit=)`
-    (`/all-orders/fetchData`, fechas `M/D/YYYY`). Devuelven el JSON sin
-    normalizar hasta conocer los campos reales.
+  - `get_order(order_id)`: pedido normalizado (id, número, estado de
+    pago, cancelado, comprador e ítems con SKU, cantidad y precio). No hay
+    documento del comprador porque Shipturtle no lo entrega.
+  - `list_orders(start_date, end_date, page=, limit=)`
+    (`/all-orders/fetchData`, fechas `M/D/YYYY`, inclusive): devuelve
+    `{"orders": [{order_id, order_number, financial_status}], "count"}`. El
+    listado de Shipturtle es resumido (sus líneas no traen SKU ni precio),
+    así que solo sirve para descubrir pedidos.
   - Plan:
     [`../implementations-plans/madecentro-orders-import.md`](../implementations-plans/madecentro-orders-import.md).
 - `sodimac/`: cliente REST y funciones de pedidos.
