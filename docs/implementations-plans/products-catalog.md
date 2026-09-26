@@ -227,9 +227,29 @@ python manage.py import_pamo_web_catalog --products productos.csv --kits kits.cs
   Las filas sin `sku_pamo` se omiten y se listan.
 - `kits_sodimac` → filas de kits `{kit_sku: kitnumber, component_sku: sku, quantity}`
   más la equivalencia del kit `{pamo_sku: kitnumber, sodimac_sku: kitnumber, sodimac_ean: ean}`.
-- Si un `kitnumber` también figura como `sku_sodimac` en productos, la
-  equivalencia del kit gana (queda en `moved`). Es lo que ya hace `pamo_web`:
-  `set_kits` corre después de `make_merge`.
+- Reglas de limpieza (decididas por el usuario el 2026-09-25). El comando
+  consulta Shopify **solo en modo lectura** (`get_variant_by_sku`, con
+  caché) y lista todo lo que omite:
+  - **Filas invertidas**: `pamo_web` tiene pares cargados en los dos
+    sentidos (`795744;7809` y `7809;795744`). Se omite la fila cuyo
+    `sku_sodimac` no parece de Sodimac (número de 6 o más dígitos) y cuyo
+    `sku_pamo` sí, cuando el par correcto también viene.
+  - **Código de Sodimac que es producto y kit a la vez**: gana el producto
+    si su SKU existe en Shopify (como en `pamo_web`, donde `make_merge`
+    corre antes que `set_kits`; caso `390349` → `5092`). Si no existe, gana
+    el kit, porque en `pamo_web` esas órdenes fallaban con "SKU no
+    encontrado".
+  - **Kit con algún componente que no existe en Shopify**: se descarta
+    completo. Una orden de ese kit falla por SKU sin equivalencia y se
+    revisa a mano; nunca se despacha un kit incompleto.
+- Carga del 2026-09-25 en la base de Railway del `.env`:
+  - 1.222 equivalencias de productos (32 filas invertidas omitidas).
+  - 89 kits, con 238 componentes y 89 equivalencias de Sodimac (10 de
+    ellas movidas desde un producto que no existe en Shopify).
+  - 20 kits descartados: 19 por componentes que no existen en Shopify y
+    `390349`, que queda como producto `5092`.
+- Contra una base remota el comando tarda varios minutos, porque hace
+  consultas fila por fila.
 - Reutiliza `import_equivalences` e `import_kits`, así que se puede repetir
   sin duplicar. Imprime el resultado de ambas cargas.
 - Un EAN leído como número (`7701234567890.0`) se normaliza quitando `.0`.

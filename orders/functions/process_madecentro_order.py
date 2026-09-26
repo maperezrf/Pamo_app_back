@@ -44,6 +44,7 @@ def process_madecentro_order(order_id):
 
     try:
         data = get_order(order_id)
+        print(data)
     except Exception as error:
         if existing:
             _open_rows(order_id).update(error_description=f"{type(error).__name__}: {error}"[:2000])

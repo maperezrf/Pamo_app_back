@@ -49,7 +49,8 @@ en
   `"54654"`).
 - Comando `import_pamo_web_catalog --products <csv> --kits <csv>`:
   importación única desde los Excel de `pamo_web` guardados como CSV (`,` o
-  `;`). Se puede repetir.
+  `;`). Se puede repetir. Consulta Shopify en modo lectura y descarta filas
+  invertidas y kits que no funcionarían (reglas en el plan).
 - Admin: `Product` con sus equivalencias y componentes como inlines;
   `MarketplaceSku` con búsqueda propia.
 
@@ -79,8 +80,14 @@ Las equivalencias agregan `products_created` y `moved`. `row` es la posición
   detecta al crear la orden.
 - Sin stock ni inventario: el de Sodimac quedó pendiente por un problema
   del lado de Sodimac.
-- Todavía ningún canal de `orders/` consume el catálogo. Sodimac será el
-  primero.
+- `orders/functions/process_shipment.py` consume el catálogo para todos
+  los canales que crean órdenes en Shopify (Falabella, Mercado Libre,
+  Madecentro).
+  - Traduce equivalencias de productos simples.
+  - Sin equivalencia, usa el SKU tal cual.
+  - Una equivalencia a kit deja el pedido en error hasta que se defina el
+    reparto de precio (ver [`orders.md`](orders.md)).
+  - `expand_product` todavía no se usa desde `orders`.
 
 ## Pruebas
 

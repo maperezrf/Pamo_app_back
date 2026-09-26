@@ -995,6 +995,43 @@ class ProcessMadecentroOrderTests(TestCase):
             self._process()
         self.assertIn("MADECENTRO_HTTP_500", MarketplaceOrder.objects.get().error_description)
 
+    def test_marketplace_sku_is_translated_with_the_catalog(self, get_order, variant, create_order):
+        from products.models import MarketplaceSku, Product
+
+        product = Product.objects.create(sku="PAC8424")
+        MarketplaceSku.objects.create(product=product, marketplace="madecentro", sku="SKU-1")
+        # La misma equivalencia en otro canal no aplica a Madecentro.
+        MarketplaceSku.objects.create(product=Product.objects.create(sku="OTRO"), marketplace="sodimac", sku="SKU-1")
+
+        self.assertEqual(self._process(), MarketplaceOrder.Status.CREATED)
+        variant.assert_called_once_with("PAC8424")
+        self.assertEqual(MarketplaceOrder.objects.get().items.get().marketplace_sku, "SKU-1")
+
+    def test_translated_sku_missing_in_shopify_names_both_skus(self, get_order, variant, create_order):
+        from products.models import MarketplaceSku, Product
+
+        MarketplaceSku.objects.create(
+            product=Product.objects.create(sku="PAC8424"), marketplace="madecentro", sku="SKU-1"
+        )
+        variant.return_value = None
+
+        self.assertEqual(self._process(), MarketplaceOrder.Status.ERROR_ORDER)
+        self.assertEqual(
+            MarketplaceOrder.objects.get().error_description, "SKU no encontrado en Shopify: SKU-1 (equivalencia PAC8424)"
+        )
+
+    def test_sku_that_is_a_kit_is_not_created_until_kit_pricing_is_defined(self, get_order, variant, create_order):
+        from products.models import KitComponent, MarketplaceSku, Product
+
+        kit = Product.objects.create(sku="KIT-1", is_kit=True)
+        KitComponent.objects.create(kit=kit, component=Product.objects.create(sku="PAC8424"), quantity=2)
+        MarketplaceSku.objects.create(product=kit, marketplace="madecentro", sku="SKU-1")
+
+        self.assertEqual(self._process(), MarketplaceOrder.Status.ERROR_ORDER)
+        self.assertIn("kit KIT-1", MarketplaceOrder.objects.get().error_description)
+        variant.assert_not_called()
+        create_order.assert_not_called()
+
     def test_order_claimed_by_another_process_meanwhile_is_not_created_twice(self, get_order, variant, create_order):
         from .functions.process_madecentro_order import CLAIMED_ELSEWHERE
 

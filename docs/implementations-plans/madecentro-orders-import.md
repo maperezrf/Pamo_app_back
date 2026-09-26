@@ -340,7 +340,15 @@ Se responden con los datos capturados:
 4. ¿Dónde viene el documento (cédula o NIT) del comprador? La API trae
    nombre, dirección, email y teléfono, pero no se encontró un campo de
    documento. Es la fuente de la factura en Siigo.
-5. **Bloqueante para crear órdenes (verificado el 2026-09-25)**: el SKU
+5. **Resuelto el 2026-09-25 con el catálogo de `products`**:
+   - equivalencia Madecentro `PMO-028-MP` → `PAC8424` (producto simple,
+     existe en Shopify);
+   - `process_shipment` traduce los SKU con esas equivalencias;
+   - cada SKU nuevo de Madecentro se carga en `/api/products/equivalences/`
+     (columna `madecentro_sku`);
+   - un SKU que sea kit queda en error hasta definir el reparto de precio.
+
+   Contexto original: el SKU
    del pedido real `PMO-028-MP` **no existe en Shopify**, y tampoco
    `PMO-028` ni `PMO028`. Mientras no se resuelva, la rutina deja esos
    pedidos en `error_creando_orden` ("SKU no encontrado en Shopify") y los

@@ -57,11 +57,28 @@ y
 - `process_shipment(orders, customer_id)` (`orders/functions/process_shipment.py`):
   **punto único de "crear la orden en Shopify"** para todos los canales.
   Recibe las órdenes de un mismo envío (Falabella: una; Mercado Libre: las
-  de un pack), resuelve SKUs (`integrations.shopify.get_variant_inventory_by_sku`,
-  en vivo y siempre, aunque el variant id esté cacheado — sin tabla de
-  equivalencias todavía), elige **una** bodega para todo el envío y crea
-  **una** orden de Shopify con todas las líneas. El resultado (estado,
-  `shopify_order_id`, bodega) queda igual en cada orden del envío.
+  de un pack), resuelve SKUs, elige **una** bodega para todo el envío y
+  crea **una** orden de Shopify con todas las líneas. El resultado
+  (estado, `shopify_order_id`, bodega) queda igual en cada orden del envío.
+- **Resolución de SKU** en `process_shipment`:
+  1. Traduce el SKU del marketplace con el catálogo de `products`
+     (`resolve_marketplace_sku(order.marketplace, sku)`, ver
+     [`products.md`](products.md)).
+     - Si hay equivalencia a un producto simple, usa el SKU de Pamo del
+       producto (ej. Madecentro `PMO-028-MP` → `PAC8424`).
+     - Si no hay equivalencia, usa el SKU tal cual llega. Hoy Falabella y
+       Mercado Libre no tienen equivalencias cargadas.
+     - **Si la equivalencia es un kit, el envío queda en
+       `error_creando_orden`**: el reparto del precio del kit entre sus
+       componentes sigue sin definir.
+  2. Busca el SKU resultante en Shopify
+     (`integrations.shopify.get_variant_inventory_by_sku`), en vivo y
+     siempre, aunque el variant id esté cacheado.
+  3. Si no existe, el error nombra los dos SKU (`SKU-MKT (equivalencia
+     SKU-PAMO)`).
+
+  `MarketplaceOrderItem.marketplace_sku` conserva siempre el SKU del
+  marketplace.
 - `claim_orders(marketplace, order_ids)` (`orders/functions/claim_orders.py`):
   **reclamo atómico** compartido por Mercado Libre y Madecentro. Pasa a
   `procesando` todas las órdenes del envío o ninguna, bajo bloqueo de

@@ -1,6 +1,7 @@
 from config.constants import FULFILLMENT_PRIORITY_LOCATION_ID
 from integrations.shopify.functions.create_order import ShopifyOrderCreationError, create_order
 from integrations.shopify.functions.get_variant_inventory_by_sku import get_variant_inventory_by_sku
+from products.functions.resolve_marketplace_sku import resolve_marketplace_sku
 
 from ..models import MarketplaceOrder
 from .select_fulfillment_location import select_fulfillment_location
@@ -110,17 +111,25 @@ def _assign_fulfillment_location(orders, inventory_lines):
 
 
 def _resolve_line_items(orders):
-    """Consulta cada SKU en Shopify SIEMPRE (aunque el variant id ya esté
-    cacheado): la misma consulta trae el stock por bodega, que cambia.
-    Devuelve (line_items para create_order, líneas de inventario para
-    elegir bodega), o None si algún SKU no resuelve."""
+    """Traduce cada SKU del marketplace con el catálogo (`products`) y lo
+    consulta en Shopify SIEMPRE (aunque el variant id ya esté cacheado): la
+    misma consulta trae el stock por bodega, que cambia. Devuelve
+    (line_items para create_order, líneas de inventario para elegir
+    bodega), o None si algún SKU no resuelve."""
     line_items = []
     inventory_lines = []
     for order in orders:
         for item in order.items.all():
-            inventory = get_variant_inventory_by_sku(item.marketplace_sku) if item.marketplace_sku else None
+            shopify_sku, error = _shopify_sku(order.marketplace, item.marketplace_sku)
+            if error:
+                _mark_error(orders, error)
+                return None
+            inventory = get_variant_inventory_by_sku(shopify_sku) if shopify_sku else None
             if inventory is None:
-                _mark_error(orders, f"SKU no encontrado en Shopify: {item.marketplace_sku or '(vacío)'}")
+                shown = item.marketplace_sku or "(vacío)"
+                if shopify_sku and shopify_sku != item.marketplace_sku:
+                    shown += f" (equivalencia {shopify_sku})"
+                _mark_error(orders, f"SKU no encontrado en Shopify: {shown}")
                 return None
             item.shopify_variant_id = inventory["variant_id"]
             item.inventory_snapshot = inventory["locations"]
@@ -130,6 +139,29 @@ def _resolve_line_items(orders):
             )
             inventory_lines.append({**inventory, "quantity": item.quantity})
     return line_items, inventory_lines
+
+
+def _shopify_sku(marketplace, marketplace_sku):
+    """SKU de Shopify para un SKU del marketplace, con el catálogo de
+    `products` (docs/apps/products.md). Devuelve (sku, error).
+
+    - Con equivalencia a un producto simple: el SKU de Pamo del producto.
+    - Sin equivalencia: el mismo SKU (así funcionaban todos los canales
+      antes del catálogo; Falabella y Mercado Libre no tienen equivalencias
+      cargadas).
+    - Con equivalencia a un kit: error. Repartir el precio del kit entre
+      sus componentes sigue sin definir (products-catalog.md), así que no
+      se crea una orden con precios inventados.
+    """
+    product = resolve_marketplace_sku(marketplace, marketplace_sku)
+    if product is None:
+        return marketplace_sku, ""
+    if product.is_kit:
+        return "", (
+            f"SKU {marketplace_sku} es el kit {product.sku}: el reparto de precio de kits "
+            "entre sus componentes está pendiente de definir"
+        )
+    return product.sku, ""
 
 
 def _mark_error(orders, description):

@@ -100,12 +100,13 @@ class MarketplaceOrder(models.Model):
 
 
 class MarketplaceOrderItem(models.Model):
-    """Un ítem de un MarketplaceOrder. `shopify_variant_id` se cachea acá
-    una vez resuelto por
-    integrations.shopify.functions.get_variant_inventory_by_sku -- no hay
-    todavía una tabla de equivalencias de SKU entre marketplaces
-    (pospuesto a propósito, ver el plan). `inventory_snapshot` guarda las
-    unidades por bodega que se evaluaron al elegir la bodega del pedido."""
+    """Un ítem de un MarketplaceOrder. `marketplace_sku` es el SKU tal cual
+    lo reporta el marketplace; `process_shipment` lo traduce con el
+    catálogo de `products` (equivalencias) antes de buscarlo en Shopify.
+    `shopify_variant_id` se cachea acá una vez resuelto por
+    integrations.shopify.functions.get_variant_inventory_by_sku.
+    `inventory_snapshot` guarda las unidades por bodega que se evaluaron al
+    elegir la bodega del pedido."""
 
     order = models.ForeignKey(MarketplaceOrder, related_name="items", on_delete=models.CASCADE)
     marketplace_sku = models.CharField(max_length=64)

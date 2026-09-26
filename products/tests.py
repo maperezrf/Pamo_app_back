@@ -1,6 +1,7 @@
 import tempfile
 from io import StringIO
 from pathlib import Path
+from unittest.mock import patch
 
 from django.contrib.auth.models import Group, User
 from django.core.management import call_command
@@ -296,38 +297,62 @@ class CatalogAPITests(APITestCase):
 
 
 class ImportPamoWebCatalogCommandTests(TestCase):
+    # SKU que "existen" en Shopify para estas pruebas (la API se simula).
+    SHOPIFY_SKUS = {"pamo123", "pamo456", "7809", "5092", "DF-1001"}
+
     def _csv(self, directory, name, content):
         path = Path(directory) / name
         path.write_text(content, encoding="utf-8-sig")
         return str(path)
 
-    def test_imports_products_and_kits_in_pamo_web_format(self):
-        with tempfile.TemporaryDirectory() as directory:
-            products = self._csv(directory, "productos.csv", (
-                "sku_sodimac;sku_pamo;ean\n"
-                "54654;pamo123;7701234567890.0\n"
-                "99999;;\n"
-                "5864;pamoX;\n"  # el kitnumber también figura como producto: gana el kit
-            ))
-            kits = self._csv(directory, "kits.csv", (
-                "kitnumber,ean,sku,quantity\n"
-                "5864,7709,pamo123,1\n"
-                "5864,7709,pamo456,2\n"
-            ))
-            out = StringIO()
+    def _run(self, products, kits):
+        fake = lambda sku: "1" if sku in self.SHOPIFY_SKUS else None
+        out = StringIO()
+        with patch("products.management.commands.import_pamo_web_catalog.get_variant_by_sku", side_effect=fake):
             call_command("import_pamo_web_catalog", products=products, kits=kits, stdout=out)
-            # Repetir no duplica.
-            call_command("import_pamo_web_catalog", products=products, kits=kits, stdout=StringIO())
+        return out.getvalue()
+
+    def test_imports_pamo_web_format_applying_the_cleanup_rules(self):
+        with tempfile.TemporaryDirectory() as directory:
+            products = self._csv(directory, "productos.csv", "\n".join([
+                "sku_sodimac;sku_pamo;ean",
+                "54654;pamo123;7701234567890.0",
+                "99999;;",
+                "795744;7809;",
+                "7809;795744;",   # fila invertida: se omite
+                "5864;pamoX;",    # pamoX no existe en Shopify: gana el kit
+                "390349;5092;",   # 5092 existe en Shopify: gana el producto
+            ]))
+            kits = self._csv(directory, "kits.csv", "\n".join([
+                "kitnumber,ean,sku,quantity",
+                "5864,7709,pamo123,1",
+                "5864,7709,pamo456,2",
+                "390349,,DF-1001,1",
+                "777777,,pamo123,1",
+                "777777,,NO-EXISTE,1",  # componente fuera de Shopify: kit descartado
+            ]))
+            output = self._run(products, kits)
+            self._run(products, kits)  # repetir no duplica
 
         self.assertEqual(resolve_marketplace_sku(Marketplace.SODIMAC, "54654").sku, "pamo123")
         self.assertEqual(MarketplaceSku.objects.get(sku="54654").ean, "7701234567890")
+        self.assertIn("99999", output)
+
+        self.assertEqual(resolve_marketplace_sku(Marketplace.SODIMAC, "795744").sku, "7809")
+        self.assertIsNone(resolve_marketplace_sku(Marketplace.SODIMAC, "7809"))
+        self.assertFalse(Product.objects.filter(sku="795744").exists())
+
         kit = resolve_marketplace_sku(Marketplace.SODIMAC, "5864")
-        self.assertEqual(kit.sku, "5864")
         self.assertTrue(kit.is_kit)
         self.assertEqual(MarketplaceSku.objects.get(sku="5864").ean, "7709")
         self.assertEqual(
             expand_product(kit, 1),
             [{"sku": "pamo123", "quantity": 1}, {"sku": "pamo456", "quantity": 2}],
         )
-        self.assertIn("99999", out.getvalue())
-        self.assertEqual(MarketplaceSku.objects.count(), 2)
+
+        self.assertEqual(resolve_marketplace_sku(Marketplace.SODIMAC, "390349").sku, "5092")
+        self.assertFalse(Product.objects.filter(sku="390349").exists())
+
+        self.assertIsNone(resolve_marketplace_sku(Marketplace.SODIMAC, "777777"))
+        self.assertFalse(Product.objects.filter(sku="777777").exists())
+        self.assertIn("NO-EXISTE", output)
