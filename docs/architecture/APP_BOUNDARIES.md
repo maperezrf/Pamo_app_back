@@ -15,7 +15,7 @@ en el área dueña del dato y de sus reglas, no en la app que la consume.
 | Importación de pedidos de marketplace | `orders/` | Orquesta traer pedidos de un marketplace (Falabella por lote programado, Mercado Libre por webhook) y crearlos en Shopify a nombre de un cliente fijo por canal, usando `integrations/<provider>/`. Guarda los datos del comprador para facturar. No es transporte de proveedor ni dueña del directorio de clientes. |
 | Catálogo de productos | `products/` | Productos de Pamo, kits (componentes con cantidad) y equivalencias de SKU por marketplace; traduce el SKU que reporta un canal a lo que va a Shopify. Dueña de la lista `Marketplace`. No depende de `orders`. |
 | Contabilidad | `accounting/` | Reglas y datos contables. |
-| Facturación | `facturacion/` | Reglas y datos de facturación. |
+| Facturación | `invoicing/` | Facturas en Siigo de pedidos de marketplace y las reglas para calcularlas (hoy Sodimac). Depende de `orders` (lee `MarketplaceOrder`), de `products` (reparto de kits) y de `integrations.siigo`. `orders` no importa `invoicing`. |
 | Logística | `logistics/` | Reglas y datos logísticos. |
 
 ## Regla para proveedores

@@ -18,12 +18,13 @@ class MarketplaceOrderAdmin(admin.ModelAdmin):
         "marketplace_order_number",
         "customer_identification",
         "status",
+        "marketplace_status",
         "shopify_order_name",
         "fulfillment_status",
         "fulfillment_location_name",
         "updated_at",
     )
-    list_filter = ("marketplace", "status", "fulfillment_status")
+    list_filter = ("marketplace", "status", "marketplace_status", "fulfillment_status")
     search_fields = ("marketplace_order_id", "marketplace_order_number", "customer_identification", "shopify_order_id")
     inlines = [MarketplaceOrderItemInline]
     # Una novedad se resuelve a mano: elegir fulfillment_location_id/_name,

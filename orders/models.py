@@ -49,6 +49,12 @@ class MarketplaceOrder(models.Model):
     # (packs) se procesan juntas. Vacío en Falabella (un pedido = un envío).
     shipment_id = models.CharField(max_length=32, blank=True, db_index=True)
 
+    # Estado y fecha tal cual los reporta el marketplace (hoy solo Sodimac:
+    # `ESTADO_OC` y `FECHA_TRANSMISION`). Vacíos en los demás canales.
+    # Sodimac factura cuando `marketplace_status` llega a "4-ESTADO FINAL".
+    marketplace_status = models.CharField(max_length=40, blank=True)
+    marketplace_created_at = models.DateTimeField(null=True, blank=True)
+
     # Datos del comprador tal cual los reporta el marketplace. En Shopify la
     # orden queda a nombre de un cliente fijo por canal
     # (FALABELLA_, MERCADOLIBRE_, MADECENTRO_SHOPIFY_CUSTOMER_ID); estos

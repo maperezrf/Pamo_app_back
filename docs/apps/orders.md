@@ -1,7 +1,8 @@
 # App `orders`
 
 `orders/` orquesta la importación de pedidos de marketplaces hacia Shopify:
-Falabella y Madecentro por lote programado, y Mercado Libre por webhook. No es
+Falabella, Madecentro y Sodimac por lote programado, y Mercado Libre por
+webhook. No es
 transporte de proveedor (eso vive en `integrations/`) y no depende de
 `customers/`: los pedidos de cada canal se crean en Shopify a nombre de un
 **cliente fijo por canal**, y los datos reales del comprador se guardan
@@ -11,7 +12,9 @@ aquí para facturar después en Siigo. Planes en
 (cliente fijo, vigente) y
 [`../implementations-plans/mercadolibre-orders-import.md`](../implementations-plans/mercadolibre-orders-import.md)
 y
-[`../implementations-plans/madecentro-orders-import.md`](../implementations-plans/madecentro-orders-import.md).
+[`../implementations-plans/madecentro-orders-import.md`](../implementations-plans/madecentro-orders-import.md)
+y
+[`../implementations-plans/sodimac-orders-and-invoicing.md`](../implementations-plans/sodimac-orders-and-invoicing.md).
 
 ## Capacidades
 
@@ -68,14 +71,17 @@ y
        producto (ej. Madecentro `PMO-028-MP` → `PAC8424`).
      - Si no hay equivalencia, usa el SKU tal cual llega. Hoy Falabella y
        Mercado Libre no tienen equivalencias cargadas.
-     - **Si la equivalencia es un kit, el envío queda en
-       `error_creando_orden`**: el reparto del precio del kit entre sus
-       componentes sigue sin definir.
-  2. Busca el SKU resultante en Shopify
+     - **Si la equivalencia es un kit**, va una línea por componente, con
+       el precio repartido en partes iguales por unidad de componente
+       (`products.expand_product`). El ítem guarda `shopify_variant_id`
+       vacío y un `inventory_snapshot` con un elemento por componente
+       (`sku`, `quantity`, `variant_id`, `locations`). Un kit sin
+       componentes deja el envío en `error_creando_orden`.
+  2. Busca cada SKU resultante en Shopify
      (`integrations.shopify.get_variant_inventory_by_sku`), en vivo y
      siempre, aunque el variant id esté cacheado.
   3. Si no existe, el error nombra los dos SKU (`SKU-MKT (equivalencia
-     SKU-PAMO)`).
+     SKU-PAMO)`, o `SKU-MKT (componente X del kit K)`).
 
   `MarketplaceOrderItem.marketplace_sku` conserva siempre el SKU del
   marketplace.
@@ -177,6 +183,46 @@ Plan: [`../implementations-plans/madecentro-orders-import.md`](../implementation
   mientras dure la captura. En la fase 1 se reemplaza por el procesamiento
   real y se quita el log del payload completo.
 
+## Sodimac (cola por API)
+
+Plan:
+[`../implementations-plans/sodimac-orders-and-invoicing.md`](../implementations-plans/sodimac-orders-and-invoicing.md).
+
+- **Rutina** `orders.sync_sodimac`
+  (`orders/functions/sync_sodimac_orders.py`, `allow_concurrent=False`, se
+  programa por la API del orquestador):
+  1. Reinyecta las OC de Sodimac abiertas (`marketplace_status` distinto de
+     `4-ESTADO FINAL`). Reinyectar es la única forma de conocer el estado
+     actual de una OC.
+  2. Lee la cola (`TipoOrden` `1` y `4`). **La cola es destructiva**: cada
+     OC se guarda apenas se lee. OC nueva → fila e ítems
+     (`unit_price` = `COSTO_SKU` sin IVA); OC conocida → solo
+     `marketplace_status` (con `update`, nunca `save()`).
+  3. Crea en Shopify las OC sin orden con `claim_orders` +
+     `process_shipment([oc], SODIMAC_SHOPIFY_CUSTOMER_ID, financial_status="PENDING")`.
+     Sodimac paga a crédito: **es el único canal que no queda `PAID`**.
+  4. Llama a `pamo_web` (`integrations.pamo_web.run_sodimac_invoicing`)
+     mientras dure la convivencia (ver abajo).
+  - `params={"limit": N}` limita las OC creadas en Shopify, no la lectura.
+  - Un fallo puntual no detiene el resto; al final la ejecución termina en
+    error con el resumen (incluye OC con error de Shopify).
+- **Campos genéricos** de `MarketplaceOrder`, vacíos en los demás canales:
+  `marketplace_status` (`ESTADO_OC`) y `marketplace_created_at`
+  (`FECHA_TRANSMISION`, ISO o día primero `DD/MM/AAAA[ HH:MM[:SS]]`).
+- **Nota en Shopify**: `"Sodimac #<OC>"` (no hay comprador final). Etiqueta
+  `sodimac`.
+- **Convivencia con `pamo_web`** (Parte C del plan):
+  - `SODIMAC_CUTOVER_DATE` (obligatoria, ISO): una OC transmitida antes es
+    de `pamo_web`; no se guarda y se reinyecta para que la lea `pamo_web`.
+    `SODIMAC_LEGACY_OCS` agrega las OC del día del corte que ya creó
+    `pamo_web`.
+  - Una OC con fecha no reconocida tampoco se guarda: se reinyecta y se
+    reporta como fallo.
+  - Si `pamo_web` informa OC nuevas que no pudo devolver a la cola
+    (`not_returned`), se reportan como fallo: hay que reinyectarlas a mano.
+- La factura de las OC en estado final es de la app `invoicing`
+  ([`invoicing.md`](invoicing.md)); `orders` no la importa.
+
 ## Bodega de despacho
 
 Plan: [`../implementations-plans/shopify-inventory-by-location.md`](../implementations-plans/shopify-inventory-by-location.md).
@@ -217,8 +263,9 @@ Plan: [`../implementations-plans/shopify-inventory-by-location.md`](../implement
 
 - No se hace el intento de crear la orden si algún ítem no resuelve un
   `shopify_variant_id` — se marca error completo, no una orden parcial.
-- `financial_status="PAID"` es fijo para pedidos de marketplace: llegan ya
-  pagados por el comprador, Shopify solo registra la venta.
+- `financial_status="PAID"` es el valor por defecto de `process_shipment`:
+  los pedidos de marketplace llegan ya pagados por el comprador, Shopify
+  solo registra la venta. Excepción: Sodimac (`PENDING`, paga a crédito).
 - El número de orden del marketplace va en el `note` de la orden de
   Shopify (`"{marketplace} #{numero}"`) — no se usa un campo dedicado (no
   se verificó si existe uno).
@@ -287,7 +334,21 @@ Madecentro (captura): una petición anónima con JSON responde `200` y queda
 en el log (headers y body), un cuerpo que no es JSON se acepta, un body
 grande queda recortado, y nunca se lanza un proceso.
 
-Esa última prueba (`test_process_registered_in_orchestrator_registry`)
+Sodimac (mocks de `integrations.sodimac`, `integrations.pamo_web` y
+Shopify): OC nueva guardada con ítems y creada `PENDING` con la nota; OC
+guardada aunque Shopify la rechace; OC conocida solo actualiza estado; la
+misma OC en los dos tipos se guarda una vez; reinyección solo de abiertas y
+un fallo de reinyección no detiene el resto; OC anterior al corte o en
+`SODIMAC_LEGACY_OCS` vuelve a la cola sin guardarse; fecha con día primero;
+fecha no reconocida vuelve a la cola y marca error; fallo al leer un tipo
+no impide leer el otro; `limit`; reintento de OC en error sin tocar
+`procesando`; fallo de `pamo_web` y OC no devueltas por `pamo_web` se
+reportan; falla temprano sin cliente fijo o sin fecha de corte;
+`ProcessType` sembrado. Kits (en las pruebas de Madecentro): una línea por
+componente con precio repartido, componente inexistente en Shopify y kit
+vacío.
+
+La prueba `test_process_registered_in_orchestrator_registry`
 falla hoy: `orchestrator/registrations.py` solo se carga con
 `RUN_MAIN=true` o `ORCHESTRATOR_FORCE_READY` (ver
 [`orchestrator.md`](orchestrator.md)), y la corrida de pruebas no define

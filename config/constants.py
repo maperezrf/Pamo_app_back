@@ -68,6 +68,23 @@ SODIMAC_SUBSCRIPTION_KEY = config("SODIMAC_SUBSCRIPTION_KEY")
 SODIMAC_REPORT_URL = config("SODIMAC_REPORT_URL")
 SODIMAC_REINJECT_URL = config("SODIMAC_REINJECT_URL")
 SODIMAC_PROVIDER_REFERENCE = config("SODIMAC_PROVIDER_REFERENCE")
+# Cliente fijo de Shopify para los pedidos de Sodimac (app orders), igual
+# que los demás canales. Id numérico, sin gid://.
+SODIMAC_SHOPIFY_CUSTOMER_ID = config("SODIMAC_SHOPIFY_CUSTOMER_ID", default="")
+# Corte con pamo_web (docs/implementations-plans/sodimac-orders-and-invoicing.md,
+# Parte C). Fecha ISO (AAAA-MM-DD): las OC transmitidas antes son de
+# pamo_web y aquí se devuelven a la cola sin guardarlas. SODIMAC_LEGACY_OCS
+# (lista separada por comas) agrega las OC del mismo día del corte que ya
+# creó pamo_web. Sin fecha, orders.sync_sodimac falla antes de leer la cola.
+SODIMAC_CUTOVER_DATE = config("SODIMAC_CUTOVER_DATE", default="")
+SODIMAC_LEGACY_OCS = config("SODIMAC_LEGACY_OCS", default="", cast=Csv())
+
+# PAMO_WEB (integrations/pamo_web/) -- temporal, mientras pamo_web factura
+# sus OC de Sodimac antiguas (Parte C del plan de Sodimac). Token del header
+# X-Bot-Token (BOT_API_TOKEN de pamo_web). Se quita al terminar la
+# convivencia.
+PAMO_WEB_BASE_URL = config("PAMO_WEB_BASE_URL", default="")
+PAMO_WEB_BOT_TOKEN = config("PAMO_WEB_BOT_TOKEN", default="")
 
 # SIIGO (integrations/siigo/) -- autenticación por token (username +
 # access_key -> token cacheado en integrations.siigo.models.SiigoToken).

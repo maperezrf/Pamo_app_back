@@ -1,3 +1,4 @@
+from decimal import Decimal
 import tempfile
 from io import StringIO
 from pathlib import Path
@@ -67,6 +68,30 @@ class ExpandProductTests(TestCase):
         kit = Product.objects.create(sku="5864", is_kit=True)
         with self.assertRaises(EmptyKitError):
             expand_product(kit, 1)
+
+    def test_simple_product_keeps_its_price(self):
+        product = Product.objects.create(sku="pamo123")
+        self.assertEqual(
+            expand_product(product, 3, "100.005"), [{"sku": "pamo123", "quantity": 3, "price": Decimal("100.01")}]
+        )
+
+    def test_kit_price_is_split_equally_per_component_unit(self):
+        # 3 unidades de componente por kit (1 A + 2 B): 300 / 3 = 100 c/u.
+        kit = _kit("5864", ("A", 1), ("B", 2))
+        lines = expand_product(kit, 2, "300")
+        self.assertEqual(
+            lines,
+            [
+                {"sku": "A", "quantity": 2, "price": Decimal("100.00")},
+                {"sku": "B", "quantity": 4, "price": Decimal("100.00")},
+            ],
+        )
+        # El total se conserva: 2 kits × 300.
+        self.assertEqual(sum(line["price"] * line["quantity"] for line in lines), Decimal("600"))
+
+    def test_kit_price_split_rounds_each_line_to_cents(self):
+        kit = _kit("5864", ("A", 1), ("B", 2))
+        self.assertEqual([line["price"] for line in expand_product(kit, 1, "100")], [Decimal("33.33")] * 2)
 
 
 class ImportEquivalencesTests(TestCase):

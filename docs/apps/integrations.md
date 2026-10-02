@@ -53,7 +53,15 @@ seller id; es estado de conexión, no información de clientes o facturas.
     así que solo sirve para descubrir pedidos.
   - Plan:
     [`../implementations-plans/madecentro-orders-import.md`](../implementations-plans/madecentro-orders-import.md).
-- `sodimac/`: cliente REST y funciones de pedidos.
+- `sodimac/`: cliente REST y funciones de pedidos: `get_orders(tipo)` (lee
+  la cola, que es destructiva) y `reinject_order(oc)` (devuelve una OC a
+  la cola). Los consume `orders.sync_sodimac`.
+- `pamo_web/`: **temporal**. Cliente hacia el sistema anterior (header
+  `X-Bot-Token`, `PAMO_WEB_BASE_URL` / `PAMO_WEB_BOT_TOKEN`) y
+  `run_sodimac_invoicing()`, que llama a `POST /pamo_bots/sodimac/invoices`
+  para que `pamo_web` facture sus OC de Sodimac antiguas. Se quita al
+  terminar la convivencia (Parte C de
+  [`../implementations-plans/sodimac-orders-and-invoicing.md`](../implementations-plans/sodimac-orders-and-invoicing.md)).
 - `envia/`: cliente REST, cotización y validación de payload logístico.
 - `siigo/`: cliente REST, token cacheado y funciones de clientes/facturas.
 - `whatsapp/`: cliente REST (WhatsApp Cloud API de Meta) y funciones de

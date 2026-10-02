@@ -1,6 +1,8 @@
+from decimal import Decimal
 from unittest.mock import Mock, patch
 
 from django.test import SimpleTestCase, TestCase
+from django.utils import timezone
 
 from integrations.shopify.functions.create_order import ShopifyOrderCreationError
 
@@ -1020,15 +1022,55 @@ class ProcessMadecentroOrderTests(TestCase):
             MarketplaceOrder.objects.get().error_description, "SKU no encontrado en Shopify: SKU-1 (equivalencia PAC8424)"
         )
 
-    def test_sku_that_is_a_kit_is_not_created_until_kit_pricing_is_defined(self, get_order, variant, create_order):
+    def test_sku_that_is_a_kit_goes_as_one_line_per_component_with_the_price_split(
+        self, get_order, variant, create_order
+    ):
+        from products.models import KitComponent, MarketplaceSku, Product
+
+        kit = Product.objects.create(sku="KIT-1", is_kit=True)
+        KitComponent.objects.create(kit=kit, component=Product.objects.create(sku="PAC8424"), quantity=2)
+        KitComponent.objects.create(kit=kit, component=Product.objects.create(sku="PAC9999"), quantity=1)
+        MarketplaceSku.objects.create(product=kit, marketplace="madecentro", sku="SKU-1")
+        variant.side_effect = lambda sku: _inventory(variant_id=f"v-{sku}", sku=sku)
+
+        # 2 kits a 221335: 3 unidades de componente por kit -> 73778.33 c/u.
+        self.assertEqual(self._process(), MarketplaceOrder.Status.CREATED)
+        _, kwargs = create_order.call_args
+        self.assertEqual(
+            kwargs["items"],
+            [
+                {"variant_id": "v-PAC8424", "quantity": 4, "price": "73778.33"},
+                {"variant_id": "v-PAC9999", "quantity": 2, "price": "73778.33"},
+            ],
+        )
+        item = MarketplaceOrder.objects.get().items.get()
+        self.assertEqual(item.shopify_variant_id, "")
+        self.assertEqual([line["sku"] for line in item.inventory_snapshot], ["PAC8424", "PAC9999"])
+
+    def test_kit_component_missing_in_shopify_names_the_kit(self, get_order, variant, create_order):
         from products.models import KitComponent, MarketplaceSku, Product
 
         kit = Product.objects.create(sku="KIT-1", is_kit=True)
         KitComponent.objects.create(kit=kit, component=Product.objects.create(sku="PAC8424"), quantity=2)
         MarketplaceSku.objects.create(product=kit, marketplace="madecentro", sku="SKU-1")
+        variant.return_value = None
 
         self.assertEqual(self._process(), MarketplaceOrder.Status.ERROR_ORDER)
-        self.assertIn("kit KIT-1", MarketplaceOrder.objects.get().error_description)
+        self.assertEqual(
+            MarketplaceOrder.objects.get().error_description,
+            "SKU no encontrado en Shopify: SKU-1 (componente PAC8424 del kit KIT-1)",
+        )
+        create_order.assert_not_called()
+
+    def test_empty_kit_marks_error_without_calling_shopify(self, get_order, variant, create_order):
+        from products.models import MarketplaceSku, Product
+
+        MarketplaceSku.objects.create(
+            product=Product.objects.create(sku="KIT-1", is_kit=True), marketplace="madecentro", sku="SKU-1"
+        )
+
+        self.assertEqual(self._process(), MarketplaceOrder.Status.ERROR_ORDER)
+        self.assertIn("KIT-1 no tiene componentes", MarketplaceOrder.objects.get().error_description)
         variant.assert_not_called()
         create_order.assert_not_called()
 
@@ -1137,3 +1179,258 @@ class ImportMadecentroOrdersTests(TestCase):
         from orchestrator.models import ProcessType
 
         self.assertFalse(ProcessType.objects.get(code="orders.import_madecentro").allow_concurrent)
+
+
+SODI = "orders.functions.sync_sodimac_orders"
+
+
+def _sodi_row(oc="9001", status="1-PENDIENTE", transmitted_at="2026-10-02", sku="54654", quantity=2, cost="1000.50"):
+    return {
+        "purchase_order": oc,
+        "status": status,
+        "transmitted_at": transmitted_at,
+        "sku": sku,
+        "quantity": quantity,
+        "cost": Decimal(cost),
+        "cost_with_vat": Decimal(cost) * Decimal("1.19"),
+    }
+
+
+def _queue(type_1=None, type_4=None):
+    """Simula la cola destructiva: cada tipo devuelve sus filas una vez."""
+    pending = {"1": list(type_1 or []), "4": list(type_4 or [])}
+
+    def get_orders(order_type):
+        rows, pending[order_type] = pending[order_type], []
+        return rows
+
+    return get_orders
+
+
+@patch(PRIORITY_LOCATION_PATCH, "97615380757")
+@patch(f"{SODI}.SODIMAC_SHOPIFY_CUSTOMER_ID", "7247084421397")
+@patch(f"{SODI}.SODIMAC_CUTOVER_DATE", "2026-10-02")
+@patch(f"{SODI}.SODIMAC_LEGACY_OCS", [])
+@patch(f"{SODI}.run_sodimac_invoicing", return_value={"invoiced": 0})
+@patch(SHIPMENT_CREATE_ORDER, return_value={"order_id": "777", "order_name": "#1001"})
+@patch(SHIPMENT_VARIANT, return_value=_inventory())
+@patch(f"{SODI}.reinject_order")
+@patch(f"{SODI}.get_orders")
+class SyncSodimacOrdersTests(TestCase):
+    def _sync(self, params=None):
+        from .functions.sync_sodimac_orders import sync_sodimac_orders
+
+        return sync_sodimac_orders(params)
+
+    def _order(self, oc="9001", **overrides):
+        defaults = dict(
+            marketplace=MarketplaceOrder.Marketplace.SODIMAC,
+            marketplace_order_id=oc,
+            marketplace_order_number=oc,
+            marketplace_status="1-PENDIENTE",
+            status=MarketplaceOrder.Status.CREATED,
+            shopify_order_id="555",
+        )
+        defaults.update(overrides)
+        order = MarketplaceOrder.objects.create(**defaults)
+        MarketplaceOrderItem.objects.create(order=order, marketplace_sku="54654", quantity=1, unit_price="10")
+        return order
+
+    def test_new_oc_is_saved_and_created_in_shopify_as_pending_payment(
+        self, get_orders, reinject, variant, create_order, pamo_web
+    ):
+        get_orders.side_effect = _queue(
+            type_1=[_sodi_row(sku="54654", quantity=2), _sodi_row(sku="777", quantity=1, cost="20")]
+        )
+
+        self._sync()
+
+        order = MarketplaceOrder.objects.get()
+        self.assertEqual((order.marketplace, order.marketplace_order_id), ("sodimac", "9001"))
+        self.assertEqual(order.marketplace_status, "1-PENDIENTE")
+        self.assertEqual(timezone.localtime(order.marketplace_created_at).date().isoformat(), "2026-10-02")
+        self.assertEqual(
+            list(order.items.order_by("pk").values_list("marketplace_sku", "quantity", "unit_price")),
+            [("54654", 2, "1000.50"), ("777", 1, "20")],
+        )
+        self.assertEqual((order.status, order.shopify_order_id), (MarketplaceOrder.Status.CREATED, "777"))
+        _, kwargs = create_order.call_args
+        self.assertEqual(kwargs["financial_status"], "PENDING")
+        self.assertEqual(kwargs["customer_id"], "7247084421397")
+        self.assertEqual(kwargs["note"], "Sodimac #9001")
+        self.assertEqual(kwargs["tags"], ["sodimac"])
+        pamo_web.assert_called_once()
+
+    def test_oc_is_saved_before_shopify_even_if_shopify_rejects_it(
+        self, get_orders, reinject, variant, create_order, pamo_web
+    ):
+        get_orders.side_effect = _queue(type_1=[_sodi_row()])
+        create_order.side_effect = ShopifyOrderCreationError([{"message": "boom"}])
+
+        with self.assertRaises(RuntimeError) as raised:
+            self._sync()
+
+        order = MarketplaceOrder.objects.get()
+        self.assertEqual(order.status, MarketplaceOrder.Status.ERROR_ORDER)
+        self.assertTrue(order.items.exists())
+        self.assertIn("Shopify 9001", str(raised.exception))
+        pamo_web.assert_called_once()
+
+    def test_known_oc_only_updates_its_status_without_duplicating_items(
+        self, get_orders, reinject, variant, create_order, pamo_web
+    ):
+        self._order()
+        get_orders.side_effect = _queue(type_4=[_sodi_row(status="4-ESTADO FINAL")])
+
+        self._sync()
+
+        order = MarketplaceOrder.objects.get()
+        self.assertEqual(order.marketplace_status, "4-ESTADO FINAL")
+        self.assertEqual(order.items.count(), 1)
+        create_order.assert_not_called()
+
+    def test_same_oc_in_both_order_types_is_saved_once(self, get_orders, reinject, variant, create_order, pamo_web):
+        get_orders.side_effect = _queue(type_1=[_sodi_row()], type_4=[_sodi_row(status="3-EN TRANSPORTE")])
+
+        self._sync()
+
+        order = MarketplaceOrder.objects.get()
+        self.assertEqual(order.items.count(), 1)
+        self.assertEqual(order.marketplace_status, "3-EN TRANSPORTE")
+        create_order.assert_called_once()
+
+    def test_reinjects_only_open_ocs(self, get_orders, reinject, variant, create_order, pamo_web):
+        self._order("1", marketplace_status="1-PENDIENTE")
+        self._order("3", marketplace_status="3-EN TRANSPORTE")
+        self._order("4", marketplace_status="4-ESTADO FINAL")
+        self._order("ML", marketplace=MarketplaceOrder.Marketplace.MERCADOLIBRE, marketplace_status="")
+        get_orders.side_effect = _queue()
+
+        self._sync()
+
+        self.assertEqual(sorted(call.args[0] for call in reinject.call_args_list), ["1", "3"])
+
+    def test_a_reinjection_failure_does_not_stop_the_rest(self, get_orders, reinject, variant, create_order, pamo_web):
+        self._order("1")
+        self._order("2")
+        reinject.side_effect = [RuntimeError("down"), None]
+        get_orders.side_effect = _queue(type_1=[_sodi_row(oc="9001")])
+
+        with self.assertRaises(RuntimeError) as raised:
+            self._sync()
+
+        self.assertIn("reinyección 1", str(raised.exception))
+        self.assertTrue(MarketplaceOrder.objects.filter(marketplace_order_id="9001").exists())
+
+    def test_oc_transmitted_before_the_cutover_goes_back_to_the_queue_for_pamo_web(
+        self, get_orders, reinject, variant, create_order, pamo_web
+    ):
+        get_orders.side_effect = _queue(type_1=[_sodi_row(oc="8001", transmitted_at="01/10/2026 18:30:00")])
+
+        self._sync()
+
+        self.assertFalse(MarketplaceOrder.objects.exists())
+        reinject.assert_called_once_with("8001")
+        create_order.assert_not_called()
+
+    def test_legacy_oc_of_the_cutover_day_goes_back_to_the_queue(
+        self, get_orders, reinject, variant, create_order, pamo_web
+    ):
+        get_orders.side_effect = _queue(type_1=[_sodi_row(oc="8002"), _sodi_row(oc="9001")])
+
+        with patch(f"{SODI}.SODIMAC_LEGACY_OCS", ["8002"]):
+            self._sync()
+
+        self.assertEqual(list(MarketplaceOrder.objects.values_list("marketplace_order_id", flat=True)), ["9001"])
+        reinject.assert_called_once_with("8002")
+
+    def test_day_first_transmission_date_is_understood(self, get_orders, reinject, variant, create_order, pamo_web):
+        get_orders.side_effect = _queue(type_1=[_sodi_row(transmitted_at="02/10/2026 09:15:00")])
+
+        self._sync()
+
+        created_at = MarketplaceOrder.objects.get().marketplace_created_at
+        self.assertEqual(timezone.localtime(created_at).strftime("%Y-%m-%d %H:%M"), "2026-10-02 09:15")
+
+    def test_unknown_transmission_date_is_not_saved_and_goes_back_to_the_queue(
+        self, get_orders, reinject, variant, create_order, pamo_web
+    ):
+        get_orders.side_effect = _queue(type_1=[_sodi_row(transmitted_at="ayer")])
+
+        with self.assertRaises(RuntimeError) as raised:
+            self._sync()
+
+        self.assertFalse(MarketplaceOrder.objects.exists())
+        reinject.assert_called_once_with("9001")
+        self.assertIn("FECHA_TRANSMISION", str(raised.exception))
+
+    def test_failure_reading_one_type_still_reads_the_other(
+        self, get_orders, reinject, variant, create_order, pamo_web
+    ):
+        get_orders.side_effect = [RuntimeError("timeout"), [_sodi_row()]]
+
+        with self.assertRaises(RuntimeError) as raised:
+            self._sync()
+
+        self.assertTrue(MarketplaceOrder.objects.exists())
+        self.assertIn("lectura tipo 1", str(raised.exception))
+
+    def test_limit_caps_shopify_creation_but_saves_everything_read(
+        self, get_orders, reinject, variant, create_order, pamo_web
+    ):
+        get_orders.side_effect = _queue(type_1=[_sodi_row(oc="1"), _sodi_row(oc="2"), _sodi_row(oc="3")])
+
+        self._sync({"limit": 1})
+
+        self.assertEqual(MarketplaceOrder.objects.count(), 3)
+        self.assertEqual(create_order.call_count, 1)
+
+    def test_retries_shopify_for_ocs_left_in_error(self, get_orders, reinject, variant, create_order, pamo_web):
+        self._order(status=MarketplaceOrder.Status.ERROR_ORDER, shopify_order_id="", marketplace_status="4-ESTADO FINAL")
+        self._order("2", status=MarketplaceOrder.Status.PROCESSING, shopify_order_id="")
+        get_orders.side_effect = _queue()
+
+        self._sync()
+
+        self.assertEqual(MarketplaceOrder.objects.get(marketplace_order_id="9001").shopify_order_id, "777")
+        self.assertEqual(MarketplaceOrder.objects.get(marketplace_order_id="2").status, MarketplaceOrder.Status.PROCESSING)
+        create_order.assert_called_once()
+
+    def test_pamo_web_failure_is_reported_after_everything_else_ran(
+        self, get_orders, reinject, variant, create_order, pamo_web
+    ):
+        get_orders.side_effect = _queue(type_1=[_sodi_row()])
+        pamo_web.side_effect = RuntimeError("PAMO_WEB_HTTP_500")
+
+        with self.assertRaises(RuntimeError) as raised:
+            self._sync()
+
+        self.assertEqual(MarketplaceOrder.objects.get().shopify_order_id, "777")
+        self.assertIn("pamo_web", str(raised.exception))
+
+    def test_ocs_pamo_web_could_not_give_back_are_reported(self, get_orders, reinject, variant, create_order, pamo_web):
+        get_orders.side_effect = _queue()
+        pamo_web.return_value = {"success": True, "read": ["9100"], "not_returned": ["9100"], "invoiced": []}
+
+        with self.assertRaises(RuntimeError) as raised:
+            self._sync()
+
+        self.assertIn("pamo_web no devolvió a la cola: 9100", str(raised.exception))
+
+    def test_fails_before_reading_without_fixed_customer_or_cutover(
+        self, get_orders, reinject, variant, create_order, pamo_web
+    ):
+        with patch(f"{SODI}.SODIMAC_SHOPIFY_CUSTOMER_ID", ""):
+            with self.assertRaises(RuntimeError):
+                self._sync()
+        with patch(f"{SODI}.SODIMAC_CUTOVER_DATE", ""):
+            with self.assertRaises(RuntimeError):
+                self._sync()
+        get_orders.assert_not_called()
+        reinject.assert_not_called()
+
+    def test_process_type_is_seeded(self, *mocks):
+        from orchestrator.models import ProcessType
+
+        process_type = ProcessType.objects.get(code="orders.sync_sodimac")
+        self.assertFalse(process_type.allow_concurrent)

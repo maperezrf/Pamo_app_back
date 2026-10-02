@@ -29,11 +29,17 @@ en
   varios SKU en el mismo canal. `ean` es el que asigna el marketplace.
 - `functions/resolve_marketplace_sku.py`: `(marketplace, sku) → Product | None`.
   Quita espacios a los lados.
-- `functions/expand_product.py`: `expand_product(product, quantity) → [{"sku", "quantity"}]`,
+- `functions/expand_product.py`: `expand_product(product, quantity, unit_price=None) → [{"sku", "quantity"[, "price"]}]`,
   los SKU de Shopify con su cantidad.
   - Kit: multiplica la cantidad pedida por la de cada componente.
   - Kit sin componentes: `EmptyKitError`.
-  - No reparte precios: eso es regla de la orden de cada canal.
+  - Con `unit_price` (precio de una unidad del producto), cada línea lleva
+    `price` (`Decimal`, 2 decimales, redondeo half-up). En un kit, el
+    precio se reparte **en partes iguales por unidad de componente**:
+    `unit_price / Σ cantidades del kit`, como en `pamo_web`. El total se
+    conserva salvo el redondeo por línea. Es la única regla de reparto:
+    la usan `orders.process_shipment` (precio en Shopify) e `invoicing`
+    (factura en Siigo).
 - `functions/export_equivalences.py` / `import_equivalences.py`:
   equivalencias en formato de columnas (`pamo_sku`, `<marketplace>_sku`,
   `<marketplace>_ean`).
@@ -85,9 +91,10 @@ Las equivalencias agregan `products_created` y `moved`. `row` es la posición
   Madecentro).
   - Traduce equivalencias de productos simples.
   - Sin equivalencia, usa el SKU tal cual.
-  - Una equivalencia a kit deja el pedido en error hasta que se defina el
-    reparto de precio (ver [`orders.md`](orders.md)).
-  - `expand_product` todavía no se usa desde `orders`.
+  - Una equivalencia a kit va como una línea por componente, con el precio
+    repartido por `expand_product` (ver [`orders.md`](orders.md)).
+- `invoicing/functions/build_sodimac_invoice.py` aplica las mismas reglas
+  a las líneas de la factura de Sodimac (ver [`invoicing.md`](invoicing.md)).
 
 ## Pruebas
 

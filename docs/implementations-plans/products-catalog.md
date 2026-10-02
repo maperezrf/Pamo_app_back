@@ -120,14 +120,15 @@ Decisiones:
 | Función | Contrato |
 | --- | --- |
 | `resolve_marketplace_sku(marketplace, sku)` | Devuelve el `Product` o `None`. Quita espacios a los lados del SKU (`pamo_web` hace `strip`). |
-| `expand_product(product, quantity)` | Devuelve `[{"sku", "quantity"}]` con los SKU que van a Shopify. Producto simple: `[{product.sku, quantity}]`. Kit: un elemento por componente, con `quantity × componente.quantity`. Un kit sin componentes lanza `EmptyKitError`. |
+| `expand_product(product, quantity, unit_price=None)` | Devuelve `[{"sku", "quantity"}]` con los SKU que van a Shopify. Producto simple: `[{product.sku, quantity}]`. Kit: un elemento por componente, con `quantity × componente.quantity`. Un kit sin componentes lanza `EmptyKitError`. Con `unit_price`, cada elemento lleva `price` (reparto, ver abajo). |
 | `export_equivalences()` / `import_equivalences(rows)` | Descarga y carga de equivalencias (ver "API"). |
 | `export_kits()` / `import_kits(rows)` | Descarga y carga de kits. |
 
-Repartir el costo del kit entre sus componentes **no** va aquí. Es una regla
-de la orden (precio en Shopify y factura) y se define en el paso de Sodimac.
-En `pamo_web`, el costo del kit se divide en partes iguales por unidad de
-componente.
+**Actualización 2026-10-01**: el reparto ya está definido e implementado
+(paso de Sodimac, [`sodimac-orders-and-invoicing.md`](sodimac-orders-and-invoicing.md)).
+El precio del kit se divide en partes iguales por unidad de componente, como
+en `pamo_web`, y vive en `expand_product(..., unit_price)`: lo usan la orden
+de Shopify y la factura.
 
 ## API
 
