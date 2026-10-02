@@ -20,6 +20,9 @@ ni datos de entorno.
 | `POST /api/products/equivalences/` | Rol `Admin` | `rows`: lista de objetos con las columnas anteriores (`pamo_sku` obligatorio, cualquier subconjunto del resto). | `created`, `updated`, `products_created`, `moved` (`marketplace`, `sku`, `from`, `to`), `errors` (`row` 1-based, `error`); `400` si `rows` no es una lista de objetos o hay columnas desconocidas (`unknown_columns`). |
 | `GET /api/products/kits/` | Rol `Admin` | — | `columns` (`kit_sku`, `component_sku`, `quantity`) y `rows` (una por componente). |
 | `POST /api/products/kits/` | Rol `Admin` | `rows` con las columnas anteriores; cada kit que viene reemplaza completo sus componentes. | `created`, `updated`, `errors`; `400` igual que equivalencias. |
+| `POST /api/products/sku-uploads/` | Rol `Admin` (`SKU_UPLOAD_ROLES`) | `marketplace` (`falabella`, `mercadolibre`, `madecentro`, `sodimac`) y `rows`: objetos con `sku_pamo`, `sku_marketplace`, `ean` opcional y cualquier otra columna (se conserva). Máximo 2000. | `202` `id`, `execution_id`. La carga corre en segundo plano. `400` si el marketplace no es válido, `rows` está vacío o supera el tope, o una fila no trae `sku_pamo` o `sku_marketplace`. |
+| `GET /api/products/sku-uploads/<id>/` | Rol `Admin` | — (polling) | `id`, `marketplace`, `uploaded_by` (email), `created_at`, `finished_at`, `status` (estado del orquestador: `PENDIENTE`, `EN_COLA`, `EJECUTANDO`, `COMPLETADO`, `ERROR`, `CANCELADO`, `INTERRUMPIDO`...), `progress_percent`, `current_step`, `error_message`, `summary` (`total`, `por_codigo`, `por_caso`) y `rows` (filas de entrada más `resultado` y `resultado_codigo` `ok`/`alert`/`error`; `null` hasta terminar). `404` si no existe. |
+| `GET /api/products/sku-uploads/` | Rol `Admin` | Query `page`. | Paginado de 20 (`count`, `next`, `previous`, `results`), más reciente primero; los mismos campos del detalle sin `rows`. Todas las cargas, no solo las propias. |
 
 ## Errores de acceso relevantes
 

@@ -58,7 +58,34 @@ en
   `;`). Se puede repetir. Consulta Shopify en modo lectura y descarta filas
   invertidas y kits que no funcionarían (reglas en el plan).
 - Admin: `Product` con sus equivalencias y componentes como inlines;
-  `MarketplaceSku` con búsqueda propia.
+  `MarketplaceSku` con búsqueda propia; `SkuUpload` de solo lectura.
+- **Carga de equivalencias de UN marketplace validada contra Shopify**
+  (plan: [`../implementations-plans/sku-equivalence-upload.md`](../implementations-plans/sku-equivalence-upload.md)):
+  - `SkuUpload(marketplace, uploaded_by, execution_id, rows, results, summary, created_at, finished_at)`.
+    Guarda la entrada y el reporte por fila. El estado y el progreso no se
+    duplican aquí: vienen de `orchestrator.services.get_execution_status`.
+  - Proceso `products.upload_sku_equivalences`
+    (`functions/upload_sku_equivalences.py`), siempre en segundo plano.
+    Corre en tres fases:
+    1. Valida vacíos, largos, `sku_marketplace` repetidos en el archivo (gana
+       la primera fila) y kits.
+    2. Consulta Shopify por bloques con
+       `integrations.shopify.get_variants_by_skus`. Un bloque que falla se
+       reintenta una vez; si vuelve a fallar, sus filas quedan para
+       reintentar.
+    3. Aplica cada fila en su propia transacción.
+  - Reglas: el `sku_pamo` debe existir en Shopify. Si existe en Shopify y no
+    en `Product`, se crea el producto. Si está en `Product` y no en Shopify,
+    queda como alerta y no se crea nada. Un `sku_marketplace` que apuntaba a
+    otro producto se **reasigna** (alerta `Reasignado: antes apuntaba a X`).
+    **EAN vacío no borra el existente**, a diferencia de la carga de
+    equivalencias. Los kits se rechazan: tendrán su propia carga.
+  - Cada fila del reporte conserva todas sus columnas y agrega `resultado`
+    (texto) y `resultado_codigo` (`ok` / `alert` / `error`). `summary` trae
+    `total`, `por_codigo` y `por_caso`. El reporte se guarda también si la
+    carga se cancela o falla; las filas sin procesar quedan marcadas.
+  - Roles: `SKU_UPLOAD_ROLES = ["Admin"]`, separado de `CATALOG_ROLES`.
+    Tope: `SKU_UPLOAD_MAX_ROWS = 2000`.
 
 ## API
 
@@ -80,10 +107,19 @@ Resultado de una carga:
 Las equivalencias agregan `products_created` y `moved`. `row` es la posición
 1-based en `rows`. Cada carga corre en una transacción.
 
+- `POST /api/products/sku-uploads/` (`{marketplace, rows}` → `202 {id, execution_id}`),
+  `GET /api/products/sku-uploads/<id>/` (estado, progreso, `summary` y
+  `rows` con el reporte; `null` hasta terminar) y
+  `GET /api/products/sku-uploads/` (historial paginado de 20, sin `rows`).
+  Rol `SKU_UPLOAD_ROLES`. El frontend hace polling sobre el detalle y arma
+  el Excel del reporte con `rows`.
+
 ## Límites
 
-- No valida contra Shopify que los SKU existan. Un componente inexistente se
-  detecta al crear la orden.
+- La carga de equivalencias y la de kits no validan contra Shopify que los
+  SKU existan; un componente inexistente se detecta al crear la orden. La
+  carga por marketplace (`sku-uploads`) **sí** valida cada `sku_pamo`
+  contra Shopify.
 - Sin stock ni inventario: el de Sodimac quedó pendiente por un problema
   del lado de Sodimac.
 - `orders/functions/process_shipment.py` consume el catálogo para todos
@@ -104,7 +140,24 @@ python manage.py test products
 
 Cubren las funciones, las cargas (ida y vuelta, errores de fila, kits
 anidados), la API (camino feliz con `Admin` y `403` sin sesión o sin rol) y
-el comando con CSV en formato `pamo_web`.
+el comando con CSV en formato `pamo_web`. La carga por marketplace, con
+Shopify simulado, cubre:
+- cada caso del reporte;
+- la carga mixta con su `summary`;
+- las columnas extra que se conservan;
+- el EAN vacío que no borra;
+- el bloque que falla dos veces sin frenar a los demás;
+- el reintento de un bloque;
+- la cancelación a mitad con resultados parciales;
+- el error inesperado que guarda el reporte.
+
+La API cubre:
+- `202` con `Admin`;
+- `403` sin sesión o sin rol;
+- `400` por marketplace, filas vacías, columna faltante o tope;
+- el detalle con el estado del orquestador;
+- `404`;
+- el historial paginado.
 
 En local, correrlas con `DATABASE_URL` vacío para usar SQLite: con
 `DATABASE_URL` definido, el proyecto se conecta a Postgres de Railway.

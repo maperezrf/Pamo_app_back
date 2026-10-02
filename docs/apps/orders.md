@@ -266,6 +266,9 @@ Plan: [`../implementations-plans/shopify-inventory-by-location.md`](../implement
 - `financial_status="PAID"` es el valor por defecto de `process_shipment`:
   los pedidos de marketplace llegan ya pagados por el comprador, Shopify
   solo registra la venta. Excepción: Sodimac (`PENDING`, paga a crédito).
+- Toda línea de la orden va con `requiresShipping: true` (en
+  `integrations.shopify.create_order`, para todos los canales): sin ese
+  campo Shopify mostraba "No se requiere envío" (corregido 2026-10-02).
 - El número de orden del marketplace va en el `note` de la orden de
   Shopify (`"{marketplace} #{numero}"`) — no se usa un campo dedicado (no
   se verificó si existe uno).

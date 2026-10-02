@@ -21,6 +21,17 @@ lanza. Guía operativa completa en
 - Cancelación cooperativa (`orchestrator/core/cancellation.py`): el proceso
   registrado debe consultar `cancellation_token.raise_if_cancelled()` en sus
   propios checkpoints.
+- `orchestrator/services.py` es la API pública para otras apps:
+  `launch_process(code, user, params)` y
+  `get_execution_status(execution_id) → {"status", "progress_percent", "current_step", "error_message"} | None`
+  (solo lectura, sin exponer el modelo). Una app que muestra el progreso de
+  su proceso guarda solo el `execution_id`.
+- **`max_concurrent_global` no es por tipo de proceso.** En `submit` se
+  compara con el total de ejecuciones activas del orquestador, y al
+  liberar un cupo la cola usa el límite global (3). Con
+  `max_concurrent_global=1`, el proceso espera en cola si corre
+  *cualquier* otro, pero al salir de la cola puede quedar junto a otro del
+  mismo tipo.
 - Recuperación de ejecuciones huérfanas al reiniciar
   (`orchestrator/core/recovery.py`): `EJECUTANDO`/`CANCELANDO`/`EN_COLA` pasan
   a `INTERRUMPIDO`.
@@ -41,6 +52,7 @@ from orders.functions.process_mercadolibre_notification import process_mercadoli
 from orders.functions.recover_mercadolibre_orders import recover_mercadolibre_orders
 from orders.functions.sync_sodimac_orders import sync_sodimac_orders
 from invoicing.functions.invoice_sodimac_orders import invoice_sodimac_orders
+from products.functions.upload_sku_equivalences import upload_sku_equivalences
 from customers.functions.reconcile_from_shopify import reconcile_from_shopify
 from customers.functions.process_customer_webhook import process_customer_webhook
 
@@ -50,6 +62,7 @@ register_process("orders.recover_mercadolibre", recover_mercadolibre_orders)  # 
 register_process("orders.import_madecentro", import_madecentro_orders)  # programado, allow_concurrent=False
 register_process("orders.sync_sodimac", sync_sodimac_orders)  # programado, allow_concurrent=False
 register_process("invoicing.invoice_sodimac", invoice_sodimac_orders)  # programado, allow_concurrent=False
+register_process("products.upload_sku_equivalences", upload_sku_equivalences)  # API de products, allow_concurrent=True, max_concurrent_global=1
 register_process("customers.reconcile_shopify", reconcile_from_shopify)
 register_process("customers.process_webhook", process_customer_webhook)
 ```

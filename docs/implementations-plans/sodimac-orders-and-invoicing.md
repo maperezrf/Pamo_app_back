@@ -291,6 +291,15 @@ Rama `sodimac-invoices-only` de `pamo_web` (desde `origin/main`
 Entre los pasos 2 y 5 no se debe correr nada en `pamo_web`. Lo que llegue
 a la cola en ese intervalo lo lee la primera corrida de aquí.
 
+**Cómo se hizo en realidad (2026-10-01)**: la rama se fusionó a `main` de
+`pamo_web` (`e96b24c`) **sin** el paso 2, con `pamo_web` pausado desde el
+2026-09-25. Por eso `SODIMAC_CUTOVER_DATE` es el día de la última corrida
+de creación de `pamo_web`, no el día del despliegue. `SODIMAC_LEGACY_OCS`
+lleva las OC que `pamo_web` creó ese día. Las OC transmitidas después
+siguen en la cola de Sodimac y las crea la primera corrida de aquí. Si la
+fecha fuera posterior, esas OC rebotarían entre los dos sistemas sin
+crearse.
+
 ### Fin de la convivencia
 
 Termina cuando `pamo_web` no tenga OC sin factura desde el 2026-04-01, o
@@ -299,10 +308,11 @@ que quede se revisa a mano. Entonces se quitan la llamada, el cliente
 `integrations/pamo_web/` y sus constantes, y se apaga el proceso en
 `pamo_web`.
 
-### Pendiente por revisar
+### RPA de `pamo_web`
 
-`rpa/` y `stock_dispatch.py` de `pamo_web` leen `SodimacOrders`. Después del
-corte no verán OC nuevas. Confirmar si siguen en uso.
+`rpa/` y `stock_dispatch.py` de `pamo_web` leen `SodimacOrders` y después
+del corte no verán OC nuevas. El usuario confirmó el 2026-10-01 que el RPA
+no se usa: no hay que migrarlo.
 
 ## Pruebas
 
@@ -374,5 +384,4 @@ Criterio del usuario: pasar el flujo "tal cual" desde `pamo_web`.
   líneas (ver [`../apps/invoicing.md`](../apps/invoicing.md)).
 - `pamo_web` copiaba el estado de Sodimac en `TrakingOrders`
   (`update_tracking_status`). Para las OC nuevas ese estado ya no se
-  actualiza; aquí queda en `marketplace_status`. Pasa lo mismo con el RPA
-  (Parte C).
+  actualiza; aquí queda en `marketplace_status`.

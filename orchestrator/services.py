@@ -50,3 +50,17 @@ def request_cancellation(execution):
     execution.status = ProcessStatus.CANCELLING
     execution.save(update_fields=["cancellation_requested", "status"])
     return execution
+
+
+def get_execution_status(execution_id):
+    """Estado de una ejecución para otras apps, sin exponer el modelo:
+    `{"status", "progress_percent", "current_step", "error_message"}`, o
+    `None` si no existe. Es la única fuente del estado y el progreso; las
+    apps de negocio guardan solo el `execution_id`."""
+    from .models import ProcessExecution
+
+    return (
+        ProcessExecution.objects.filter(pk=execution_id)
+        .values("status", "progress_percent", "current_step", "error_message")
+        .first()
+    )

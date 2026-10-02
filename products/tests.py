@@ -18,7 +18,7 @@ from .functions.export_kits import export_kits
 from .functions.import_equivalences import InvalidColumnsError, import_equivalences
 from .functions.import_kits import import_kits
 from .functions.resolve_marketplace_sku import resolve_marketplace_sku
-from .models import KitComponent, Marketplace, MarketplaceSku, Product
+from .models import KitComponent, Marketplace, MarketplaceSku, Product, SkuUpload
 
 
 def _kit(sku, *components):
@@ -381,3 +381,337 @@ class ImportPamoWebCatalogCommandTests(TestCase):
         self.assertIsNone(resolve_marketplace_sku(Marketplace.SODIMAC, "777777"))
         self.assertFalse(Product.objects.filter(sku="777777").exists())
         self.assertIn("NO-EXISTE", output)
+
+
+UPLOAD = "products.functions.upload_sku_equivalences"
+
+
+class _Token:
+    """Cancela cuando `is_cancelled` se ha consultado `after` veces."""
+
+    def __init__(self, after):
+        self.after = after
+        self.calls = 0
+
+    def is_cancelled(self):
+        self.calls += 1
+        return self.calls > self.after
+
+    def raise_if_cancelled(self):
+        from orchestrator.core.cancellation import ProcessCancelledException
+
+        raise ProcessCancelledException("cancelada")
+
+
+def _upload_rows(rows, marketplace=Marketplace.SODIMAC):
+    upload = SkuUpload.objects.create(marketplace=marketplace, rows=rows)
+    return upload
+
+
+def _run(upload, token=None):
+    from .functions.upload_sku_equivalences import upload_sku_equivalences
+
+    upload_sku_equivalences({"upload_id": upload.pk}, cancellation_token=token)
+    upload.refresh_from_db()
+    return upload
+
+
+def _results(upload):
+    return [(row["resultado"], row["resultado_codigo"]) for row in upload.results]
+
+
+@patch(f"{UPLOAD}.get_variants_by_skus")
+class UploadSkuEquivalencesTests(TestCase):
+    def _shopify(self, mock, *skus):
+        mock.side_effect = lambda block: {sku: f"v-{sku}" for sku in block if sku in skus}
+
+    def test_invalid_rows_are_errors(self, shopify):
+        self._shopify(shopify)
+        upload = _run(
+            _upload_rows(
+                [
+                    {"sku_pamo": "", "sku_marketplace": "1"},
+                    {"sku_pamo": "P", "sku_marketplace": None},
+                    {"sku_pamo": "P" * 65, "sku_marketplace": "2", "ean": "9" * 21},
+                ]
+            )
+        )
+        self.assertEqual(
+            _results(upload),
+            [
+                ("Error: sku_pamo vacío", "error"),
+                ("Error: sku_marketplace vacío", "error"),
+                ("Error: sku_pamo supera 64 caracteres; ean supera 20 caracteres", "error"),
+            ],
+        )
+        shopify.assert_not_called()
+
+    def test_repeated_marketplace_sku_is_a_duplicate_of_the_first_row(self, shopify):
+        self._shopify(shopify, "P", "Q")
+        upload = _run(
+            _upload_rows(
+                [
+                    {"sku_pamo": "P", "sku_marketplace": "1"},
+                    {"sku_pamo": "P", "sku_marketplace": "1"},
+                    {"sku_pamo": "Q", "sku_marketplace": "1.0"},
+                ]
+            )
+        )
+        self.assertEqual(
+            _results(upload)[1:],
+            [("Duplicado en el archivo (fila 2)", "error"), ("Duplicado en el archivo (fila 2)", "error")],
+        )
+        self.assertEqual(MarketplaceSku.objects.get().product.sku, "P")
+
+    def test_kit_is_an_error(self, shopify):
+        self._shopify(shopify, "K")
+        _kit("K", ("A", 1))
+        upload = _run(_upload_rows([{"sku_pamo": "K", "sku_marketplace": "1"}]))
+        self.assertEqual(_results(upload), [("Es un kit: se gestiona en la carga de kits", "error")])
+        self.assertFalse(MarketplaceSku.objects.exists())
+
+    def test_block_that_fails_twice_does_not_stop_the_others(self, shopify):
+        def flaky(block):
+            if "BAD" in block:
+                raise RuntimeError("throttled")
+            return {sku: "v" for sku in block}
+
+        shopify.side_effect = flaky
+        with patch(f"{UPLOAD}.BATCH_SIZE", 1):
+            upload = _run(
+                _upload_rows([{"sku_pamo": "BAD", "sku_marketplace": "1"}, {"sku_pamo": "OK", "sku_marketplace": "2"}])
+            )
+        self.assertEqual(
+            _results(upload),
+            [("Error consultando Shopify, reintentar", "error"), ("Exitoso: producto y relación creados", "ok")],
+        )
+        self.assertEqual(shopify.call_count, 3)  # BAD dos veces, OK una
+
+    def test_block_that_fails_once_is_retried(self, shopify):
+        shopify.side_effect = [RuntimeError("timeout"), {"P": "v"}]
+        upload = _run(_upload_rows([{"sku_pamo": "P", "sku_marketplace": "1"}]))
+        self.assertEqual(_results(upload), [("Exitoso: producto y relación creados", "ok")])
+
+    def test_not_in_shopify(self, shopify):
+        self._shopify(shopify)
+        Product.objects.create(sku="P")
+        upload = _run(
+            _upload_rows([{"sku_pamo": "P", "sku_marketplace": "1"}, {"sku_pamo": "NEW", "sku_marketplace": "2"}])
+        )
+        self.assertEqual(
+            _results(upload),
+            [("Alerta: existe en Pamo pero no en Shopify", "alert"), ("SKU no encontrado en Shopify", "error")],
+        )
+        self.assertFalse(MarketplaceSku.objects.exists())
+        self.assertFalse(Product.objects.filter(sku="NEW").exists())
+
+    def test_in_shopify_creates_product_and_relation_or_only_relation(self, shopify):
+        self._shopify(shopify, "NEW", "OLD")
+        Product.objects.create(sku="OLD")
+        upload = _run(
+            _upload_rows(
+                [{"sku_pamo": "NEW", "sku_marketplace": "1", "ean": "77"}, {"sku_pamo": "OLD", "sku_marketplace": "2"}]
+            )
+        )
+        self.assertEqual(
+            _results(upload),
+            [("Exitoso: producto y relación creados", "ok"), ("Exitoso: relación creada", "ok")],
+        )
+        self.assertEqual(MarketplaceSku.objects.get(sku="1").ean, "77")
+        self.assertEqual(MarketplaceSku.objects.get(sku="2").product.sku, "OLD")
+
+    def test_existing_relation_unchanged_or_ean_updated(self, shopify):
+        self._shopify(shopify, "P")
+        product = Product.objects.create(sku="P")
+        MarketplaceSku.objects.create(product=product, marketplace=Marketplace.SODIMAC, sku="1", ean="77")
+        MarketplaceSku.objects.create(product=product, marketplace=Marketplace.SODIMAC, sku="2", ean="77")
+        MarketplaceSku.objects.create(product=product, marketplace=Marketplace.SODIMAC, sku="3", ean="77")
+        upload = _run(
+            _upload_rows(
+                [
+                    {"sku_pamo": "P", "sku_marketplace": "1", "ean": "77"},
+                    {"sku_pamo": "P", "sku_marketplace": "2", "ean": ""},
+                    {"sku_pamo": "P", "sku_marketplace": "3", "ean": "88"},
+                ]
+            )
+        )
+        self.assertEqual(
+            _results(upload),
+            [
+                ("Sin cambios: la relación ya existía", "ok"),
+                ("Sin cambios: la relación ya existía", "ok"),
+                ("Exitoso: EAN actualizado", "ok"),
+            ],
+        )
+        # EAN vacío no borra el existente.
+        self.assertEqual(MarketplaceSku.objects.get(sku="2").ean, "77")
+        self.assertEqual(MarketplaceSku.objects.get(sku="3").ean, "88")
+
+    def test_marketplace_sku_pointing_to_another_product_is_reassigned(self, shopify):
+        self._shopify(shopify, "NEW")
+        MarketplaceSku.objects.create(
+            product=Product.objects.create(sku="OLD"), marketplace=Marketplace.SODIMAC, sku="1", ean="77"
+        )
+        upload = _run(_upload_rows([{"sku_pamo": "NEW", "sku_marketplace": "1"}]))
+        self.assertEqual(_results(upload), [("Reasignado: antes apuntaba a OLD", "alert")])
+        equivalence = MarketplaceSku.objects.get()
+        self.assertEqual((equivalence.product.sku, equivalence.ean), ("NEW", "77"))
+
+    def test_same_marketplace_sku_in_another_marketplace_is_independent(self, shopify):
+        self._shopify(shopify, "P")
+        MarketplaceSku.objects.create(
+            product=Product.objects.create(sku="OTHER"), marketplace=Marketplace.MADECENTRO, sku="1"
+        )
+        upload = _run(_upload_rows([{"sku_pamo": "P", "sku_marketplace": "1"}]))
+        self.assertEqual(_results(upload), [("Exitoso: producto y relación creados", "ok")])
+        self.assertEqual(MarketplaceSku.objects.get(marketplace=Marketplace.MADECENTRO).product.sku, "OTHER")
+
+    def test_mixed_upload_summary_and_extra_columns_are_kept(self, shopify):
+        self._shopify(shopify, "A", "B")
+        Product.objects.create(sku="C")
+        upload = _run(
+            _upload_rows(
+                [
+                    {"sku_pamo": "A", "sku_marketplace": "1", "nota": "x"},
+                    {"sku_pamo": "B", "sku_marketplace": 2.0},
+                    {"sku_pamo": "C", "sku_marketplace": "3"},
+                    {"sku_pamo": "", "sku_marketplace": "4"},
+                ]
+            )
+        )
+        self.assertEqual(upload.results[0]["nota"], "x")
+        self.assertEqual(upload.results[1]["sku_marketplace"], 2.0)
+        self.assertEqual(MarketplaceSku.objects.get(product__sku="B").sku, "2")
+        self.assertEqual(upload.summary["total"], 4)
+        self.assertEqual(upload.summary["por_codigo"], {"ok": 2, "alert": 1, "error": 1})
+        self.assertEqual(
+            upload.summary["por_caso"], {"producto_y_relacion": 2, "solo_en_pamo": 1, "invalido": 1}
+        )
+        self.assertIsNotNone(upload.finished_at)
+
+    def test_cancellation_midway_keeps_partial_results(self, shopify):
+        from orchestrator.core.cancellation import ProcessCancelledException
+
+        self._shopify(shopify, "A", "B")
+        upload = _upload_rows([{"sku_pamo": "A", "sku_marketplace": "1"}, {"sku_pamo": "B", "sku_marketplace": "2"}])
+        # 1 consulta antes del bloque de Shopify, 1 antes de la fila A; cancela antes de B.
+        with patch(f"{UPLOAD}.CANCEL_CHECK_EVERY", 1), self.assertRaises(ProcessCancelledException):
+            _run(upload, token=_Token(after=2))
+        upload.refresh_from_db()
+        self.assertEqual(
+            _results(upload),
+            [("Exitoso: producto y relación creados", "ok"), ("No procesado: carga cancelada", "error")],
+        )
+        self.assertEqual(MarketplaceSku.objects.count(), 1)
+
+    def test_unexpected_error_saves_the_report(self, shopify):
+        self._shopify(shopify, "A")
+        upload = _upload_rows([{"sku_pamo": "A", "sku_marketplace": "1"}])
+        with patch(f"{UPLOAD}._apply", side_effect=RuntimeError("boom")), self.assertRaises(RuntimeError):
+            _run(upload)
+        upload.refresh_from_db()
+        self.assertEqual(_results(upload), [("No procesado: la carga se detuvo por un error", "error")])
+
+    def test_process_type_is_seeded(self, shopify):
+        from orchestrator.models import ProcessType
+
+        process_type = ProcessType.objects.get(code="products.upload_sku_equivalences")
+        self.assertTrue(process_type.allow_concurrent)
+        self.assertEqual(process_type.max_concurrent_global, 1)
+
+
+class SkuUploadAPITests(APITestCase):
+    def setUp(self):
+        admin_group, _ = Group.objects.get_or_create(name="Admin")
+        self.admin = User.objects.create_user("admin", email="admin@pamo.co")
+        self.admin.groups.add(admin_group)
+        self.other = User.objects.create_user("other")
+        self.body = {"marketplace": "sodimac", "rows": [{"sku_pamo": "P", "sku_marketplace": "1"}]}
+
+    @patch("products.apis.launch_process")
+    def test_admin_launches_an_upload(self, launch):
+        launch.return_value.pk = 77
+        self.client.force_login(self.admin)
+
+        response = self.client.post(reverse("products-sku-uploads"), self.body, format="json")
+
+        self.assertEqual(response.status_code, 202)
+        upload = SkuUpload.objects.get()
+        self.assertEqual(response.data, {"id": upload.pk, "execution_id": 77})
+        self.assertEqual((upload.execution_id, upload.uploaded_by, upload.marketplace), (77, self.admin, "sodimac"))
+        launch.assert_called_once_with(
+            code="products.upload_sku_equivalences", user=self.admin, params={"upload_id": upload.pk}
+        )
+
+    @patch("products.apis.launch_process")
+    def test_rejects_without_session_or_role(self, launch):
+        for user in (None, self.other):
+            if user:
+                self.client.force_login(user)
+            for method, url in (
+                ("post", reverse("products-sku-uploads")),
+                ("get", reverse("products-sku-uploads")),
+                ("get", reverse("products-sku-upload-detail", args=[1])),
+            ):
+                response = getattr(self.client, method)(url, self.body, format="json")
+                self.assertEqual(response.status_code, 403, (user, method, url))
+        launch.assert_not_called()
+
+    @patch("products.apis.launch_process")
+    def test_invalid_bodies_are_400(self, launch):
+        self.client.force_login(self.admin)
+        rows = self.body["rows"]
+        for body in (
+            {"marketplace": "amazon", "rows": rows},
+            {"marketplace": "sodimac", "rows": []},
+            {"marketplace": "sodimac", "rows": [{"sku_pamo": "P"}]},
+        ):
+            response = self.client.post(reverse("products-sku-uploads"), body, format="json")
+            self.assertEqual(response.status_code, 400, body)
+        with patch("products.serializers.SKU_UPLOAD_MAX_ROWS", 1):
+            response = self.client.post(
+                reverse("products-sku-uploads"), {"marketplace": "sodimac", "rows": rows * 2}, format="json"
+            )
+        self.assertEqual(response.status_code, 400)
+        self.assertFalse(SkuUpload.objects.exists())
+        launch.assert_not_called()
+
+    @patch("products.apis.get_execution_status")
+    def test_detail_includes_execution_status_and_rows_when_done(self, execution_status):
+        execution_status.return_value = {
+            "status": "EJECUTANDO",
+            "progress_percent": 40,
+            "current_step": "Shopify: bloque 1 de 2",
+            "error_message": None,
+        }
+        upload = SkuUpload.objects.create(marketplace="sodimac", rows=self.body["rows"], execution_id=5, uploaded_by=self.admin)
+        self.client.force_login(self.admin)
+
+        response = self.client.get(reverse("products-sku-upload-detail", args=[upload.pk]))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual((response.data["status"], response.data["progress_percent"]), ("EJECUTANDO", 40))
+        self.assertEqual(response.data["uploaded_by"], "admin@pamo.co")
+        self.assertIsNone(response.data["rows"])
+        execution_status.assert_called_once_with(5)
+
+        upload.results = [{"sku_pamo": "P", "sku_marketplace": "1", "resultado": "x", "resultado_codigo": "ok"}]
+        upload.save()
+        self.assertEqual(self.client.get(reverse("products-sku-upload-detail", args=[upload.pk])).data["rows"], upload.results)
+
+    def test_detail_404(self):
+        self.client.force_login(self.admin)
+        self.assertEqual(self.client.get(reverse("products-sku-upload-detail", args=[999])).status_code, 404)
+
+    @patch("products.apis.get_execution_status", return_value=None)
+    def test_history_is_paginated_without_rows(self, execution_status):
+        for _ in range(21):
+            SkuUpload.objects.create(marketplace="sodimac", rows=self.body["rows"])
+        self.client.force_login(self.admin)
+
+        response = self.client.get(reverse("products-sku-uploads"))
+
+        self.assertEqual(response.data["count"], 21)
+        self.assertEqual(len(response.data["results"]), 20)
+        self.assertNotIn("rows", response.data["results"][0])
+        self.assertIsNone(response.data["results"][0]["status"])

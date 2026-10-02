@@ -5,6 +5,7 @@ from orders.functions.process_mercadolibre_notification import process_mercadoli
 from orders.functions.recover_mercadolibre_orders import recover_mercadolibre_orders
 from orders.functions.sync_sodimac_orders import sync_sodimac_orders
 from invoicing.functions.invoice_sodimac_orders import invoice_sodimac_orders
+from products.functions.upload_sku_equivalences import upload_sku_equivalences
 from customers.functions.reconcile_from_shopify import reconcile_from_shopify
 from customers.functions.process_customer_webhook import process_customer_webhook
 from orchestrator.core.registry import _REGISTRY
@@ -18,6 +19,7 @@ register_process("orders.recover_mercadolibre", recover_mercadolibre_orders)
 register_process("orders.import_madecentro", import_madecentro_orders)
 register_process("orders.sync_sodimac", sync_sodimac_orders)
 register_process("invoicing.invoice_sodimac", invoice_sodimac_orders)
+register_process("products.upload_sku_equivalences", upload_sku_equivalences)
 register_process("customers.reconcile_shopify", reconcile_from_shopify)
 register_process("customers.process_webhook", process_customer_webhook)
 

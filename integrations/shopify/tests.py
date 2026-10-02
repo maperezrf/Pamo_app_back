@@ -7,7 +7,7 @@ from django.test import SimpleTestCase
 
 from config.constants import SHOPIFY_WEBHOOK_SECRET
 
-from .client import ShopifyClient
+from .client import ShopifyClient, ShopifyGraphQLError
 from .functions.create_customer import ShopifyCustomerCreationError, create_customer
 from .functions.create_customer_address import (
     ShopifyCustomerAddressError,
@@ -16,6 +16,7 @@ from .functions.create_customer_address import (
 from .functions.create_order import ShopifyOrderCreationError, create_order
 from .functions.get_variant_by_sku import get_variant_by_sku
 from .functions.get_variant_inventory_by_sku import get_variant_inventory_by_sku
+from .functions.get_variants_by_skus import get_variants_by_skus
 from .functions.list_customers_page import list_customers_page
 from .functions.update_customer_address import update_customer_address
 
@@ -187,6 +188,17 @@ class CreateOrderTests(SimpleTestCase):
             order_input["lineItems"][0]["variantId"], "gid://shopify/ProductVariant/123"
         )
         self.assertEqual(order_input["customer"]["toAssociate"]["id"], "gid://shopify/Customer/42")
+
+    @patch("integrations.shopify.client.requests.post")
+    def test_every_line_item_requires_shipping(self, mock_post):
+        # Sin `requiresShipping`, Shopify muestra "No se requiere envío".
+        mock_post.return_value.json.return_value = {
+            "data": {"orderCreate": {"order": {"id": "gid://shopify/Order/1", "name": "#1"}, "userErrors": []}}
+        }
+        mock_post.return_value.raise_for_status.return_value = None
+        create_order(items=self._items() * 2, customer_id="42", financial_status="PAID")
+        line_items = mock_post.call_args.kwargs["json"]["variables"]["order"]["lineItems"]
+        self.assertEqual([line["requiresShipping"] for line in line_items], [True, True])
 
     @patch("integrations.shopify.client.requests.post")
     def test_raises_when_shopify_reports_user_errors(self, mock_post):
@@ -392,3 +404,65 @@ class VerifyWebhookSignatureTests(SimpleTestCase):
 
     def test_rejects_a_missing_signature(self):
         self.assertFalse(ShopifyClient.verify_webhook_signature(b"{}", ""))
+
+
+def _variants_page(nodes, has_next=False, cursor=None):
+    return {
+        "data": {
+            "productVariants": {
+                "edges": [{"node": {"id": f"gid://shopify/ProductVariant/{vid}", "sku": sku}} for vid, sku in nodes],
+                "pageInfo": {"hasNextPage": has_next, "endCursor": cursor},
+            }
+        }
+    }
+
+
+@patch("integrations.shopify.client.requests.post")
+class GetVariantsBySkusTests(SimpleTestCase):
+    def _respond(self, mock_post, *pages):
+        mock_post.return_value.raise_for_status.return_value = None
+        mock_post.return_value.json.side_effect = list(pages)
+
+    def test_only_exact_matches_are_returned(self, mock_post):
+        self._respond(mock_post, _variants_page([("1", "ABC-1"), ("2", "ABC-1-OTRO"), ("3", "XYZ")]))
+
+        self.assertEqual(get_variants_by_skus(["ABC-1", "XYZ", "NOPE"]), {"ABC-1": "1", "XYZ": "3"})
+
+    def test_follows_pagination_within_a_block(self, mock_post):
+        self._respond(
+            mock_post,
+            _variants_page([("1", "A-OTRO")], has_next=True, cursor="c1"),
+            _variants_page([("2", "A")]),
+        )
+
+        self.assertEqual(get_variants_by_skus(["A"]), {"A": "2"})
+        second_call = mock_post.call_args_list[1].kwargs["json"]["variables"]
+        self.assertEqual(second_call["cursor"], "c1")
+
+    def test_splits_unique_skus_into_blocks(self, mock_post):
+        skus = [f"S{i}" for i in range(120)] + ["S0"]
+        self._respond(mock_post, *[_variants_page([]) for _ in range(3)])
+
+        get_variants_by_skus(skus)
+
+        self.assertEqual(mock_post.call_count, 3)
+        first_query = mock_post.call_args_list[0].kwargs["json"]["variables"]["query"]
+        self.assertEqual(first_query.count(" OR "), 49)
+
+    def test_quotes_and_backslashes_are_escaped(self, mock_post):
+        self._respond(mock_post, _variants_page([("1", 'A"B')]))
+
+        self.assertEqual(get_variants_by_skus(['A"B', r"C\D"]), {'A"B': "1"})
+        query = mock_post.call_args.kwargs["json"]["variables"]["query"]
+        self.assertEqual(query, r'sku:"A\"B" OR sku:"C\\D"')
+
+    def test_empty_input_does_not_call_shopify(self, mock_post):
+        self.assertEqual(get_variants_by_skus(["", None]), {})
+        mock_post.assert_not_called()
+
+    def test_graphql_error_propagates(self, mock_post):
+        mock_post.return_value.raise_for_status.return_value = None
+        mock_post.return_value.json.return_value = {"errors": [{"message": "Throttled"}]}
+
+        with self.assertRaises(ShopifyGraphQLError):
+            get_variants_by_skus(["A"])

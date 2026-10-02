@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from .models import KitComponent, MarketplaceSku, Product
+from .models import KitComponent, MarketplaceSku, Product, SkuUpload
 
 
 class MarketplaceSkuInline(admin.TabularInline):
@@ -29,3 +29,15 @@ class MarketplaceSkuAdmin(admin.ModelAdmin):
     list_filter = ("marketplace",)
     search_fields = ("sku", "ean", "product__sku")
     autocomplete_fields = ("product",)
+
+
+@admin.register(SkuUpload)
+class SkuUploadAdmin(admin.ModelAdmin):
+    list_display = ("id", "marketplace", "uploaded_by", "execution_id", "created_at", "finished_at")
+    list_filter = ("marketplace",)
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False

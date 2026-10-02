@@ -43,6 +43,9 @@ def create_order(*, items, customer_id, financial_status, note="", tags=None, cu
             {
                 "variantId": f"gid://shopify/ProductVariant/{item['variant_id']}",
                 "quantity": int(item["quantity"]),
+                # Sin esto Shopify marca la línea "No se requiere envío".
+                # Todo pedido de marketplace se despacha (2026-10-02).
+                "requiresShipping": True,
                 "priceSet": {
                     "shopMoney": {"amount": str(item["price"]), "currencyCode": currency}
                 },

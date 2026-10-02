@@ -27,6 +27,12 @@ seller id; es estado de conexión, no información de clientes o facturas.
   (`ShopifyClient.verify_webhook_signature`), y
   `get_variant_inventory_by_sku` (variante + unidades disponibles por
   bodega) que consume `orders`.
+  - `get_variants_by_skus(skus) → {sku: variant_id}` consulta por lotes,
+    sin inventario. Hace bloques de 50 SKU (`sku:"A" OR sku:"B"`, con
+    comillas y barras escapadas) y recorre `pageInfo`. Solo acepta
+    coincidencias exactas y propaga el error de un bloque. La consume la
+    carga de SKU de `products`. Antes de subir `BATCH_SIZE`, confirmar
+    contra la tienda real el largo máximo de la búsqueda.
 - `falabella/`: cliente REST firmado y funciones de pedidos.
 - `mercadolibre/`: cliente OAuth2 con token en BD (`MercadoLibreToken`,
   refresh token rotativo renovado bajo bloqueo de fila) y funciones de

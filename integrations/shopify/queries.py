@@ -148,3 +148,21 @@ query ListCustomersPage($cursor: String) {
   }
 }
 """.strip()
+
+
+GET_VARIANTS_BY_SKUS = """
+query GetVariantsBySkus($query: String!, $cursor: String) {
+  productVariants(first: 250, after: $cursor, query: $query) {
+    edges {
+      node {
+        id
+        sku
+      }
+    }
+    pageInfo {
+      hasNextPage
+      endCursor
+    }
+  }
+}
+""".strip()

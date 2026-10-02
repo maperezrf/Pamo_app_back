@@ -1,3 +1,4 @@
+from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.db import models
 
@@ -84,3 +85,35 @@ class MarketplaceSku(models.Model):
 
     def __str__(self):
         return f"{self.marketplace}:{self.sku} → {self.product.sku}"
+
+
+class SkuUpload(models.Model):
+    """Una carga de equivalencias de SKU de UN marketplace, validada contra
+    Shopify (`products.upload_sku_equivalences`). Guarda las filas de
+    entrada y el reporte fila por fila para descargarlo después. El estado
+    y el progreso NO se duplican aquí: viven en la ejecución del
+    orquestador (`execution_id`, entero porque `products` no importa
+    modelos de `orchestrator`). Ver docs/implementations-plans/sku-equivalence-upload.md.
+    """
+
+    marketplace = models.CharField(max_length=32, choices=Marketplace.choices)
+    uploaded_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name="sku_uploads"
+    )
+    execution_id = models.PositiveIntegerField(null=True, blank=True)
+    # Filas tal como llegaron del Excel.
+    rows = models.JSONField()
+    # Filas de entrada más `resultado` y `resultado_codigo` (ok/alert/error).
+    results = models.JSONField(null=True, blank=True)
+    # Conteo por código y por resultado.
+    summary = models.JSONField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    finished_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        verbose_name = "Carga de SKU"
+        verbose_name_plural = "Cargas de SKU"
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"{self.marketplace} #{self.pk}"
