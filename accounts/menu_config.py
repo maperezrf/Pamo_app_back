@@ -16,10 +16,11 @@ MENU = [
         "submodulos": [],
     },
     {
-        "key": "prototipos",
-        "label": "Prototipos",
-        "path": "/prototipos",
-        "roles": ["Admin"],
+        "key": "pedidos",
+        "label": "Pedidos",
+        "path": "/pedidos",
+        # Mismos roles que `orders.apis.ORDERS_LIST_ROLES` (GET /api/orders/).
+        "roles": ["Admin", "Operaciones"],
         "submodulos": [],
     },
 ]

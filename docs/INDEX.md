@@ -56,7 +56,6 @@ contrasta y, si aplica, se incorpora a la documentación versionada.
 | Contabilidad | `accounting/` | Área de negocio contable. | Pendiente |
 | Facturación | `invoicing/` | Facturas en Siigo de pedidos de marketplace (hoy Sodimac), con sus reglas de cálculo. | [`apps/invoicing.md`](apps/invoicing.md) |
 | Logística | `logistics/` | Área de negocio logística. | Pendiente |
-| Seguimiento de funcionalidades | `feature_tracking/` | Registro y ciclo de vida de funcionalidades. | Pendiente; su estado actual debe validarse antes de intervenir. |
 
 Las carpetas de proveedor dentro de `integrations/` se documentarán como
 parte del expediente de Integraciones; cada una conserva únicamente lo que
