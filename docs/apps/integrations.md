@@ -33,6 +33,17 @@ seller id; es estado de conexión, no información de clientes o facturas.
     coincidencias exactas y propaga el error de un bloque. La consume la
     carga de SKU de `products`. Antes de subir `BATCH_SIZE`, confirmar
     contra la tienda real el largo máximo de la búsqueda.
+  - `list_orders_page(*, first, after=None, query="", sort_key="CREATED_AT", reverse=True)
+    → {"orders", "has_next_page", "end_cursor"}`: una página de pedidos
+    normalizados (cliente, hasta 30 líneas y `line_items_truncated`).
+    Recibe la `query` de Shopify ya armada; no conoce marketplaces.
+  - `get_order(order_id) → pedido | None`: un pedido con **todas** sus
+    líneas; `None` si no existe o se borró.
+  - Las dos normalizan con `normalize_order` (fragmento `ORDER_FIELDS`),
+    así que devuelven la misma forma. Las consume la copia local de
+    pedidos de `orders`.
+  - Los webhooks de Shopify se suscriben desde el admin, no por API (ver
+    [`orders.md`](orders.md)).
 - `falabella/`: cliente REST firmado y funciones de pedidos.
 - `mercadolibre/`: cliente OAuth2 con token en BD (`MercadoLibreToken`,
   refresh token rotativo renovado bajo bloqueo de fila) y funciones de

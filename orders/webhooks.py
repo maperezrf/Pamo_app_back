@@ -10,6 +10,7 @@ from rest_framework.views import APIView
 
 from config.constants import MERCADOLIBRE_CLIENT_ID
 from integrations.mercadolibre.functions.get_connected_seller_id import get_connected_seller_id
+from integrations.shopify.client import ShopifyClient
 from orchestrator.services import launch_process
 
 from .functions.parse_mercadolibre_notification import parse_mercadolibre_notification
@@ -67,4 +68,37 @@ class MadecentroOrderWebhookView(APIView):
             truncated,
             body[:MADECENTRO_CAPTURE_MAX_BYTES].decode("utf-8", errors="replace"),
         )
+        return Response(status=200)
+
+
+# Temas de Shopify que mantienen la copia local de pedidos.
+SHOPIFY_ORDER_TOPICS = {"orders/create", "orders/updated", "orders/delete"}
+
+
+class ShopifyOrderWebhookView(APIView):
+    """Recibe `orders/create`, `orders/updated` y `orders/delete` de Shopify
+    para la copia local de pedidos (ver
+    docs/implementations-plans/shopify-orders-local-sync.md).
+
+    La firma (`X-Shopify-Hmac-Sha256`) se verifica sobre el body crudo antes
+    de leer `request.data`; sin firma válida, `403`. Del aviso solo se toma
+    el tema y el id del pedido: el proceso vuelve a leer el pedido de
+    Shopify. Un tema desconocido o un aviso sin id responde `200` sin lanzar
+    nada, para que Shopify no reintente.
+    """
+
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        signature = request.headers.get("X-Shopify-Hmac-Sha256", "")
+        if not ShopifyClient.verify_webhook_signature(request.body, signature):
+            return Response(status=403)
+
+        topic = request.headers.get("X-Shopify-Topic", "")
+        order_id = request.data.get("id") if isinstance(request.data, dict) else None
+        if topic in SHOPIFY_ORDER_TOPICS and order_id:
+            launch_process(
+                code="orders.process_shopify_order_webhook",
+                params={"topic": topic, "order_id": str(order_id)},
+            )
         return Response(status=200)

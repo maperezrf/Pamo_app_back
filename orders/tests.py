@@ -1,6 +1,8 @@
+from datetime import date, timedelta
 from decimal import Decimal
 from unittest.mock import Mock, patch
 
+from django.contrib.auth.models import Group, User
 from django.test import SimpleTestCase, TestCase
 from django.utils import timezone
 
@@ -10,7 +12,7 @@ from .functions.fetch_falabella_orders import fetch_falabella_orders
 from .functions.import_falabella_orders import import_falabella_orders
 from .functions.process_pending_orders import process_pending_orders
 from .functions.select_fulfillment_location import select_fulfillment_location
-from .models import MarketplaceOrder, MarketplaceOrderItem
+from .models import MarketplaceOrder, MarketplaceOrderItem, ShopifyOrder, ShopifyOrderSyncState
 
 
 def _raw_falabella_order(order_id="1", order_number="N-1", **overrides):
@@ -1434,3 +1436,508 @@ class SyncSodimacOrdersTests(TestCase):
 
         process_type = ProcessType.objects.get(code="orders.sync_sodimac")
         self.assertFalse(process_type.allow_concurrent)
+
+
+SYNC = "orders.functions.sync_shopify_orders"
+
+
+def _shopify_data(order_id, **overrides):
+    """Pedido normalizado como lo entrega `integrations.shopify` (forma de
+    `normalize_order`)."""
+    data = {
+        "id": order_id, "name": f"N{order_id}", "created_at": "2026-10-03T15:00:00Z",
+        "updated_at": "2026-10-03T15:00:00Z", "cancelled_at": None,
+        "financial_status": "PAID", "fulfillment_status": "UNFULFILLED", "tags": [],
+        "email": "web@example.com", "phone": "300", "total": "200.00", "currency": "COP",
+        "customer": {"id": "9", "first_name": "Cliente", "last_name": "Web", "identification": "900",
+                     "city": "Medellín", "region": "Antioquia", "address": "Calle 1"},
+        "line_items": [{"sku": "A1", "name": "Silla", "quantity": 2, "unit_price": "100.0"}],
+        "line_items_truncated": False,
+    }
+    data.update(overrides)
+    return data
+
+
+def _page(*orders, has_next=False, cursor="cur"):
+    return {"orders": list(orders), "has_next_page": has_next, "end_cursor": cursor if has_next else None}
+
+
+def _row(order_id, *, marketplace=MarketplaceOrder.Marketplace.FALABELLA, shopify_order_id="", number=None, **fields):
+    return MarketplaceOrder.objects.create(
+        marketplace=marketplace, marketplace_order_id=order_id, marketplace_order_number=number or order_id,
+        shopify_order_id=shopify_order_id, **fields,
+    )
+
+
+class UpsertShopifyOrderTests(TestCase):
+    def _upsert(self, data):
+        from .functions.upsert_shopify_order import upsert_shopify_order
+
+        return upsert_shopify_order(data)
+
+    def test_creates_order_with_lines_and_marketplace_from_tags(self):
+        result = self._upsert(_shopify_data("10", tags=["SODIMAC"], cancelled_at="2026-10-04T10:00:00Z"))
+
+        self.assertEqual(result, "created")
+        order = ShopifyOrder.objects.get(shopify_id="10")
+        self.assertEqual(order.marketplace, "sodimac")
+        self.assertEqual(order.total, Decimal("200.00"))
+        self.assertEqual(order.customer_identification, "900")
+        self.assertIsNotNone(order.cancelled_at)
+        line = order.lines.get()
+        self.assertEqual((line.sku, line.quantity, line.unit_price, line.line_total), ("A1", 2, Decimal("100.00"), Decimal("200.00")))
+
+    def test_update_replaces_lines(self):
+        self._upsert(_shopify_data("10"))
+        lines = [{"sku": "B", "name": "", "quantity": 1, "unit_price": "5"}, {"sku": "C", "name": "", "quantity": 3, "unit_price": ""}]
+
+        result = self._upsert(_shopify_data("10", updated_at="2026-10-04T15:00:00Z", financial_status="REFUNDED", line_items=lines))
+
+        self.assertEqual(result, "updated")
+        order = ShopifyOrder.objects.get(shopify_id="10")
+        self.assertEqual(order.financial_status, "REFUNDED")
+        self.assertEqual([(line.sku, line.line_total) for line in order.lines.all()], [("B", Decimal("5.00")), ("C", None)])
+
+    def test_older_data_does_not_overwrite(self):
+        self._upsert(_shopify_data("10", updated_at="2026-10-04T15:00:00Z", financial_status="PAID"))
+
+        result = self._upsert(_shopify_data("10", updated_at="2026-10-03T15:00:00Z", financial_status="PENDING"))
+
+        self.assertEqual(result, "skipped")
+        self.assertEqual(ShopifyOrder.objects.get(shopify_id="10").financial_status, "PAID")
+
+    def test_deleted_order_is_not_revived(self):
+        from .functions.mark_shopify_order_deleted import mark_shopify_order_deleted
+
+        mark_shopify_order_deleted("10")
+
+        self.assertEqual(self._upsert(_shopify_data("10")), "skipped")
+        order = ShopifyOrder.objects.get(shopify_id="10")
+        self.assertIsNotNone(order.deleted_at)
+        self.assertFalse(order.lines.exists())
+
+    @patch("orders.functions.upsert_shopify_order.get_order")
+    def test_truncated_order_is_read_again(self, get_order):
+        full = [{"sku": f"S{index}", "name": "", "quantity": 1, "unit_price": "1"} for index in range(35)]
+        get_order.return_value = _shopify_data("10", line_items=full)
+
+        self._upsert(_shopify_data("10", line_items_truncated=True))
+
+        get_order.assert_called_once_with("10")
+        self.assertEqual(ShopifyOrder.objects.get(shopify_id="10").lines.count(), 35)
+
+    @patch("orders.functions.upsert_shopify_order.get_order", return_value=None)
+    def test_truncated_order_missing_in_shopify_is_marked_deleted(self, get_order):
+        self.assertEqual(self._upsert(_shopify_data("10", line_items_truncated=True)), "deleted")
+        self.assertIsNotNone(ShopifyOrder.objects.get(shopify_id="10").deleted_at)
+
+    def test_concurrent_creation_retries_once(self):
+        from django.db import IntegrityError
+
+        from .functions import upsert_shopify_order as module
+
+        real = module._upsert
+        calls = []
+
+        def racing(data):
+            calls.append(data["id"])
+            if len(calls) == 1:
+                raise IntegrityError("duplicate key")
+            return real(data)
+
+        with patch.object(module, "_upsert", side_effect=racing):
+            self.assertEqual(module.upsert_shopify_order(_shopify_data("10")), "created")
+        self.assertEqual(len(calls), 2)
+
+
+@patch("orders.functions.process_shopify_order_webhook.get_order")
+class ProcessShopifyOrderWebhookTests(TestCase):
+    def _process(self, topic, order_id="10"):
+        from .functions.process_shopify_order_webhook import process_shopify_order_webhook
+
+        process_shopify_order_webhook({"topic": topic, "order_id": order_id})
+
+    def test_create_and_update_read_the_order_again(self, get_order):
+        get_order.return_value = _shopify_data("10", tags=["madecentro"])
+
+        self._process("orders/create")
+        get_order.return_value = _shopify_data("10", updated_at="2026-10-04T15:00:00Z", fulfillment_status="FULFILLED")
+        self._process("orders/updated")
+
+        order = ShopifyOrder.objects.get(shopify_id="10")
+        self.assertEqual(order.fulfillment_status, "FULFILLED")
+        self.assertEqual(get_order.call_count, 2)
+
+    def test_delete_marks_without_reading(self, get_order):
+        self._process("orders/delete")
+
+        get_order.assert_not_called()
+        self.assertIsNotNone(ShopifyOrder.objects.get(shopify_id="10").deleted_at)
+
+    def test_order_missing_in_shopify_counts_as_deleted(self, get_order):
+        get_order.return_value = None
+
+        self._process("orders/updated")
+
+        self.assertIsNotNone(ShopifyOrder.objects.get(shopify_id="10").deleted_at)
+
+
+TEST_SHOPIFY_SECRET = "test-shopify-secret"
+
+
+@patch("integrations.shopify.client.SHOPIFY_WEBHOOK_SECRET", TEST_SHOPIFY_SECRET)
+@patch("orders.webhooks.launch_process")
+class ShopifyOrderWebhookViewTests(TestCase):
+    url = "/api/orders/webhooks/shopify/"
+
+    def _post(self, body, topic="orders/create", signature=None):
+        import base64
+        import hashlib
+        import hmac
+        import json
+
+        raw = json.dumps(body).encode()
+        if signature is None:
+            signature = base64.b64encode(hmac.new(TEST_SHOPIFY_SECRET.encode(), raw, hashlib.sha256).digest()).decode()
+        return self.client.post(
+            self.url, raw, content_type="application/json",
+            HTTP_X_SHOPIFY_HMAC_SHA256=signature, HTTP_X_SHOPIFY_TOPIC=topic,
+        )
+
+    def test_valid_signature_launches_with_topic_and_id_only(self, launch):
+        response = self._post({"id": 820982911946154508, "email": "x@example.com", "line_items": []}, topic="orders/updated")
+
+        self.assertEqual(response.status_code, 200)
+        launch.assert_called_once_with(
+            code="orders.process_shopify_order_webhook",
+            params={"topic": "orders/updated", "order_id": "820982911946154508"},
+        )
+
+    def test_invalid_or_missing_signature_is_403(self, launch):
+        self.assertEqual(self._post({"id": 1}, signature="bad").status_code, 403)
+        self.assertEqual(self._post({"id": 1}, signature="").status_code, 403)
+        launch.assert_not_called()
+
+    def test_unknown_topic_or_missing_id_is_200_without_launch(self, launch):
+        self.assertEqual(self._post({"id": 1}, topic="orders/paid").status_code, 200)
+        self.assertEqual(self._post({"name": "x"}).status_code, 200)
+        launch.assert_not_called()
+
+
+class _Cancelled(Exception):
+    pass
+
+
+class _CancelAfter:
+    def __init__(self, pages):
+        self.pages = pages
+
+    def raise_if_cancelled(self):
+        self.pages -= 1
+        if self.pages <= 0:
+            raise _Cancelled()
+
+
+@patch(f"{SYNC}.list_orders_page")
+class SyncShopifyOrdersTests(TestCase):
+    def _backfill(self, params=None, token=None):
+        from .functions.backfill_shopify_orders import backfill_shopify_orders
+
+        backfill_shopify_orders(params, cancellation_token=token)
+
+    def _reconcile(self, token=None):
+        from .functions.reconcile_shopify_orders import reconcile_shopify_orders
+
+        reconcile_shopify_orders({}, cancellation_token=token)
+
+    def _state(self):
+        return ShopifyOrderSyncState.objects.filter(pk=1).values_list("last_reconciled_at", flat=True).first()
+
+    def test_backfill_reads_all_pages_by_update_order(self, page):
+        page.side_effect = [_page(_shopify_data("1"), has_next=True, cursor="c1"), _page(_shopify_data("2"))]
+
+        self._backfill({"created_from": "2026-09-05"})
+
+        self.assertEqual(ShopifyOrder.objects.count(), 2)
+        first, second = page.call_args_list
+        self.assertEqual(first.kwargs["query"], "created_at:>='2026-09-05T00:00:00-05:00'")
+        self.assertEqual((first.kwargs["sort_key"], first.kwargs["reverse"]), ("UPDATED_AT", False))
+        self.assertEqual(second.kwargs["after"], "c1")
+
+    def test_backfill_defaults_to_30_days_and_seeds_checkpoint_once(self, page):
+        page.return_value = _page()
+        expected_day = (timezone.localdate() - timedelta(days=30)).isoformat()
+
+        self._backfill()
+
+        self.assertIn(f"created_at:>='{expected_day}T00:00:00-05:00'", page.call_args.kwargs["query"])
+        seeded = self._state()
+        self.assertIsNotNone(seeded)
+        self._backfill()
+        self.assertEqual(self._state(), seeded)
+
+    def test_reconcile_without_checkpoint_uses_30_days(self, page):
+        page.return_value = _page(_shopify_data("1"))
+        before = timezone.now()
+
+        self._reconcile()
+
+        since = page.call_args.kwargs["query"]
+        self.assertTrue(since.startswith("updated_at:>='"))
+        self.assertEqual(ShopifyOrder.objects.count(), 1)
+        self.assertGreaterEqual(self._state(), before)
+
+    def test_reconcile_uses_checkpoint_with_overlap(self, page):
+        from .functions.order_listing_format import COLOMBIA_TZ
+
+        checkpoint = (timezone.now() - timedelta(hours=1)).astimezone(COLOMBIA_TZ).replace(microsecond=0)
+        ShopifyOrderSyncState.objects.create(pk=1, last_reconciled_at=checkpoint)
+        page.return_value = _page()
+
+        self._reconcile()
+
+        expected = (checkpoint - timedelta(minutes=15)).isoformat(timespec="seconds")
+        self.assertEqual(page.call_args.kwargs["query"], f"updated_at:>='{expected}'")
+        self.assertGreater(self._state(), checkpoint)
+
+    def test_checkpoint_does_not_move_on_cancel_or_error(self, page):
+        from .functions.order_listing_format import COLOMBIA_TZ
+
+        checkpoint = timezone.datetime(2026, 10, 5, 12, 0, tzinfo=COLOMBIA_TZ)
+        ShopifyOrderSyncState.objects.create(pk=1, last_reconciled_at=checkpoint)
+        page.side_effect = [_page(_shopify_data("1"), has_next=True), _page(_shopify_data("2"))]
+
+        with self.assertRaises(_Cancelled):
+            self._reconcile(token=_CancelAfter(1))
+        self.assertEqual(ShopifyOrder.objects.count(), 1)
+        self.assertEqual(self._state(), checkpoint)
+
+        page.side_effect = RuntimeError("Shopify caído")
+        with self.assertRaises(RuntimeError):
+            self._reconcile()
+        self.assertEqual(self._state(), checkpoint)
+
+    def test_process_types_are_seeded(self, page):
+        from orchestrator.models import ProcessType
+
+        types = {pt.code: pt.allow_concurrent for pt in ProcessType.objects.filter(code__contains="shopify_order")}
+        self.assertEqual(
+            types,
+            {
+                "orders.process_shopify_order_webhook": True,
+                "orders.backfill_shopify_orders": False,
+                "orders.reconcile_shopify_orders": False,
+            },
+        )
+
+
+def _local_order(order_id, *, created_at=None, **overrides):
+    """Guarda un pedido en la copia local por el mismo camino que la
+    sincronización."""
+    from .functions.upsert_shopify_order import upsert_shopify_order
+
+    upsert_shopify_order(_shopify_data(order_id, **overrides))
+    if created_at:
+        ShopifyOrder.objects.filter(shopify_id=order_id).update(shopify_created_at=created_at)
+
+
+class ListOrdersNotCreatedTests(TestCase):
+    def _list(self, **kwargs):
+        from .functions.list_orders_not_created import list_orders_not_created
+
+        return list_orders_not_created(**kwargs)
+
+    def test_includes_alert_statuses_and_excludes_the_rest(self):
+        Status = MarketplaceOrder.Status
+        _row("E1", status=Status.ERROR_ORDER, error_description="SKU no encontrado en Shopify: X")
+        _row("E2", status=Status.ERROR_CUSTOMER)
+        _row("E3", status=Status.PROCESSING)
+        _row("E4", status=Status.PENDING, error_description="Envío incompleto")
+        _row("OK1", status=Status.PENDING)
+        _row("OK2", status=Status.CREATED, shopify_order_id="1")
+        _row("OK3", status=Status.ERROR_ORDER, shopify_order_id="2", error_description="viejo")
+
+        result = self._list()
+
+        numbers = {order["marketplace_order_number"] for order in result["orders_not_created"]}
+        self.assertEqual(numbers, {"E1", "E2", "E3", "E4"})
+        self.assertEqual(result["orders_not_created_count"], 4)
+
+    def test_error_items_and_total(self):
+        row = _row("E1", status=MarketplaceOrder.Status.ERROR_ORDER,
+                   error_description="SKU no encontrado en Shopify: X", customer_first_name="Ana")
+        MarketplaceOrderItem.objects.create(order=row, marketplace_sku="X", quantity=2, unit_price="100")
+        MarketplaceOrderItem.objects.create(order=row, marketplace_sku="Y", quantity=1, unit_price="50.5")
+
+        order = self._list()["orders_not_created"][0]
+
+        self.assertEqual(order["error"], "SKU no encontrado en Shopify: X")
+        self.assertEqual(order["status"], "error_creando_orden")
+        self.assertEqual(order["customer"]["first_name"], "Ana")
+        self.assertEqual(order["fulfillment"]["status"], "")
+        self.assertEqual(order["items"][0], {"sku": "X", "quantity": 2, "unit_price": "100.00", "line_total": "200.00"})
+        self.assertEqual(order["total"], "250.50")
+
+    def test_filters(self):
+        Status = MarketplaceOrder.Status
+        _row("F1", status=Status.ERROR_ORDER)
+        old = _row("F2", status=Status.ERROR_ORDER)
+        MarketplaceOrder.objects.filter(pk=old.pk).update(created_at=timezone.now() - timedelta(days=10))
+        _row("M1", marketplace=MarketplaceOrder.Marketplace.MADECENTRO, status=Status.ERROR_ORDER)
+
+        def numbers(**kwargs):
+            return {order["marketplace_order_number"] for order in self._list(**kwargs)["orders_not_created"]}
+
+        today = timezone.localdate()
+        self.assertEqual(numbers(marketplace="madecentro"), {"M1"})
+        self.assertEqual(numbers(date_from=today, date_to=today), {"F1", "M1"})
+        self.assertEqual(numbers(search="#F2"), {"F2"})
+        self.assertEqual(numbers(marketplace="shopify"), set())
+
+    def test_limit_keeps_real_count_without_n_plus_one(self):
+        for index in range(4):
+            row = _row(f"E{index}", status=MarketplaceOrder.Status.ERROR_ORDER)
+            MarketplaceOrderItem.objects.create(order=row, marketplace_sku="X", quantity=1, unit_price="1")
+
+        with self.assertNumQueries(3):  # filas, ítems (prefetch) y conteo
+            result = self._list(limit=2)
+
+        self.assertEqual(len(result["orders_not_created"]), 2)
+        self.assertEqual(result["orders_not_created_count"], 4)
+
+
+@patch("integrations.shopify.client.requests.post", side_effect=AssertionError("el listado no debe llamar a Shopify"))
+class OrderListAPITests(TestCase):
+    url = "/api/orders/"
+
+    def setUp(self):
+        self.admin = User.objects.create_user("admin", password="x")
+        self.admin.groups.add(Group.objects.get_or_create(name="Admin")[0])
+        self.other = User.objects.create_user("other", password="x")
+
+    def _get(self, params=None):
+        self.client.force_login(self.admin)
+        response = self.client.get(self.url, params or {})
+        self.assertEqual(response.status_code, 200, response.content)
+        return response.json()
+
+    def test_reads_only_local_data_with_both_lists(self, shopify):
+        _local_order("10", tags=["falabella"])
+        _row("FA-1", number="3254", shopify_order_id="10", customer_identification="1020", customer_first_name="Ana",
+             fulfillment_status=MarketplaceOrder.FulfillmentStatus.NOVEDAD, fulfillment_note="Ninguna bodega cubre el pedido")
+        _row("E1", status=MarketplaceOrder.Status.ERROR_ORDER, error_description="SKU no encontrado en Shopify: X")
+
+        body = self._get()
+
+        shopify.assert_not_called()
+        self.assertEqual(body["count"], 1)
+        order = body["orders"][0]
+        self.assertEqual(order["marketplace"], "falabella")
+        self.assertEqual(order["marketplace_order_numbers"], ["3254"])
+        self.assertEqual(order["customer"]["identification"], "1020")
+        self.assertEqual(order["fulfillment"]["status"], "novedad")
+        self.assertEqual(order["fulfillment"]["note"], "Ninguna bodega cubre el pedido")
+        self.assertEqual(
+            order["items"], [{"sku": "A1", "name": "Silla", "quantity": 2, "unit_price": "100.00", "line_total": "200.00"}]
+        )
+        self.assertEqual(order["total"], "200.00")
+        self.assertIsNone(order["cancelled_at"])
+        self.assertEqual(body["orders_not_created"][0]["error"], "SKU no encontrado en Shopify: X")
+        self.assertIsNone(body["last_synced_at"])
+
+    def test_web_order_uses_shopify_customer_and_pack_numbers(self, shopify):
+        _local_order("20", tags=["Addi-Marketplace"])
+        _local_order("30", tags=["mercadolibre"])
+        for order_id in ("ML-2", "ML-1"):
+            _row(order_id, marketplace=MarketplaceOrder.Marketplace.MERCADOLIBRE, shopify_order_id="30")
+
+        orders = {order["shopify_order_id"]: order for order in self._get()["orders"]}
+
+        self.assertEqual(orders["20"]["marketplace"], "shopify")
+        self.assertEqual(orders["20"]["customer"]["identification"], "900")
+        self.assertEqual(orders["20"]["customer"]["email"], "web@example.com")
+        self.assertEqual(orders["20"]["fulfillment"]["status"], "")
+        self.assertEqual(orders["30"]["marketplace_order_numbers"], ["ML-1", "ML-2"])
+
+    def test_filters(self, shopify):
+        from .functions.order_listing_format import COLOMBIA_TZ
+
+        day = timezone.datetime(2026, 10, 3, 23, 30, tzinfo=COLOMBIA_TZ)
+        _local_order("1", name="20131", tags=["sodimac"], created_at=day)
+        _local_order("2", tags=["falabella"], created_at=day - timedelta(days=5))
+        _local_order("3", created_at=day)
+        _row("FA-9", number="3254", shopify_order_id="2")
+
+        def ids(**params):
+            return {order["shopify_order_id"] for order in self._get(params)["orders"]}
+
+        self.assertEqual(ids(marketplace="sodimac"), {"1"})
+        self.assertEqual(ids(marketplace="shopify"), {"3"})
+        self.assertEqual(ids(date_from="2026-10-03", date_to="2026-10-03"), {"1", "3"})
+        self.assertEqual(ids(search="#20131"), {"1"})
+        self.assertEqual(ids(search="3254"), {"2"})
+
+    def test_excludes_deleted_and_orders_newest_first(self, shopify):
+        from .functions.mark_shopify_order_deleted import mark_shopify_order_deleted
+
+        _local_order("1", created_at=timezone.now() - timedelta(days=1))
+        _local_order("2", created_at=timezone.now())
+        _local_order("3")
+        mark_shopify_order_deleted("3")
+        mark_shopify_order_deleted("99")
+
+        body = self._get()
+
+        self.assertEqual([order["shopify_order_id"] for order in body["orders"]], ["2", "1"])
+        self.assertEqual(body["count"], 2)
+
+    def test_page_number_pagination_and_last_synced_at(self, shopify):
+        for index in range(5):
+            _local_order(str(index))
+        ShopifyOrderSyncState.objects.create(pk=1, last_reconciled_at=timezone.now())
+
+        first = self._get({"page_size": 2})
+        third = self._get({"page_size": 2, "page": 3})
+
+        self.assertEqual(first["count"], 5)
+        self.assertEqual(len(first["orders"]), 2)
+        self.assertIn("page=2", first["next"])
+        self.assertIsNone(first["previous"])
+        self.assertEqual(len(third["orders"]), 1)
+        self.assertIsNone(third["next"])
+        self.assertIsNotNone(first["last_synced_at"])
+
+    def test_queries_do_not_grow_with_orders(self, shopify):
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+
+        def queries_for(count):
+            ShopifyOrder.objects.all().delete()
+            MarketplaceOrder.objects.all().delete()
+            for index in range(count):
+                _local_order(str(index), tags=["falabella"])
+                _row(f"FA-{index}", shopify_order_id=str(index), status=MarketplaceOrder.Status.ERROR_ORDER)
+            with CaptureQueriesContext(connection) as context:
+                self.client.get(self.url)
+            return len(context.captured_queries)
+
+        self.client.force_login(self.admin)
+        self.assertEqual(queries_for(2), queries_for(10))
+
+    def test_rejects_without_session_or_role(self, shopify):
+        self.assertEqual(self.client.get(self.url).status_code, 403)
+        self.client.force_login(self.other)
+        self.assertEqual(self.client.get(self.url).status_code, 403)
+
+    def test_invalid_params(self, shopify):
+        self.client.force_login(self.admin)
+        for params in (
+            {"marketplace": "amazon"},
+            {"date_from": "03/10/2026"},
+            {"date_from": "2026-10-05", "date_to": "2026-10-01"},
+            {"page_size": 0},
+            {"page_size": 51},
+        ):
+            with self.subTest(params=params):
+                self.assertEqual(self.client.get(self.url, params).status_code, 400)
+        self.assertEqual(self.client.get(self.url, {"page": 99}).status_code, 404)

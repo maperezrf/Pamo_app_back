@@ -223,6 +223,108 @@ Plan:
 - La factura de las OC en estado final es de la app `invoicing`
   ([`invoicing.md`](invoicing.md)); `orders` no la importa.
 
+## Copia local de pedidos de Shopify
+
+Plan: [`../implementations-plans/shopify-orders-local-sync.md`](../implementations-plans/shopify-orders-local-sync.md).
+
+`ShopifyOrder` / `ShopifyOrderLine` guardan **todos** los pedidos de Shopify
+(marketplaces y tienda web) para que el listado del frontend no dependa de
+Shopify en vivo. Es el mismo patrón de `customers`: webhook firmado +
+reconciliación, con una sola función de guardado.
+
+- **Guardado único**: `upsert_shopify_order(data)` recibe el pedido
+  normalizado de `integrations.shopify` (`normalize_order`). Lo usan el
+  webhook, la carga inicial y la reconciliación.
+  - Bloquea la fila y reemplaza todas las líneas en una transacción. Si dos
+    avisos crean el mismo pedido a la vez, reintenta una vez.
+  - No pisa un dato más nuevo con uno viejo (`shopify_updated_at`) y no
+    revive un pedido borrado.
+  - Un pedido de `list_orders_page` con más de 30 líneas se vuelve a leer
+    completo con `get_order`.
+  - `marketplace` se calcula desde las etiquetas, sin distinguir
+    mayúsculas (`marketplace_from_tags`); sin etiqueta de marketplace →
+    `shopify`.
+- **Borrado lógico**: `mark_shopify_order_deleted` pone `deleted_at` (o
+  crea una marca borrada si no existía). El listado excluye los borrados.
+- **Webhook**: `POST /api/orders/webhooks/shopify/`
+  (`ShopifyOrderWebhookView`). Verifica la firma sobre el body crudo
+  (`403` si falla). Para `orders/create`, `orders/updated` y
+  `orders/delete` lanza `orders.process_shopify_order_webhook`
+  (`allow_concurrent=True`) **solo con el tema y el id**. Otro tema o un
+  aviso sin id → `200` sin lanzar nada.
+- **Proceso del webhook** (`process_shopify_order_webhook`): con
+  `orders/delete` marca el borrado; si no, vuelve a leer el pedido con
+  `get_order` y lo guarda. Si Shopify ya no lo encuentra, lo marca borrado.
+- **Carga inicial** `orders.backfill_shopify_orders`
+  (`allow_concurrent=False`, manual): pedidos creados desde
+  `params["created_from"]` (`YYYY-MM-DD`, por defecto hoy menos 30 días).
+  Si la reconciliación nunca corrió, deja su checkpoint en la hora de
+  inicio.
+- **Reconciliación** `orders.reconcile_shopify_orders`
+  (`allow_concurrent=False`, se programa por la API del orquestador cada
+  30 min): pedidos actualizados desde `ShopifyOrderSyncState.last_reconciled_at`
+  menos 15 min (sin checkpoint: 30 días).
+  - El checkpoint es la hora en que **empezó** la última corrida que
+    terminó bien. Si una corrida falla o se cancela, no avanza.
+  - No usa el máximo `shopify_updated_at`, porque los webhooks lo
+    adelantan.
+  - **No ve pedidos borrados**: Shopify no los lista.
+- Las dos recorren las páginas con `iter_shopify_order_pages` (50 por
+  página, por `UPDATED_AT` ascendente).
+- **Suscripción**: desde el admin de Shopify (Configuración → Notificaciones → Webhooks),
+  igual que la de `customers`, con los eventos de creación, actualización y
+  eliminación de pedido, formato JSON y la URL
+  `https://<host>/api/orders/webhooks/shopify/`. No se crea por API: los
+  webhooks del admin se firman con la clave que muestra esa pantalla
+  (`SHOPIFY_WEBHOOK_SECRET`); los creados por API se firmarían con otro
+  secreto y responderían `403`.
+
+Verificado contra la tienda real el 2026-10-05, en una base temporal: la
+carga del 1 al 5 de octubre trajo 92 pedidos con 108 líneas en 1,1 s.
+Repetirla no duplicó nada.
+
+## Listado para el frontend
+
+Planes:
+[`../implementations-plans/shopify-orders-listing.md`](../implementations-plans/shopify-orders-listing.md)
+(forma de la respuesta) y
+[`../implementations-plans/shopify-orders-local-sync.md`](../implementations-plans/shopify-orders-local-sync.md)
+(fuente local). Contrato: `GET /api/orders/` en
+[`../contracts/API.md`](../contracts/API.md) (`OrderListAPI`,
+`orders/apis.py`, roles `ORDERS_LIST_ROLES`).
+
+- **Solo lee la base de datos.** Nunca consulta Shopify.
+- `filter_orders` (`orders/functions/list_orders.py`): `ShopifyOrder` sin
+  borrados, más reciente primero.
+  - `marketplace`: por el campo.
+  - Fechas: días de Colombia sobre `shopify_created_at`.
+  - `search`: `name` sin `#`, o un `marketplace_order_number` de
+    `MarketplaceOrder`.
+  - Paginación: `OrderPagination` (`page`, `page_size` hasta 50).
+- `format_orders` completa la página con `MarketplaceOrder` (unido por
+  `shopify_order_id`, indexado, una consulta por página).
+  - **Cliente**: el comprador real de la fila local; sin fila, el cliente
+    de Shopify (cédula de `defaultAddress.company`, email y teléfono del
+    pedido).
+  - **Marketplace**: el de la fila local; si no hay, el guardado desde las
+    etiquetas.
+  - Un pack de Mercado Libre es un solo pedido con varios
+    `marketplace_order_numbers`.
+  - **Bodega** (`fulfillment`): `fulfillment_status`,
+    `fulfillment_location_id`, `fulfillment_location_name` y
+    `fulfillment_note` de la fila local, tal cual. Con `novedad` la bodega
+    va vacía y `note` trae el motivo. Sin fila local (tienda web), todo
+    vacío: este sistema no evaluó la bodega.
+- `list_orders_not_created` (`orders/functions/list_orders_not_created.py`):
+  solo base de datos. Regla en `NOT_CREATED`: sin `shopify_order_id` y en
+  `error_creando_orden`, `error_creando_cliente`, `procesando`, o
+  `pending` con `error_description`. El error sale tal cual. Hasta 200,
+  con el conteo real.
+- `last_synced_at`: el checkpoint de la reconciliación, para mostrar qué
+  tan fresca está la copia.
+- `order_listing_format.py`: formato común (comprador, bodega, importes con
+  `Decimal`, rango de días).
+
 ## Bodega de despacho
 
 Plan: [`../implementations-plans/shopify-inventory-by-location.md`](../implementations-plans/shopify-inventory-by-location.md).
@@ -350,6 +452,27 @@ reportan; falla temprano sin cliente fijo o sin fecha de corte;
 `ProcessType` sembrado. Kits (en las pruebas de Madecentro): una línea por
 componente con precio repartido, componente inexistente en Shopify y kit
 vacío.
+
+Copia local de Shopify (Shopify simulado):
+- `upsert_shopify_order`: crea con líneas y marketplace desde etiquetas,
+  reemplaza líneas, no pisa con un dato más viejo, no revive un borrado,
+  relee un pedido truncado (y lo marca borrado si ya no existe), reintenta
+  ante `IntegrityError`.
+- Proceso del webhook: crea y actualiza releyendo; `orders/delete` marca
+  sin leer; pedido inexistente cuenta como borrado.
+- Webhook: firma válida lanza el proceso solo con tema e id; firma inválida
+  o ausente → `403`; tema desconocido o sin id → `200` sin lanzar.
+- Carga y reconciliación: todas las páginas por `UPDATED_AT`, ventana por
+  defecto, checkpoint con solape, checkpoint que no avanza si se cancela o
+  falla, `ProcessType` sembrados.
+
+Listado (con Shopify bloqueado: falla si se llama): ambas listas desde la
+base, comprador real, números y bodega desde `MarketplaceOrder`, pedido
+web, pack de Mercado Libre, cada filtro, excluye borrados, orden,
+paginación por página con `last_synced_at`, consultas que no crecen con
+los pedidos, `403` sin sesión o rol, `400` por parámetro y `404` por
+página inexistente. Pedidos no creados: estados incluidos y excluidos,
+error, ítems y total, filtros, tope con conteo, sin N+1.
 
 La prueba `test_process_registered_in_orchestrator_registry`
 falla hoy: `orchestrator/registrations.py` solo se carga con

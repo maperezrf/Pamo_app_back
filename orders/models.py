@@ -75,7 +75,7 @@ class MarketplaceOrder(models.Model):
     error_description = models.TextField(blank=True)
 
     shopify_customer_id = models.CharField(max_length=32, blank=True)
-    shopify_order_id = models.CharField(max_length=32, blank=True)
+    shopify_order_id = models.CharField(max_length=32, blank=True, db_index=True)
     shopify_order_name = models.CharField(max_length=32, blank=True)
 
     # Bodega de despacho: una por pedido (el marketplace da una guía por
@@ -127,3 +127,90 @@ class MarketplaceOrderItem(models.Model):
 
     def __str__(self):
         return f"{self.marketplace_sku} x{self.quantity}"
+
+
+class ShopifyOrder(models.Model):
+    """Copia local de un pedido de Shopify (todos los canales, también la
+    tienda web), para que el listado del frontend no dependa de Shopify en
+    vivo. La mantienen el webhook de pedidos y la reconciliación, siempre
+    con `functions/upsert_shopify_order.py` -- ver
+    docs/implementations-plans/shopify-orders-local-sync.md.
+
+    El comprador real de un pedido de marketplace NO está aquí (en Shopify
+    va a nombre del cliente fijo del canal): se cruza con `MarketplaceOrder`
+    por `shopify_order_id` al listar. `deleted_at` es borrado lógico: un
+    aviso tardío no revive un pedido borrado.
+    """
+
+    shopify_id = models.CharField(max_length=32, unique=True)
+    name = models.CharField(max_length=32, blank=True, db_index=True)
+    shopify_created_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    shopify_updated_at = models.DateTimeField(null=True, blank=True)
+    cancelled_at = models.DateTimeField(null=True, blank=True)
+    deleted_at = models.DateTimeField(null=True, blank=True)
+
+    financial_status = models.CharField(max_length=40, blank=True)
+    fulfillment_status = models.CharField(max_length=40, blank=True)
+    tags = models.JSONField(default=list, blank=True)
+    # Valor de `Marketplace` según las etiquetas, o "shopify" si no viene de
+    # un marketplace (tienda web, Addi, cotizaciones...).
+    marketplace = models.CharField(max_length=20, blank=True, db_index=True)
+
+    email = models.CharField(max_length=254, blank=True)
+    phone = models.CharField(max_length=32, blank=True)
+    total = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
+    currency = models.CharField(max_length=3, blank=True)
+
+    customer_id = models.CharField(max_length=32, blank=True)
+    customer_first_name = models.CharField(max_length=150, blank=True)
+    customer_last_name = models.CharField(max_length=150, blank=True)
+    customer_identification = models.CharField(max_length=32, blank=True)
+    customer_city = models.CharField(max_length=100, blank=True)
+    customer_region = models.CharField(max_length=100, blank=True)
+    customer_address = models.CharField(max_length=255, blank=True)
+
+    synced_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "Pedido de Shopify"
+        verbose_name_plural = "Pedidos de Shopify"
+
+    def __str__(self):
+        return self.name or self.shopify_id
+
+
+class ShopifyOrderLine(models.Model):
+    """Una línea de un `ShopifyOrder`. Se reemplazan todas en cada
+    actualización del pedido."""
+
+    order = models.ForeignKey(ShopifyOrder, related_name="lines", on_delete=models.CASCADE)
+    position = models.PositiveIntegerField()
+    sku = models.CharField(max_length=64, blank=True)
+    name = models.CharField(max_length=255, blank=True)
+    quantity = models.PositiveIntegerField()
+    unit_price = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
+    line_total = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
+
+    class Meta:
+        ordering = ["position"]
+        verbose_name = "Línea de pedido de Shopify"
+        verbose_name_plural = "Líneas de pedido de Shopify"
+
+    def __str__(self):
+        return f"{self.sku} x{self.quantity}"
+
+
+class ShopifyOrderSyncState(models.Model):
+    """Una sola fila (`pk=1`): checkpoint de la reconciliación de pedidos de
+    Shopify. `last_reconciled_at` es la hora en que EMPEZÓ la última
+    corrida que terminó bien -- no el máximo `shopify_updated_at` de la
+    tabla, que los webhooks adelantan y dejaría fuera un aviso perdido."""
+
+    last_reconciled_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        verbose_name = "Estado de sincronización de pedidos de Shopify"
+
+    @classmethod
+    def get(cls):
+        return cls.objects.get_or_create(pk=1)[0]

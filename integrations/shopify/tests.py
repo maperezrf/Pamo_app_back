@@ -18,6 +18,8 @@ from .functions.get_variant_by_sku import get_variant_by_sku
 from .functions.get_variant_inventory_by_sku import get_variant_inventory_by_sku
 from .functions.get_variants_by_skus import get_variants_by_skus
 from .functions.list_customers_page import list_customers_page
+from .functions.get_order import get_order
+from .functions.list_orders_page import list_orders_page
 from .functions.update_customer_address import update_customer_address
 
 
@@ -466,3 +468,136 @@ class GetVariantsBySkusTests(SimpleTestCase):
 
         with self.assertRaises(ShopifyGraphQLError):
             get_variants_by_skus(["A"])
+
+
+class ListOrdersPageTests(SimpleTestCase):
+    def _order(self, **overrides):
+        node = {
+            "id": "gid://shopify/Order/10",
+            "name": "20131",
+            "createdAt": "2026-10-03T15:00:00Z",
+            "updatedAt": "2026-10-04T15:00:00Z",
+            "cancelledAt": None,
+            "displayFinancialStatus": "PAID",
+            "displayFulfillmentStatus": "UNFULFILLED",
+            "tags": ["sodimac"],
+            "email": "ana@example.com",
+            "phone": None,
+            "totalPriceSet": {"shopMoney": {"amount": "200.0", "currencyCode": "COP"}},
+            "customer": {
+                "id": "gid://shopify/Customer/5",
+                "firstName": "Ana",
+                "lastName": None,
+                "defaultAddress": {"company": "1020", "city": "Bogotá", "province": "Cundinamarca", "address1": "Cra 1"},
+            },
+            "lineItems": {
+                "pageInfo": {"hasNextPage": False},
+                "nodes": [{"sku": "A1", "name": "Silla", "quantity": 2, "originalUnitPriceSet": {"shopMoney": {"amount": "100.0"}}}],
+            },
+        }
+        node.update(overrides)
+        return node
+
+    def _respond(self, mock_post, nodes, has_next=False):
+        mock_post.return_value.raise_for_status.return_value = None
+        mock_post.return_value.json.return_value = {
+            "data": {"orders": {"pageInfo": {"hasNextPage": has_next, "endCursor": "cur"}, "nodes": nodes}}
+        }
+
+    @patch("integrations.shopify.client.requests.post")
+    def test_normalizes_a_page(self, mock_post):
+        self._respond(mock_post, [self._order()], has_next=True)
+
+        result = list_orders_page(first=20, after="prev", query="updated_at:>='x'", sort_key="UPDATED_AT", reverse=False)
+
+        variables = mock_post.call_args.kwargs["json"]["variables"]
+        self.assertEqual(
+            variables,
+            {"first": 20, "after": "prev", "query": "updated_at:>='x'", "sortKey": "UPDATED_AT", "reverse": False},
+        )
+        self.assertTrue(result["has_next_page"])
+        self.assertEqual(result["end_cursor"], "cur")
+        order = result["orders"][0]
+        self.assertEqual(order["id"], "10")
+        self.assertEqual(order["updated_at"], "2026-10-04T15:00:00Z")
+        self.assertIsNone(order["cancelled_at"])
+        self.assertEqual(order["phone"], "")
+        self.assertEqual(order["total"], "200.0")
+        self.assertEqual(order["currency"], "COP")
+        self.assertEqual(
+            order["customer"],
+            {"id": "5", "first_name": "Ana", "last_name": "", "identification": "1020",
+             "city": "Bogotá", "region": "Cundinamarca", "address": "Cra 1"},
+        )
+        self.assertEqual(order["line_items"], [{"sku": "A1", "name": "Silla", "quantity": 2, "unit_price": "100.0"}])
+        self.assertFalse(order["line_items_truncated"])
+
+    @patch("integrations.shopify.client.requests.post")
+    def test_order_without_customer_and_truncated_lines(self, mock_post):
+        lines = {"pageInfo": {"hasNextPage": True}, "nodes": []}
+        self._respond(mock_post, [self._order(customer=None, lineItems=lines)])
+
+        order = list_orders_page(first=20)["orders"][0]
+
+        self.assertIsNone(order["customer"])
+        self.assertTrue(order["line_items_truncated"])
+        self.assertIsNone(mock_post.call_args.kwargs["json"]["variables"]["query"])
+
+    @patch("integrations.shopify.client.requests.post")
+    def test_graphql_error_propagates(self, mock_post):
+        mock_post.return_value.raise_for_status.return_value = None
+        mock_post.return_value.json.return_value = {"errors": [{"message": "Access denied"}]}
+
+        with self.assertRaises(ShopifyGraphQLError):
+            list_orders_page(first=20)
+
+    @patch("integrations.shopify.client.requests.post")
+    def test_defaults_to_newest_created_first(self, mock_post):
+        self._respond(mock_post, [])
+
+        list_orders_page(first=5)
+
+        variables = mock_post.call_args.kwargs["json"]["variables"]
+        self.assertEqual((variables["sortKey"], variables["reverse"]), ("CREATED_AT", True))
+
+
+class GetOrderTests(SimpleTestCase):
+    def _order(self, nodes, has_next=False, cursor=None):
+        return {
+            "data": {
+                "order": {
+                    "id": "gid://shopify/Order/10",
+                    "name": "20131",
+                    "updatedAt": "2026-10-04T15:00:00Z",
+                    "tags": ["sodimac"],
+                    "customer": None,
+                    "lineItems": {"pageInfo": {"hasNextPage": has_next, "endCursor": cursor}, "nodes": nodes},
+                }
+            }
+        }
+
+    def _line(self, sku):
+        return {"sku": sku, "name": sku, "quantity": 1, "originalUnitPriceSet": {"shopMoney": {"amount": "1.0"}}}
+
+    @patch("integrations.shopify.client.requests.post")
+    def test_reads_every_line_page(self, mock_post):
+        mock_post.return_value.raise_for_status.return_value = None
+        mock_post.return_value.json.side_effect = [
+            self._order([self._line("A")], has_next=True, cursor="l1"),
+            self._order([self._line("B")]),
+        ]
+
+        order = get_order("10")
+
+        self.assertEqual([line["sku"] for line in order["line_items"]], ["A", "B"])
+        self.assertFalse(order["line_items_truncated"])
+        first, second = (call.kwargs["json"]["variables"] for call in mock_post.call_args_list)
+        self.assertEqual(first, {"id": "gid://shopify/Order/10", "linesAfter": None})
+        self.assertEqual(second["linesAfter"], "l1")
+
+    @patch("integrations.shopify.client.requests.post")
+    def test_missing_order_returns_none(self, mock_post):
+        mock_post.return_value.raise_for_status.return_value = None
+        mock_post.return_value.json.return_value = {"data": {"order": None}}
+
+        self.assertIsNone(get_order("1"))

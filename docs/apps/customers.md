@@ -54,8 +54,12 @@ Ver `docs/patterns/PROVIDER_WEBHOOKS.md`.
 
 ## Puntos abiertos
 
-- Suscribir el webhook en Shopify (`webhookSubscriptionCreate`) requiere
-  una URL pública HTTPS — pendiente, no disponible en desarrollo local. El
+- Suscribir el webhook en Shopify requiere una URL pública HTTPS. Los
+  webhooks de Shopify se crean desde el admin (Configuración → Notificaciones → Webhooks),
+  no por API: así todos se firman con la clave que muestra esa pantalla, que
+  es la que debe tener `SHOPIFY_WEBHOOK_SECRET`. Por API no se puede saber
+  si ya existe: `webhookSubscriptions` solo lista las suscripciones creadas
+  por la propia app, no las del admin. El
   endpoint y la verificación de firma están construidos y probados con
   payloads simulados, pero no se probó la entrega real de un webhook.
 - La forma exacta del payload REST de `customers/create`/`customers/update`

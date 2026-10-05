@@ -166,3 +166,102 @@ query GetVariantsBySkus($query: String!, $cursor: String) {
   }
 }
 """.strip()
+
+
+# Pedidos (app `orders`: copia local sincronizada por webhook y
+# reconciliación). Campos verificados por introspección contra la tienda real
+# el 2026-10-05. Email y teléfono se leen del pedido (`Order.email`/`phone`):
+# en `Customer` están deprecados. Costo medido de `LIST_ORDERS_PAGE`: 72
+# puntos con `first: 50` (límite 1000). `ORDER_FIELDS` lo comparten
+# `LIST_ORDERS_PAGE` y `GET_ORDER` para que las dos se normalicen igual.
+ORDER_FIELDS = """
+fragment OrderFields on Order {
+  id
+  name
+  createdAt
+  updatedAt
+  cancelledAt
+  displayFinancialStatus
+  displayFulfillmentStatus
+  tags
+  email
+  phone
+  totalPriceSet {
+    shopMoney {
+      amount
+      currencyCode
+    }
+  }
+  customer {
+    id
+    firstName
+    lastName
+    defaultAddress {
+      company
+      city
+      province
+      address1
+    }
+  }
+}
+
+fragment LineItemFields on LineItem {
+  sku
+  name
+  quantity
+  originalUnitPriceSet {
+    shopMoney {
+      amount
+    }
+  }
+}
+""".strip()
+
+LIST_ORDERS_PAGE = (
+    """
+query ListOrdersPage($first: Int!, $after: String, $query: String, $sortKey: OrderSortKeys!, $reverse: Boolean!) {
+  orders(first: $first, after: $after, query: $query, sortKey: $sortKey, reverse: $reverse) {
+    pageInfo {
+      hasNextPage
+      endCursor
+    }
+    nodes {
+      ...OrderFields
+      lineItems(first: 30) {
+        pageInfo {
+          hasNextPage
+        }
+        nodes {
+          ...LineItemFields
+        }
+      }
+    }
+  }
+}
+""".strip()
+    + "\n\n"
+    + ORDER_FIELDS
+)
+
+# Un pedido por id, con todas sus líneas (paginadas de a 100 con
+# `$linesAfter`). `order` devuelve `null` si el pedido no existe o se borró.
+GET_ORDER = (
+    """
+query GetOrder($id: ID!, $linesAfter: String) {
+  order(id: $id) {
+    ...OrderFields
+    lineItems(first: 100, after: $linesAfter) {
+      pageInfo {
+        hasNextPage
+        endCursor
+      }
+      nodes {
+        ...LineItemFields
+      }
+    }
+  }
+}
+""".strip()
+    + "\n\n"
+    + ORDER_FIELDS
+)
