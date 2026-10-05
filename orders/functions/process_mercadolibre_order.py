@@ -103,7 +103,8 @@ def _process(order_id, marker):
     for row in rows:
         if not row.items.exists():
             _create_items(row, fetched_by_id[row.marketplace_order_id]["items"])
-    process_shipment(rows, MERCADOLIBRE_SHOPIFY_CUSTOMER_ID)
+    # Decisión de negocio (2026-10-05): en Shopify, "No se requiere envío".
+    process_shipment(rows, MERCADOLIBRE_SHOPIFY_CUSTOMER_ID, requires_shipping=False)
     return MarketplaceOrder.objects.get(pk=marker.pk).status
 
 

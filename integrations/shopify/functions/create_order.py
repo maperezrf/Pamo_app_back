@@ -13,7 +13,7 @@ class ShopifyOrderCreationError(Exception):
         super().__init__(str(errors))
 
 
-def create_order(*, items, customer_id, financial_status, note="", tags=None, currency="COP"):
+def create_order(*, items, customer_id, financial_status, note="", tags=None, currency="COP", requires_shipping=True):
     """Crea un pedido en Shopify vía GraphQL (`orderCreate`).
 
     `items`: lista de {"variant_id": str, "quantity": int, "price": str}.
@@ -21,6 +21,8 @@ def create_order(*, items, customer_id, financial_status, note="", tags=None, cu
     que devuelve `get_variant_by_sku`.
     `customer_id`: id numérico del cliente en Shopify, también sin prefijo.
     `financial_status`: uno de FINANCIAL_STATUSES (ej. "PENDING", "PAID").
+    `requires_shipping`: va en cada línea (`requiresShipping`). Con `False`
+    Shopify la muestra como "No se requiere envío".
 
     Devuelve {"order_id": str, "order_name": str} (id sin prefijo) si
     Shopify confirma la creación.
@@ -43,9 +45,9 @@ def create_order(*, items, customer_id, financial_status, note="", tags=None, cu
             {
                 "variantId": f"gid://shopify/ProductVariant/{item['variant_id']}",
                 "quantity": int(item["quantity"]),
-                # Sin esto Shopify marca la línea "No se requiere envío".
-                # Todo pedido de marketplace se despacha (2026-10-02).
-                "requiresShipping": True,
+                # Explícito siempre: sin el campo Shopify marca la línea
+                # "No se requiere envío" (2026-10-02).
+                "requiresShipping": bool(requires_shipping),
                 "priceSet": {
                     "shopMoney": {"amount": str(item["price"]), "currencyCode": currency}
                 },

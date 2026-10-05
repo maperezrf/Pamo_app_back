@@ -27,7 +27,11 @@ requieren reglas, campos o normalización de una operación concreta.
   protocolo sea inválida.
 - No exponer secretos en excepciones, logs o respuestas de API.
 - Probar la capa de transporte con mocks; las pruebas ordinarias no llaman a
-  proveedores reales.
+  proveedores reales. `manage.py test` lo garantiza: corre con
+  `config.test_runner.NoNetworkTestRunner`, que bloquea `HTTPAdapter.send`
+  de `requests` y falla con `RealNetworkCallError` si una prueba olvida un
+  mock (las pruebas usan las credenciales reales de `.env`). Se mockea la
+  función de integración, no se desactiva el bloqueo.
 - Revisar funciones, consultas y cliente existentes antes de crear uno.
 
 ## Particularidades actuales

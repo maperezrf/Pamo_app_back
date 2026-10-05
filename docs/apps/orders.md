@@ -47,7 +47,10 @@ y
      acotar desde cuándo traer — útil para una primera corrida (ej. "desde
      hoy en adelante") en vez del lookback de 48h.
   2. `process_pending_orders`: por cada `MarketplaceOrder` **de
-     Falabella** pendiente, llama `process_shipment([order], cliente_fijo)`.
+     Falabella** sin orden y en `pending` / `error_creando_orden`, lo
+     reclama con `claim_orders` y llama `process_shipment([order],
+     cliente_fijo)`. Desde 2026-10-05 reclama como los demás canales: antes
+     reintentaba todo lo que no tuviera `shopify_order_id`.
      El `note` de la orden identifica al comprador real:
      `"Falabella #<numero> — <nombre> <apellido> CC <cedula>"`.
   3. `import_falabella_orders`: compone las dos etapas anteriores (ya no
@@ -86,7 +89,8 @@ y
   `MarketplaceOrderItem.marketplace_sku` conserva siempre el SKU del
   marketplace.
 - `claim_orders(marketplace, order_ids)` (`orders/functions/claim_orders.py`):
-  **reclamo atómico** compartido por Mercado Libre y Madecentro. Pasa a
+  **reclamo atómico** compartido por Falabella, Mercado Libre, Madecentro
+  y Sodimac. Pasa a
   `procesando` todas las órdenes del envío o ninguna, bajo bloqueo de
   fila, y solo si están en `RETRYABLE_STATUSES` (`pending` /
   `error_creando_orden`) sin `shopify_order_id`. Es lo que evita crear
@@ -356,8 +360,8 @@ Plan: [`../implementations-plans/shopify-inventory-by-location.md`](../implement
 | Estado | Significado |
 | --- | --- |
 | `pending` | Recién descubierto, no procesado todavía. En Mercado Libre también el marcador que deja el proceso antes de llamar a la API (si `error_description` tiene detalle, el proceso falló y la recuperación lo reintenta) y el pack que espera a sus demás órdenes (`error_description` empieza por "Envío incompleto"). |
-| `procesando` | Mercado Libre y Madecentro (`claim_orders`): reclamado por un proceso que está creando la orden en Shopify. Si se queda así, el proceso murió a mitad y no se sabe si la orden quedó creada: **revisar a mano** en Shopify y corregir la fila; nada lo reintenta solo. |
-| `error_creando_cliente` | **Obsoleto** — ningún código lo asigna desde el cambio a cliente fijo. Se conserva por filas históricas; como no tienen `shopify_order_id`, la siguiente corrida las reintenta. |
+| `procesando` | Todos los canales (`claim_orders`): reclamado por un proceso que está creando la orden en Shopify. Si se queda así, el proceso murió a mitad y no se sabe si la orden quedó creada: **revisar a mano** en Shopify y corregir la fila; nada lo reintenta solo. |
+| `error_creando_cliente` | **Obsoleto** — ningún código lo asigna desde el cambio a cliente fijo. Se conserva por filas históricas (ninguna de Falabella al 2026-10-05). No se reintenta solo: no está en `RETRYABLE_STATUSES`. |
 | `error_creando_orden` | Falló la creación de la orden (SKU sin resolver, o Shopify rechazó la orden). `error_description` tiene el detalle. |
 | `orden_creada` | Éxito — `shopify_order_id`/`shopify_order_name` quedan guardados junto con `marketplace_order_number`. |
 
@@ -368,29 +372,53 @@ Plan: [`../implementations-plans/shopify-inventory-by-location.md`](../implement
 - `financial_status="PAID"` es el valor por defecto de `process_shipment`:
   los pedidos de marketplace llegan ya pagados por el comprador, Shopify
   solo registra la venta. Excepción: Sodimac (`PENDING`, paga a crédito).
-- Toda línea de la orden va con `requiresShipping: true` (en
-  `integrations.shopify.create_order`, para todos los canales): sin ese
-  campo Shopify mostraba "No se requiere envío" (corregido 2026-10-02).
+- **Despacho en Shopify** (`requiresShipping` en cada línea, vía
+  `process_shipment(..., requires_shipping=)` → `create_order`):
+  Mercado Libre va **sin despacho** ("No se requiere envío", decisión de
+  negocio del 2026-10-05); Madecentro, Sodimac y Falabella, **con
+  despacho**. El campo se envía siempre explícito: sin él Shopify mostraba
+  "No se requiere envío" en todo (corregido 2026-10-02). Las órdenes
+  creadas antes del cambio no se modifican.
 - El número de orden del marketplace va en el `note` de la orden de
   Shopify (`"{marketplace} #{numero}"`) — no se usa un campo dedicado (no
   se verificó si existe uno).
-- **Riesgo conocido, sin resolver todavía para Falabella**: si
-  `create_order()` falla por red (no por rechazo de Shopify), no se sabe si
-  la orden quedó creada — `orderCreate` no tiene clave de idempotencia
-  propia. Con el criterio de "reintenta todo lo que no tenga
-  `shopify_order_id`", ese pedido se reintentaría en la próxima corrida sin
-  distinción, con riesgo de duplicarlo en Shopify. Ver el plan para el
-  detalle — es una decisión de negocio pendiente, no un olvido. **En
-  Mercado Libre no aplica**: el pedido queda en `procesando` y no se
-  reintenta solo.
+- **Idempotencia al crear en Shopify** (`orderCreate` no tiene clave de
+  idempotencia propia). Dos capas, en todos los canales:
+  1. **Misma base**: `claim_orders` deja el pedido en `procesando` antes de
+     llamar a Shopify. Si `create_order()` falla por red, no se sabe si la
+     orden quedó creada: el pedido se queda en `procesando` para revisión
+     manual y no se reintenta a ciegas. (Antes, Falabella lo reintentaba en
+     la corrida siguiente.)
+  2. **Otra base u otro proceso con la misma tienda**: cada orden lleva la
+     etiqueta `<marketplace>-<número>` (ej. `falabella-3254084998`; en un
+     pack, una por número). Antes de crear, `process_shipment` busca en
+     Shopify `tag:"<etiqueta>"` (`list_orders_page`); si ya existe una
+     orden, la vincula (`orden_creada` con ese id) y no crea otra. La
+     búsqueda de Shopify se indexa con unos segundos de retraso, así que no
+     reemplaza la capa 1. Las órdenes creadas antes del 2026-10-05 no
+     llevan esa etiqueta.
+
+  Origen: el 2026-10-05 el pedido de Falabella 3254084998 se creó 8 veces
+  (#20352–#20359, 10:36–10:37 UTC) con nuestro token y nuestra nota, pero
+  sin fila en la base de Railway ni ejecución del orquestador: un proceso
+  local con otra base contra la tienda real. La orden buena es #20360. Las
+  pruebas ya no pueden llamar a proveedores (ver "Pruebas").
 
 ## Pruebas
 
 `orders/tests.py`: cada etapa probada por separado con las dependencias
-externas mockeadas (nunca red real) — descubrimiento de pedidos nuevos sin
+externas mockeadas. `manage.py test` corre con
+`config.test_runner.NoNetworkTestRunner`, que hace fallar cualquier llamada
+HTTP real (las pruebas leen las credenciales reales de `.env`). Las clases
+que pasan por `process_shipment` heredan `NoExistingShopifyOrderMixin`
+(la búsqueda de la orden existente devuelve vacío; `self.mock_find_existing`
+la cambia). Cubre: descubrimiento de pedidos nuevos sin
 duplicar (con los datos de facturación del comprador), orden creada con el
 cliente fijo y el `note` del comprador, fallo temprano sin cliente fijo
-configurado, reintento de filas en `error_creando_cliente`, bodega
+configurado, reintento solo de `pending` / `error_creando_orden`
+(`procesando` y `error_creando_cliente` no se tocan), fallo de red al
+crear deja `procesando`, orden ya existente en Shopify vinculada sin crear
+otra, etiqueta por pedido (también en packs), bodega
 asignada/novedad (con la orden creada igual), snapshot de inventario,
 consulta de inventario con variant id cacheado, no pisar
 `resuelta_manual`, la regla de `select_fulfillment_location` caso por

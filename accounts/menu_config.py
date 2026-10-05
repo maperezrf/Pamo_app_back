@@ -16,9 +16,9 @@ MENU = [
         "submodulos": [],
     },
     {
-        "key": "pedidos",
+        "key": "orders",
         "label": "Pedidos",
-        "path": "/pedidos",
+        "path": "/orders",
         # Mismos roles que `orders.apis.ORDERS_LIST_ROLES` (GET /api/orders/).
         "roles": ["Admin", "Operaciones"],
         "submodulos": [],

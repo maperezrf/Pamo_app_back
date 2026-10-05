@@ -28,8 +28,8 @@ class MarketplaceOrder(models.Model):
         # docs/implementations-plans/mercadolibre-orders-import.md (decisión F).
         PROCESSING = "procesando", "Procesando"
         # Obsoleto: ya no se crean clientes en Shopify (todos los pedidos van
-        # al cliente fijo). Se conserva por las filas históricas; la próxima
-        # corrida las reintenta porque no tienen shopify_order_id.
+        # al cliente fijo). Se conserva por las filas históricas; no se
+        # reintenta solo (no está en claim_orders.RETRYABLE_STATUSES).
         ERROR_CUSTOMER = "error_creando_cliente", "Error al crear cliente"
         ERROR_ORDER = "error_creando_orden", "Error al crear orden"
         CREATED = "orden_creada", "Orden creada"

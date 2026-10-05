@@ -125,6 +125,10 @@ STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 
+# Pruebas: `manage.py test` bloquea toda llamada HTTP real a proveedores
+# (ver config/test_runner.py).
+TEST_RUNNER = "config.test_runner.NoNetworkTestRunner"
+
 # Django REST Framework
 # Defaults explícitos a propósito: cada APIView nueva parte de "requiere
 # sesión iniciada" salvo que declare lo contrario. Ver auditoría de pamo_web,

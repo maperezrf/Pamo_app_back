@@ -123,6 +123,20 @@ class FetchFalabellaOrdersTests(TestCase):
 
 
 FIXED_CUSTOMER_PATCH = "orders.functions.process_pending_orders.FALABELLA_SHOPIFY_CUSTOMER_ID"
+SHIPMENT_FIND_EXISTING = "orders.functions.process_shipment.list_orders_page"
+NO_SHOPIFY_ORDERS = {"orders": [], "has_next_page": False, "end_cursor": None}
+
+
+class NoExistingShopifyOrderMixin:
+    """`process_shipment` busca en Shopify, por la etiqueta del pedido, si
+    la orden ya existe antes de crearla. Por defecto, no existe;
+    `self.mock_find_existing` permite cambiarlo."""
+
+    def setUp(self):
+        super().setUp()
+        patcher = patch(SHIPMENT_FIND_EXISTING, return_value=NO_SHOPIFY_ORDERS)
+        self.mock_find_existing = patcher.start()
+        self.addCleanup(patcher.stop)
 PRIORITY_LOCATION_PATCH = "orders.functions.process_shipment.FULFILLMENT_PRIORITY_LOCATION_ID"
 ENVIA = {"location_id": "97615380757", "name": "Bodega Envia", "available": 25}
 PROVEEDORES = {"location_id": "94018535701", "name": "Proveedores", "available": 45}
@@ -139,7 +153,7 @@ def _inventory(variant_id="555", sku="SKU-1", tracked=True, locations=None):
 
 @patch(PRIORITY_LOCATION_PATCH, "97615380757")
 @patch(FIXED_CUSTOMER_PATCH, "999")
-class ProcessPendingOrdersTests(TestCase):
+class ProcessPendingOrdersTests(NoExistingShopifyOrderMixin, TestCase):
     def _make_order(self, **overrides):
         defaults = dict(
             marketplace=MarketplaceOrder.Marketplace.FALABELLA,
@@ -172,7 +186,8 @@ class ProcessPendingOrdersTests(TestCase):
         _, kwargs = mock_create_order.call_args
         self.assertEqual(kwargs["customer_id"], "999")
         self.assertEqual(kwargs["items"], [{"variant_id": "555", "quantity": 2, "price": "100.00"}])
-        self.assertEqual(kwargs["tags"], ["falabella"])
+        self.assertEqual(kwargs["tags"], ["falabella", "falabella-N-1"])
+        self.mock_find_existing.assert_called_once_with(first=1, query='tag:"falabella-N-1"')
         self.assertEqual(kwargs["note"], "Falabella #N-1 — Ana Gomez CC 123")
 
     @patch("orders.functions.process_shipment.create_order")
@@ -204,10 +219,26 @@ class ProcessPendingOrdersTests(TestCase):
 
     @patch("orders.functions.process_shipment.create_order")
     @patch("orders.functions.process_shipment.get_variant_inventory_by_sku")
-    def test_retries_an_order_left_in_the_obsolete_error_creando_cliente_state(
-        self, mock_variant, mock_create_order
-    ):
-        order = self._make_order(status=MarketplaceOrder.Status.ERROR_CUSTOMER, error_description="sin email")
+    def test_does_not_touch_orders_outside_the_retryable_states(self, mock_variant, mock_create_order):
+        # `procesando` (otra corrida o una que murió a mitad) y el obsoleto
+        # `error_creando_cliente` quedan para revisión manual.
+        processing = self._make_order(marketplace_order_id="1", status=MarketplaceOrder.Status.PROCESSING)
+        obsolete = self._make_order(
+            marketplace_order_id="2", status=MarketplaceOrder.Status.ERROR_CUSTOMER, error_description="sin email"
+        )
+
+        process_pending_orders()
+
+        mock_create_order.assert_not_called()
+        processing.refresh_from_db()
+        obsolete.refresh_from_db()
+        self.assertEqual(processing.status, MarketplaceOrder.Status.PROCESSING)
+        self.assertEqual(obsolete.status, MarketplaceOrder.Status.ERROR_CUSTOMER)
+
+    @patch("orders.functions.process_shipment.create_order")
+    @patch("orders.functions.process_shipment.get_variant_inventory_by_sku")
+    def test_retries_an_order_left_in_error_creando_orden(self, mock_variant, mock_create_order):
+        order = self._make_order(status=MarketplaceOrder.Status.ERROR_ORDER, error_description="SKU no encontrado")
         mock_variant.return_value = _inventory()
         mock_create_order.return_value = {"order_id": "777", "order_name": "#1001"}
 
@@ -216,6 +247,42 @@ class ProcessPendingOrdersTests(TestCase):
         order.refresh_from_db()
         self.assertEqual(order.status, MarketplaceOrder.Status.CREATED)
         self.assertEqual(order.error_description, "")
+
+    @patch("orders.functions.process_shipment.create_order")
+    @patch("orders.functions.process_shipment.get_variant_inventory_by_sku")
+    def test_network_failure_creating_the_order_leaves_it_processing(self, mock_variant, mock_create_order):
+        # No se sabe si la orden quedó creada: no se reintenta a ciegas.
+        order = self._make_order()
+        mock_variant.return_value = _inventory()
+        mock_create_order.side_effect = ConnectionError("timeout")
+
+        with self.assertRaises(ConnectionError):
+            process_pending_orders()
+
+        order.refresh_from_db()
+        self.assertEqual(order.status, MarketplaceOrder.Status.PROCESSING)
+        self.assertEqual(order.shopify_order_id, "")
+
+    @patch("orders.functions.process_shipment.create_order")
+    @patch("orders.functions.process_shipment.get_variant_inventory_by_sku")
+    def test_links_an_order_that_already_exists_in_shopify_instead_of_creating_another(
+        self, mock_variant, mock_create_order
+    ):
+        # Otro proceso (u otra base) ya la creó con la etiqueta del pedido.
+        order = self._make_order()
+        self.mock_find_existing.return_value = {
+            "orders": [{"id": "555000", "name": "#20360"}], "has_next_page": False, "end_cursor": None
+        }
+
+        process_pending_orders()
+
+        mock_create_order.assert_not_called()
+        mock_variant.assert_not_called()
+        order.refresh_from_db()
+        self.assertEqual(order.status, MarketplaceOrder.Status.CREATED)
+        self.assertEqual(order.shopify_order_id, "555000")
+        self.assertEqual(order.shopify_order_name, "#20360")
+        self.assertEqual(order.shopify_customer_id, "999")
 
     @patch("orders.functions.process_shipment.get_variant_inventory_by_sku")
     def test_marks_error_creando_orden_when_a_sku_does_not_resolve(self, mock_variant):
@@ -527,7 +594,7 @@ def _ml_shipment(logistic_type="cross_docking", items=None):
 @patch(f"{ML}.get_pack")
 @patch(f"{ML}.get_shipment", return_value=_ml_shipment())
 @patch(f"{ML}.get_order", return_value=_ml_order())
-class ProcessMercadoLibreOrderTests(TestCase):
+class ProcessMercadoLibreOrderTests(NoExistingShopifyOrderMixin, TestCase):
     def _process(self, order_id="2001"):
         from .functions.process_mercadolibre_order import process_mercadolibre_order
 
@@ -549,7 +616,8 @@ class ProcessMercadoLibreOrderTests(TestCase):
         self.assertEqual(order.items.get().marketplace_sku, "SKU-1")
         _, kwargs = create_order.call_args
         self.assertEqual(kwargs["customer_id"], "888")
-        self.assertEqual(kwargs["tags"], ["mercadolibre"])
+        self.assertEqual(kwargs["tags"], ["mercadolibre", "mercadolibre-2001"])
+        self.assertIs(kwargs["requires_shipping"], False)
         self.assertEqual(kwargs["note"], "Mercado Libre #2001 — Ana Pérez CC 100")
         get_pack.assert_not_called()
 
@@ -616,6 +684,8 @@ class ProcessMercadoLibreOrderTests(TestCase):
         create_order.assert_called_once()
         self.assertEqual(len(create_order.call_args.kwargs["items"]), 2)
         self.assertEqual(create_order.call_args.kwargs["note"], "Mercado Libre #P1 — Ana Pérez CC 100")
+        # Un pack comparte número: una sola etiqueta de pedido.
+        self.assertEqual(create_order.call_args.kwargs["tags"], ["mercadolibre", "mercadolibre-P1"])
         rows = MarketplaceOrder.objects.order_by("marketplace_order_id")
         self.assertEqual([row.shopify_order_id for row in rows], ["777", "777"])
         self.assertEqual({row.fulfillment_location_id for row in rows}, {"97615380757"})
@@ -922,7 +992,7 @@ def _mc_order(order_id="17707107", financial_status="paid", cancelled=False, ite
 @patch(SHIPMENT_CREATE_ORDER, return_value={"order_id": "777", "order_name": "#1001"})
 @patch(SHIPMENT_VARIANT, return_value=_inventory())
 @patch(f"{MC}.get_order", return_value=_mc_order())
-class ProcessMadecentroOrderTests(TestCase):
+class ProcessMadecentroOrderTests(NoExistingShopifyOrderMixin, TestCase):
     def _process(self, order_id="17707107"):
         from .functions.process_madecentro_order import process_madecentro_order
 
@@ -940,7 +1010,8 @@ class ProcessMadecentroOrderTests(TestCase):
         self.assertEqual((item.marketplace_sku, item.quantity, item.unit_price), ("SKU-1", 2, "221335"))
         kwargs = create_order.call_args.kwargs
         self.assertEqual(kwargs["customer_id"], "666")
-        self.assertEqual(kwargs["tags"], ["madecentro"])
+        self.assertEqual(kwargs["tags"], ["madecentro", "madecentro-1001114236"])
+        self.assertIs(kwargs["requires_shipping"], True)
         self.assertEqual(kwargs["note"], "Madecentro #1001114236 — Ana Gómez")
 
     def test_created_order_is_not_read_again(self, get_order, variant, create_order):
@@ -1218,7 +1289,7 @@ def _queue(type_1=None, type_4=None):
 @patch(SHIPMENT_VARIANT, return_value=_inventory())
 @patch(f"{SODI}.reinject_order")
 @patch(f"{SODI}.get_orders")
-class SyncSodimacOrdersTests(TestCase):
+class SyncSodimacOrdersTests(NoExistingShopifyOrderMixin, TestCase):
     def _sync(self, params=None):
         from .functions.sync_sodimac_orders import sync_sodimac_orders
 
@@ -1260,7 +1331,8 @@ class SyncSodimacOrdersTests(TestCase):
         self.assertEqual(kwargs["financial_status"], "PENDING")
         self.assertEqual(kwargs["customer_id"], "7247084421397")
         self.assertEqual(kwargs["note"], "Sodimac #9001")
-        self.assertEqual(kwargs["tags"], ["sodimac"])
+        self.assertEqual(kwargs["tags"], ["sodimac", "sodimac-9001"])
+        self.assertIs(kwargs["requires_shipping"], True)
         pamo_web.assert_called_once()
 
     def test_oc_is_saved_before_shopify_even_if_shopify_rejects_it(

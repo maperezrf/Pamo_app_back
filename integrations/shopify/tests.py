@@ -203,6 +203,16 @@ class CreateOrderTests(SimpleTestCase):
         self.assertEqual([line["requiresShipping"] for line in line_items], [True, True])
 
     @patch("integrations.shopify.client.requests.post")
+    def test_line_items_can_go_without_shipping(self, mock_post):
+        mock_post.return_value.json.return_value = {
+            "data": {"orderCreate": {"order": {"id": "gid://shopify/Order/1", "name": "#1"}, "userErrors": []}}
+        }
+        mock_post.return_value.raise_for_status.return_value = None
+        create_order(items=self._items() * 2, customer_id="42", financial_status="PAID", requires_shipping=False)
+        line_items = mock_post.call_args.kwargs["json"]["variables"]["order"]["lineItems"]
+        self.assertEqual([line["requiresShipping"] for line in line_items], [False, False])
+
+    @patch("integrations.shopify.client.requests.post")
     def test_raises_when_shopify_reports_user_errors(self, mock_post):
         mock_post.return_value.json.return_value = {
             "data": {

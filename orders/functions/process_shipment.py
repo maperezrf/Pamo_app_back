@@ -1,6 +1,7 @@
 from config.constants import FULFILLMENT_PRIORITY_LOCATION_ID
 from integrations.shopify.functions.create_order import ShopifyOrderCreationError, create_order
 from integrations.shopify.functions.get_variant_inventory_by_sku import get_variant_inventory_by_sku
+from integrations.shopify.functions.list_orders_page import list_orders_page
 from products.functions.expand_product import EmptyKitError, expand_product
 from products.functions.resolve_marketplace_sku import resolve_marketplace_sku
 
@@ -13,7 +14,7 @@ from .select_fulfillment_location import select_fulfillment_location
 FINANCIAL_STATUS = "PAID"
 
 
-def process_shipment(orders, customer_id, financial_status=FINANCIAL_STATUS):
+def process_shipment(orders, customer_id, financial_status=FINANCIAL_STATUS, requires_shipping=True):
     """Crea UNA orden de Shopify para las órdenes de marketplace de un mismo
     envío, a nombre del cliente fijo `customer_id`.
 
@@ -32,10 +33,23 @@ def process_shipment(orders, customer_id, financial_status=FINANCIAL_STATUS):
       crea igual (docs/implementations-plans/shopify-inventory-by-location.md).
     - Shopify rechaza la orden -> todas `error_creando_orden`.
     - Éxito -> todas `orden_creada` con el mismo `shopify_order_id`.
+    - `requires_shipping`: si las líneas de la orden requieren despacho en
+      Shopify. Mercado Libre llama con `False` (decisión de negocio,
+      2026-10-05); Madecentro, Sodimac y Falabella, con despacho (por
+      defecto).
+    - Ya existe en Shopify una orden con la etiqueta de alguno de los
+      pedidos (`<marketplace>-<número>`) -> se vincula esa orden, sin crear
+      otra. Cubre a otro proceso (u otra base) que ya la creó; ver
+      "Idempotencia" en docs/apps/orders.md.
 
     El resultado se guarda en cada orden; no devuelve nada.
     """
     orders = list(orders)
+    existing = _find_existing_order(orders)
+    if existing:
+        _mark_created(orders, customer_id, existing["id"], existing["name"])
+        return
+
     resolved = _resolve_line_items(orders)
     if resolved is None:
         return  # ya quedaron marcadas error_creando_orden
@@ -49,17 +63,44 @@ def process_shipment(orders, customer_id, financial_status=FINANCIAL_STATUS):
             customer_id=customer_id,
             financial_status=financial_status,
             note=_order_note(orders),
-            tags=[orders[0].marketplace],
+            tags=[orders[0].marketplace, *_order_keys(orders)],
+            requires_shipping=requires_shipping,
         )
     except ShopifyOrderCreationError as error:
         _mark_error(orders, str(error))
         return
 
+    _mark_created(orders, customer_id, result["order_id"], result["order_name"])
+
+
+def _order_numbers(orders):
+    # Números del marketplace del envío, sin repetir (un pack los comparte).
+    return list(dict.fromkeys(order.marketplace_order_number or order.marketplace_order_id for order in orders))
+
+
+def _order_keys(orders):
+    """Etiqueta única por pedido de marketplace (`falabella-3254084998`):
+    identifica en Shopify la orden de ese pedido, sin depender de la base
+    local."""
+    marketplace = orders[0].marketplace
+    return [f"{marketplace}-{number}" for number in _order_numbers(orders)]
+
+
+def _find_existing_order(orders):
+    """Orden de Shopify que ya lleva la etiqueta de alguno de los pedidos,
+    o None. La búsqueda de Shopify se indexa con unos segundos de retraso:
+    no reemplaza a `claim_orders` dentro de la misma base."""
+    query = " OR ".join(f'tag:"{key}"' for key in _order_keys(orders))
+    found = list_orders_page(first=1, query=query)["orders"]
+    return found[0] if found else None
+
+
+def _mark_created(orders, customer_id, shopify_order_id, shopify_order_name):
     for order in orders:
         order.status = MarketplaceOrder.Status.CREATED
         order.shopify_customer_id = customer_id
-        order.shopify_order_id = result["order_id"]
-        order.shopify_order_name = result["order_name"]
+        order.shopify_order_id = shopify_order_id
+        order.shopify_order_name = shopify_order_name
         order.error_description = ""
         order.save(
             update_fields=[
@@ -78,8 +119,7 @@ def _order_note(orders):
     # es lo que le dice al equipo quién compró realmente. Las órdenes de un
     # mismo envío son del mismo comprador; en un pack comparten número.
     first = orders[0]
-    numbers = list(dict.fromkeys(order.marketplace_order_number or order.marketplace_order_id for order in orders))
-    note = f"{first.get_marketplace_display()} #{', #'.join(numbers)}"
+    note = f"{first.get_marketplace_display()} #{', #'.join(_order_numbers(orders))}"
     buyer = " ".join(part for part in (first.customer_first_name, first.customer_last_name) if part)
     if buyer:
         note += f" — {buyer}"
