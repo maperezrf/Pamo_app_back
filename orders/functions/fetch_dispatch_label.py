@@ -8,7 +8,7 @@ from products.models import Marketplace
 from ..models import MarketplaceOrder
 
 
-def fetch_dispatch_label(order):
+def fetch_dispatch_label(order, *, force=False):
     """Guía del canal para el pedido de Shopify `order`.
 
     Devuelve ({"pdf": bytes, "tracking_number": str}, "") o (None, motivo)
@@ -17,9 +17,10 @@ def fetch_dispatch_label(order):
 
     Ojo: en Mercado Libre, descargar una guía que no se ha impreso
     (`ready_to_print`) la marca como impresa. Por eso va detrás de
-    `DISPATCH_FETCH_LABELS_ENABLED`.
+    `DISPATCH_FETCH_LABELS_ENABLED`. `force=True` (botón del panel, acción
+    explícita de una persona) la trae aunque el interruptor esté apagado.
     """
-    if not DISPATCH_FETCH_LABELS_ENABLED:
+    if not (DISPATCH_FETCH_LABELS_ENABLED or force):
         return None, "Descarga de guías apagada (DISPATCH_FETCH_LABELS_ENABLED)."
 
     row = MarketplaceOrder.objects.filter(shopify_order_id=order.shopify_id).order_by("id").first()

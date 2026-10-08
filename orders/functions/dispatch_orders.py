@@ -7,6 +7,8 @@ from django.utils import timezone
 from config.constants import DISPATCH_NOTIFICATIONS_ENABLED, DISPATCH_START_DATE
 
 from ..models import Dispatch, DispatchNotification, ShopifyOrder
+from integrations.envia.functions.download_label import download_label
+
 from .assign_dispatch_location import assign_dispatch_location
 from .dispatch_details import dispatch_details
 from .fetch_dispatch_label import fetch_dispatch_label
@@ -50,8 +52,15 @@ def dispatch_orders(params=None, progress_callback=None, cancellation_token=None
     return summary
 
 
-def process_order_dispatch(order):
-    """Avanza el despacho de un pedido lo que se pueda. Devuelve su estado."""
+def process_order_dispatch(order, *, manual=False):
+    """Avanza el despacho de un pedido lo que se pueda. Devuelve su estado.
+
+    `manual=True` es el botón "Notificar a proveedor" del panel: una persona
+    lo pide para un pedido, así que trae la guía y avisa aunque
+    `DISPATCH_FETCH_LABELS_ENABLED` / `DISPATCH_NOTIFICATIONS_ENABLED` estén
+    apagados (esos interruptores son de la automatización). Las escrituras
+    en Envía siguen sujetas a sus propios interruptores.
+    """
     dispatch = Dispatch.objects.filter(shopify_order=order).select_related("location").first()
 
     if order.cancelled_at:
@@ -73,15 +82,19 @@ def process_order_dispatch(order):
         return _save(dispatch, Dispatch.Status.MANUAL, f"{location.name} no tiene canales de aviso configurados.")
 
     label = None
-    if location.requires_label:
-        label, reason = fetch_dispatch_label(order)
+    if dispatch.label_source == Dispatch.LabelSource.ENVIA and dispatch.label_url:
+        # Guía generada en Envía: se vuelve a bajar, nunca se genera otra.
+        label = {"pdf": download_label(dispatch.label_url), "tracking_number": dispatch.tracking_number}
+    elif location.requires_label:
+        label, reason = fetch_dispatch_label(order, force=manual)
         if label is None:
             return _save(dispatch, Dispatch.Status.WAITING_LABEL, reason)
         dispatch.tracking_number = label["tracking_number"]
+        dispatch.label_source = Dispatch.LabelSource.CHANNEL
         dispatch.label_sha256 = hashlib.sha256(label["pdf"]).hexdigest()
         dispatch.label_fetched_at = timezone.now()
 
-    if not DISPATCH_NOTIFICATIONS_ENABLED:
+    if not (DISPATCH_NOTIFICATIONS_ENABLED or manual):
         return _save(dispatch, Dispatch.Status.READY, "Avisos apagados (DISPATCH_NOTIFICATIONS_ENABLED).")
 
     details = dispatch_details(order)
@@ -89,6 +102,11 @@ def process_order_dispatch(order):
     if all(status == DispatchNotification.Status.SENT for status in results):
         return _save(dispatch, Dispatch.Status.NOTIFIED, "")
     return _save(dispatch, Dispatch.Status.ERROR, "Algún aviso no se pudo enviar; ver los avisos del despacho.")
+
+
+def ensure_dispatch(order):
+    """El despacho del pedido, creándolo (con su bodega) si no existe."""
+    return Dispatch.objects.filter(shopify_order=order).select_related("location").first() or _create(order)
 
 
 def _create(order):

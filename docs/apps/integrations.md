@@ -76,7 +76,9 @@ seller id; es estado de conexión, no información de clientes o facturas.
   `run_sodimac_invoicing()`, que llama a `POST /pamo_bots/sodimac/invoices`
   para que `pamo_web` facture sus OC de Sodimac antiguas. Se quita al
   terminar la convivencia (ver "Sodimac" en [`orders.md`](orders.md)).
-- `envia/`: cliente REST, cotización y validación de payload logístico.
+- `envia/`: API de Shipping de Envía: cliente REST, validación del payload,
+  cotización (`quote`), generación de guía (`create_label`, bloqueada sin
+  `ENVIA_WRITES_ENABLED`) y descarga del PDF (`download_label`).
 - `envia_fulfillment/`: cliente REST de Envía Fulfillment (otra API que
   `envia/`), lecturas de bodegas y órdenes, y creación de órdenes con la
   guía adjunta. Escrituras apagadas por defecto. En construcción.

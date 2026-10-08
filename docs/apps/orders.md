@@ -414,7 +414,27 @@ Envía: Envía es una bodega más, avisada por API.
   - `api`: `integrations.envia_fulfillment.create_order`. **Bloqueado**:
     falla hasta resolver el cruce SKU → `variantId` de Envía, y además el
     cliente de Envía bloquea escrituras sin `ENVIA_FULFILLMENT_WRITES_ENABLED`.
+- **Acciones manuales del panel** (`orders/functions/dispatch_actions.py`,
+  endpoints `POST /api/orders/<id>/dispatch/...` en el contrato), para
+  probar el flujo de forma controlada mientras no se automatiza:
+  - "Notificar a proveedor": `process_order_dispatch(order, manual=True)`
+    (trae la guía y avisa aunque `DISPATCH_*_ENABLED` estén apagados).
+  - "Traer guía" (Mercado Libre, Falabella): guía del canal.
+  - "Generar guía" (tienda web, Addi, cotizaciones): cotiza y genera en Envía
+    Shipping desde la dirección de la bodega (copiada de Shopify al
+    sincronizar bodegas) a la dirección de envío del pedido (consultada a
+    Shopify), paquete por defecto 1 kg 10×10×10. La guía generada queda en
+    el despacho (`label_source="envia"`, `label_url`) y no se repite.
+  - Aviso por **API de Envía**: busca primero la orden en Envía (nuestro
+    identificador o número de Shopify, recorriendo el listado por fecha con
+    `find_order`) y la vincula si existe (le carga la guía si no tiene); si
+    no, la crea con `find_variant_ids` (SKU → `variantId` por el inventario
+    de Envía) y el código de departamento (`resolve_colombia_state`).
+  - Las escrituras siguen sujetas a `ENVIA_WRITES_ENABLED` (guías) y
+    `ENVIA_FULFILLMENT_WRITES_ENABLED` (órdenes).
 - Listado: `GET /api/orders/` trae `dispatch` por pedido (ver el contrato).
+- Correo: `python manage.py send_test_email <correo>` prueba el SMTP
+  configurado (local y Railway).
 - Pruebas: `orders/tests_dispatch.py`.
 
 ## Bodega de despacho

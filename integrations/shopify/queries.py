@@ -278,8 +278,36 @@ query ListLocations {
       name
       isActive
       address {
+        address1
         city
+        provinceCode
+        zip
+        phone
       }
+    }
+  }
+}
+"""
+
+
+# Dirección de envío de UN pedido. Aparte de `ORDER_FIELDS` para no
+# encarecer la sincronización: solo la pide el despacho (guía y orden en
+# Envía) de un pedido puntual. Campos de `MailingAddress`.
+GET_ORDER_SHIPPING_ADDRESS = """
+query GetOrderShippingAddress($id: ID!) {
+  order(id: $id) {
+    id
+    shippingAddress {
+      firstName
+      lastName
+      company
+      address1
+      address2
+      city
+      province
+      provinceCode
+      zip
+      phone
     }
   }
 }

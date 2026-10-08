@@ -23,6 +23,62 @@ pasa a ser una parte de este.
 5. **Los pedidos de la tienda web entran al mismo flujo**: se les asigna
    bodega y se notifican igual que los de marketplace.
 
+## Decisiones confirmadas por el usuario (2026-10-08)
+
+Tras la prueba real con Sodimac
+([`sodimac-envia-fulfillment-test.md`](sodimac-envia-fulfillment-test.md)):
+
+1. **Reemplazar lo que hacía la conexión de tiendas en Envía**, antes de
+   quitarla:
+   - stock: leerlo de la API de Envía (`warehouse/inventory`) y escribirlo
+     en los SKU de Shopify (ubicación "Bodega Envia");
+   - productos: webhooks de productos de Shopify (crear, modificar,
+     eliminar) para mantener el catálogo de Envía;
+   - empalme con operaciones: reporte de qué hay en Envía y qué falta, y
+     crear desde aquí lo que se pueda.
+2. **Reglas por canal**:
+   - **Sodimac**: todo pasa a Envía. La guía (rótulo + relación/remesa) la
+     sube el agente de operaciones por un **endpoint propio** (temporal,
+     hasta un RPA).
+   - **Mercado Libre**: se quita su tienda de Envía; se crea en Shopify como
+     hoy **y** en Envía con la guía de ML. Stock por bodega por API y tabla
+     de equivalencias nodo de ML ↔ bodega de Shopify (no bloquea).
+   - **Cotizaciones** (Draft Orders): entran solo si se vuelven pedido y
+     están pagadas.
+   - **Addi**: pendiente. Llega sola a Shopify (app "Addi-Marketplace",
+     ~2 pedidos/día, casi todos pagados), así que el webhook de pedidos ya
+     la ve; falta decidir su tratamiento.
+   - **Contraentrega**: pendiente de las reglas de operaciones.
+3. **Guías por API (API de Shipping de Envía)**: por ahora solo probar que
+   se pueden generar, con varias bodegas de origen y los parámetros de
+   `pamo-one`.
+4. **En pausa**: notificaciones a proveedores, carga de stock de
+   proveedores y el resto.
+
+**Fase A, avance (2026-10-08)**: `integrations/envia/` (API de Shipping)
+cotiza con el token de Shipping que ya usaba `pamo-one`
+(`ENVIA_SHIPPING_API_TOKEN` de su Railway → aquí `ENVIA_API_TOKEN`; el de
+Fulfillment no sirve: `401`). Cotización real desde **Bodega Envia**
+(Bogotá) y **Baru** (Itagüí) a Medellín, 1 kg 10×10×10: el precio cambia con
+el origen (ej. Servientrega premier $33.810 vs $20.070). Transportadoras que
+cotizan con la cuenta: TCC (mensajería $13.840), Interrapidísimo,
+Coordinadora y Servientrega (`servientrega` o `serviEntrega`); Deprisa,
+`envia` y LastMile no. `ENVIA_ALLOWED_CARRIERS` venía solo con
+`servientrega` (copiado de `pamo-one`). Generación portada
+(`create_label` + `download_label`, bloqueada sin `ENVIA_WRITES_ENABLED`,
+con pruebas sin red); **no se ha generado ninguna guía**: la prueba real
+(cobra) espera autorización del usuario. El origen de cada bodega sale de su dirección en Shopify
+(`locations`; a "Bodega Compa" le faltan teléfono y postal, a "Taumm" el
+postal); la ciudad va como código DANE de 8 dígitos (Bogotá `11001000`,
+Itagüí `05360000`, Medellín `05001000`); paquete de referencia de
+`pamo-one`: 1 kg, 10×10×10 cm, PDF 4×6.
+
+Orden de trabajo: **A** probar guías por API (cotizar desde dos bodegas y
+luego generar una guía de prueba, con autorización) → **B** endpoint de
+guías de Sodimac → **C** stock de Envía → Shopify, webhooks de productos y
+empalme; después quitar las tiendas en Envía → **D** Mercado Libre por este
+flujo.
+
 ## Objetivo
 
 Para cada pedido que llega a Shopify (marketplace o tienda web):

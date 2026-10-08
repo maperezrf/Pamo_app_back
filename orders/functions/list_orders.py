@@ -78,11 +78,11 @@ def _format_order(order, rows):
         ],
         "total": money_str(order.total),
         "currency": order.currency,
-        "dispatch": _format_dispatch(order),
+        "dispatch": format_dispatch(order),
     }
 
 
-def _format_dispatch(order):
+def format_dispatch(order):
     """Despacho a bodega (`Dispatch`), o None si el proceso aún no lo creó
     (pedidos anteriores a `DISPATCH_START_DATE` nunca lo tienen)."""
     try:
@@ -94,11 +94,15 @@ def _format_dispatch(order):
         "location_name": dispatch.location.name if dispatch.location else "",
         "note": dispatch.note,
         "tracking_number": dispatch.tracking_number,
+        "label_source": dispatch.label_source,
+        "label_carrier": dispatch.label_carrier,
+        "label_service": dispatch.label_service,
         "notifications": [
             {
                 "channel": notification.channel,
                 "status": notification.status,
                 "recipient": notification.recipient,
+                "external_id": notification.external_id,
                 "sent_at": _iso(notification.sent_at),
                 "error": notification.error_description,
             }

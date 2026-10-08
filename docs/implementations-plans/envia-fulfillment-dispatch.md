@@ -12,6 +12,15 @@ como "abierta".
 
 ## Avance
 
+- 2026-10-08 — **Primera escritura real: 2 órdenes de Sodimac creadas en
+  Envía** (49684722 y 49684814) con su guía TCC (pre-tracking) y su remesa
+  (comentario con PDF), bodega 311. Detalle, resultados y lo aprendido
+  (`shopId`, apellido y código de departamento obligatorios; SKU →
+  `variantId` por `warehouse/inventory`) en
+  [`sodimac-envia-fulfillment-test.md`](sodimac-envia-fulfillment-test.md).
+  `add_order_comment` nuevo. El sync de Sodimac sigue **pausado** desde el
+  2026-10-07.
+
 - 2026-10-07 — **Guías de los canales** (fase 1, parcial):
   `integrations/mercadolibre/functions/get_shipment_label.py`
   (`get_shipment_label`, `is_label_available`; `MercadoLibreClient.get_bytes`
@@ -111,7 +120,7 @@ paginación y el filtro por SKU de los productos; si Envía rechaza un
 | Qué envíos van a Envía | Solo los asignados a la bodega de Envía. **Abierta**: en Mercado Libre, ¿manda el nodo de origen de ML o nuestra `fulfillment_location`? Hoy pueden no coincidir. Operaciones debe decir qué nodo de ML es la bodega de Envía. | Abierta |
 | Momento | Después de que la orden está creada en Shopify y la guía está disponible. Proceso programado cada pocos minutos, no en el webhook. | Propuesta |
 | Cliente en Envía | `shippingAddress` + `email`, sin crear clientes en Envía. **Abierta**: Mercado Libre casi nunca da correo; ¿se usa un correo fijo por canal? | Abierta |
-| `orderIdentifier` | `<marketplace>-<número>` (el mismo que la etiqueta de Shopify, ver "Idempotencia" en `../apps/orders.md`). | Propuesta |
+| `orderIdentifier` | Solo el número del pedido en el canal (OC de Sodimac, número de Mercado Libre...) o, en la tienda web, el de Shopify, **sin prefijo**: operaciones lo pidió el 2026-10-08 al ver `sodimac-16200704` en el panel. Envía no permite cambiarlo una vez la orden está en bodega (`PUT` → 409). La unicidad la da `DispatchNotification`. | Confirmada |
 | Integraciones nativas | Se apagan **por canal** antes de activar el nuestro, para no duplicar órdenes en Envía (lección de Falabella en Shopify, 2026-10-05). | Requisito |
 | Paquete de Falabella | El paquete (y su guía) lo crean hoy Seller Center u operaciones. Fase 1 **no** llama `SetStatusToReadyToShip`; espera el paquete. **Abierta**: quién lo crea cuando se apague el conector nativo. | Abierta |
 

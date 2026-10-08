@@ -252,6 +252,12 @@ class DispatchLocation(models.Model):
     )
     # No avisar hasta tener la guía del canal (Mercado Libre, Falabella).
     requires_label = models.BooleanField("Exige guía", default=True)
+    # Dirección de origen para generar guías (Envía Shipping). La copia
+    # `sync_dispatch_locations` desde la ubicación de Shopify.
+    origin_address = models.CharField(max_length=255, blank=True)
+    origin_province_code = models.CharField(max_length=8, blank=True)
+    origin_zip = models.CharField(max_length=16, blank=True)
+    origin_phone = models.CharField(max_length=32, blank=True)
 
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -314,7 +320,17 @@ class Dispatch(models.Model):
     status = models.CharField(max_length=20, choices=Status.choices, db_index=True)
     # Motivo legible del estado (novedad de bodega, por qué es manual...).
     note = models.TextField(blank=True)
+    class LabelSource(models.TextChoices):
+        CHANNEL = "canal", "Del canal"
+        ENVIA = "envia", "Generada en Envía"
+
     tracking_number = models.CharField(max_length=64, blank=True)
+    label_source = models.CharField(max_length=10, choices=LabelSource.choices, blank=True)
+    # Solo guías generadas en Envía: se vuelven a bajar de aquí (una guía del
+    # canal se vuelve a pedir al canal). Una guía generada no se repite.
+    label_url = models.TextField(blank=True)
+    label_carrier = models.CharField(max_length=40, blank=True)
+    label_service = models.CharField(max_length=60, blank=True)
     label_sha256 = models.CharField(max_length=64, blank=True)
     label_fetched_at = models.DateTimeField(null=True, blank=True)
 

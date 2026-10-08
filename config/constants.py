@@ -96,6 +96,9 @@ SIIGO_API_BASE_URL = config("SIIGO_API_BASE_URL")
 ENVIA_API_TOKEN = config("ENVIA_API_TOKEN")
 ENVIA_ENVIRONMENT = config("ENVIA_ENVIRONMENT", default="sandbox")
 ENVIA_ALLOWED_CARRIERS = config("ENVIA_ALLOWED_CARRIERS", default="", cast=Csv())
+# Generar una guía (`/ship/generate/`) COBRA el envío a la cuenta de Envía:
+# bloqueado sin este interruptor. Cotizar no lo necesita.
+ENVIA_WRITES_ENABLED = config("ENVIA_WRITES_ENABLED", default=False, cast=bool)
 
 # ENVÍA FULFILLMENT (integrations/envia_fulfillment/, en construcción) -- otra
 # API y otro token que la de Shipping de arriba. Ver

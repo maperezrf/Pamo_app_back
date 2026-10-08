@@ -45,6 +45,10 @@ class EnviaClient:
         try:
             payload = json.loads(response.content.decode("utf-8"))
         except (UnicodeError, ValueError) as error:
+            # Un 401 llega como texto ("Authentication error."): reportar el
+            # código HTTP, no "respuesta inválida".
+            if not 200 <= response.status_code < 300:
+                raise EnviaAPIError(f"ENVIA_HTTP_{response.status_code}") from error
             raise EnviaAPIError("ENVIA_RESPONSE_INVALID") from error
         if not isinstance(payload, dict):
             raise EnviaAPIError("ENVIA_RESPONSE_INVALID")

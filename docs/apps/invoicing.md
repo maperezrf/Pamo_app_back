@@ -86,9 +86,10 @@ guardado del token fallaba en `SiigoClient._valid_token()`, que corre al
 armar los headers, **antes** de enviar la factura. Ninguna llegó a Siigo,
 aunque el proceso las marcó "resultado incierto" (regla general ante una
 excepción). Corregido con `token` como `TextField`
-(`integrations/migrations/0003_siigo_token_text.py`). Al desplegar, esas 5
-filas siguen en `creando` y no se reintentan solas: pasarlas a `error`
-(o borrarlas) para que la siguiente corrida las facture.
+(`integrations/migrations/0003_siigo_token_text.py`, desplegado el
+2026-10-07). Ese mismo día, ya desplegado, las 5 filas se pasaron de
+`creando` a `error` para que la siguiente corrida las facture (ya con
+timbrado ante la DIAN).
 
 ## Visibilidad
 

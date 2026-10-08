@@ -631,7 +631,9 @@ class ListLocationsTests(SimpleTestCase):
         self.assertEqual(
             list_locations(),
             [
-                {"location_id": "97615380757", "name": "Bodega Envia", "is_active": True, "city": "Bogotá"},
-                {"location_id": "1", "name": "Cerrada", "is_active": False, "city": ""},
+                {"location_id": "97615380757", "name": "Bodega Envia", "is_active": True, "city": "Bogotá",
+                 "address": "", "province_code": "", "zip": "", "phone": ""},
+                {"location_id": "1", "name": "Cerrada", "is_active": False, "city": "", "address": "", "province_code": "",
+                 "zip": "", "phone": ""},
             ],
         )

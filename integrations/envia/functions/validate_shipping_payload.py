@@ -49,7 +49,13 @@ def _address(value, prefix):
         "city": city,
         "state": _clean_text(value.get("state"), 80, f"ENVIA_{prefix}_STATE_INVALID"),
         "country": country,
-        "postalCode": _clean_text(value.get("postalCode"), 16, f"ENVIA_{prefix}_POSTAL_INVALID"),
+        # En Colombia la ciudad ya va como código DANE; el postal es opcional
+        # (muchos pedidos y bodegas de Shopify no lo tienen).
+        "postalCode": (
+            " ".join(str(value.get("postalCode") or "").split())[:16]
+            if country == "CO"
+            else _clean_text(value.get("postalCode"), 16, f"ENVIA_{prefix}_POSTAL_INVALID")
+        ),
     }
 
 

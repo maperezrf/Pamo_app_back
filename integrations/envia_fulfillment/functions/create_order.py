@@ -1,5 +1,7 @@
 from decimal import Decimal
 
+from config.constants import ENVIA_FULFILLMENT_SHOP_ID
+
 from ..client import EnviaFulfillmentAPIError, EnviaFulfillmentClient
 from .label import label_payload
 
@@ -48,9 +50,23 @@ def create_order(
     """
     if not products:
         raise ValueError("La orden necesita al menos un producto")
+    if not ENVIA_FULFILLMENT_SHOP_ID:
+        raise EnviaFulfillmentAPIError("ENVIA_FULFILLMENT_SHOP_ID_MISSING")
     if not email:
         raise ValueError("Sin customerId, Envía exige email")
+    # Envía rechaza (400) apellido o código de departamento vacíos, aunque
+    # la colección no lo diga (verificado el 2026-10-08). El código es el
+    # `code_2_digits` de https://queries.envia.com/state?country_code=CO
+    # (ej. Cundinamarca "CN", Magdalena "MA", Bogotá "DC", Antioquia "AN").
+    if not shipping_address.get("last_name"):
+        raise ValueError("Envía exige apellido en la dirección de envío")
+    if not shipping_address.get("state_code"):
+        raise ValueError("Envía exige el código de departamento (state_code)")
     order = {
+        # Obligatorio aunque la tabla de la colección no lo marque (Envía
+        # respondió 400 "[0].shopId is required", 2026-10-08). Es la tienda
+        # principal: los `variantId` son de esa tienda.
+        "shopId": int(ENVIA_FULFILLMENT_SHOP_ID),
         "warehouseId": int(warehouse_id),
         "orderIdentifier": str(identifier),
         "ecommerceStatus": ecommerce_status,

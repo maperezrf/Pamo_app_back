@@ -22,7 +22,15 @@ def sync_dispatch_locations(params=None, progress_callback=None, cancellation_to
     for location in locations:
         _, was_created = DispatchLocation.objects.update_or_create(
             shopify_location_id=location["location_id"],
-            defaults={"name": location["name"], "city": location["city"], "is_active": location["is_active"]},
+            defaults={
+                "name": location["name"],
+                "city": location["city"],
+                "is_active": location["is_active"],
+                "origin_address": location.get("address", ""),
+                "origin_province_code": location.get("province_code", ""),
+                "origin_zip": location.get("zip", ""),
+                "origin_phone": location.get("phone", ""),
+            },
         )
         created += was_created
         updated += not was_created
