@@ -10,7 +10,7 @@ from .functions.list_orders_not_created import list_orders_not_created
 from .models import ShopifyOrderSyncState
 from .serializers import OrderListQuerySerializer
 
-# Supuesto del plan (shopify-orders-listing.md): los mismos roles del
+# Supuesto de diseño (docs/apps/orders.md, "Listado"): los mismos roles del
 # orquestador. Cambiar aquí si el negocio define otro.
 ORDERS_LIST_ROLES = ["Admin", "Operaciones"]
 

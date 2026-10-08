@@ -95,7 +95,7 @@ class InvoiceSodimacOrdersTests(TestCase):
         self.assertEqual(invoice.status, Invoice.Status.CREATED)
         self.assertEqual((invoice.siigo_id, invoice.number, invoice.siigo_total), ("abc-123", "FV-1-1234", Decimal("2250.92")))
         self.assertEqual(invoice.total, Decimal("2250.92"))
-        self.assertFalse(invoice.stamped)
+        self.assertTrue(invoice.stamped)
         _, kwargs = create_invoice.call_args
         self.assertEqual(kwargs["document_id"], 26647)
         self.assertEqual(kwargs["customer"]["identification"], "800242106")
@@ -103,8 +103,8 @@ class InvoiceSodimacOrdersTests(TestCase):
         self.assertEqual((kwargs["reteica"], kwargs["payment_value"], kwargs["payment_id"]), (22.08, 2250.92, 6507))
         self.assertEqual((kwargs["cost_center"], kwargs["seller"]), (116, 643))
         self.assertEqual(kwargs["purchase_order_number"], "9001")
-        self.assertFalse(kwargs["stamp_send"])
-        self.assertFalse(kwargs["mail_send"])
+        self.assertTrue(kwargs["stamp_send"])
+        self.assertTrue(kwargs["mail_send"])
         self.assertEqual(invoice.request_payload["items"], kwargs["items"])
 
     def test_is_invoiced_even_if_the_shopify_order_failed(self, create_invoice):

@@ -26,7 +26,7 @@ DATE_FORMATS = ("%d/%m/%Y %H:%M:%S", "%d/%m/%Y %H:%M", "%d/%m/%Y", "%d-%m-%Y %H:
 
 def sync_sodimac_orders(params=None, progress_callback=None, cancellation_token=None):
     """Proceso registrado en orchestrator como `orders.sync_sodimac`. Ver
-    docs/implementations-plans/sodimac-orders-and-invoicing.md (Partes A y C).
+    docs/apps/orders.md ("Sodimac").
 
     1. Reinyecta las OC abiertas (estado distinto de "4-ESTADO FINAL"): es
        la única forma de conocer su estado actual.

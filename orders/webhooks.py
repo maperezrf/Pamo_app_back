@@ -52,7 +52,7 @@ class MadecentroOrderWebhookView(APIView):
     no `request.data`, porque el cuerpo puede no ser JSON y porque una
     firma futura se calcularía sobre esos bytes. Nivel `warning` porque el
     proyecto no configura `LOGGING` y `info` no aparecería en Railway.
-    Ver docs/implementations-plans/madecentro-orders-import.md.
+    Ver docs/apps/orders.md.
     """
 
     permission_classes = [AllowAny]
@@ -78,7 +78,7 @@ SHOPIFY_ORDER_TOPICS = {"orders/create", "orders/updated", "orders/delete"}
 class ShopifyOrderWebhookView(APIView):
     """Recibe `orders/create`, `orders/updated` y `orders/delete` de Shopify
     para la copia local de pedidos (ver
-    docs/implementations-plans/shopify-orders-local-sync.md).
+    docs/apps/orders.md).
 
     La firma (`X-Shopify-Hmac-Sha256`) se verifica sobre el body crudo antes
     de leer `request.data`; sin firma válida, `403`. Del aviso solo se toma

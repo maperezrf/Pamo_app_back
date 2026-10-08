@@ -5,7 +5,7 @@ y de las reglas para calcularlas. Hoy solo factura Sodimac. Depende de
 `orders` (lee `MarketplaceOrder` y sus ítems), de `products` (equivalencias
 y reparto de kits) y de `integrations.siigo` (transporte). `orders` no
 importa `invoicing`. Plan:
-[`../implementations-plans/sodimac-orders-and-invoicing.md`](../implementations-plans/sodimac-orders-and-invoicing.md).
+[`orders.md`](orders.md) ("Sodimac").
 
 ## Modelo `Invoice`
 
@@ -67,9 +67,28 @@ Reglas de `pamo_web` (`SigoConnection.get_data` / `create_invoice`):
   retenciones `[13457, 13464]`, pago `6507`, cliente SODIMAC COLOMBIA S A
   (NIT `800242106`) con la dirección y los contactos de `pamo_web`.
   `purchase_order_number` = OC.
-- **Timbrado**: `SODIMAC_STAMP_SEND = False` y `SODIMAC_MAIL_SEND = False`
-  mientras se prueba (decidido 2026-09-25). Pasar a timbrar ante la DIAN es
-  cambiar esas dos constantes a `True`, como estaban en `pamo_web`.
+- **Timbrado**: `SODIMAC_STAMP_SEND = True` y `SODIMAC_MAIL_SEND = True`,
+  como en `pamo_web` (activado el 2026-10-07; antes `False` mientras se
+  probaba). Cada factura se timbra ante la DIAN y se envía por correo; un
+  timbrado no se revierte. Para volver a facturar sin timbrar, las dos en
+  `False`.
+- La base del subtotal (precios de línea ya redondeados) se mantiene a
+  propósito aunque difiera de `pamo_web` (confirmado por el usuario el
+  2026-10-07).
+
+## Incidente 2026-10-05 a 2026-10-07: facturas en `creando`
+
+Las 5 OC que llegaron a estado final (16176375, 16182568, 16182869,
+16184959, 16186321) quedaron en `creando` con
+`DataError: value too long for type character varying(512)`. Causa:
+`SiigoToken.token` era `CharField(512)` y el JWT de Siigo es más largo; el
+guardado del token fallaba en `SiigoClient._valid_token()`, que corre al
+armar los headers, **antes** de enviar la factura. Ninguna llegó a Siigo,
+aunque el proceso las marcó "resultado incierto" (regla general ante una
+excepción). Corregido con `token` como `TextField`
+(`integrations/migrations/0003_siigo_token_text.py`). Al desplegar, esas 5
+filas siguen en `creando` y no se reintentan solas: pasarlas a `error`
+(o borrarlas) para que la siguiente corrida las facture.
 
 ## Visibilidad
 

@@ -7,6 +7,9 @@ class SiigoToken(models.Model):
     (singleton): siempre se lee/escribe id=1, no hace falta pre-sembrarla
     -- integrations/siigo/client.py la crea sola en el primer uso."""
 
-    token = models.CharField(max_length=512)
+    # Texto sin límite: el JWT de Siigo pasa de 512 caracteres (con
+    # CharField(512) el guardado fallaba y ninguna llamada a Siigo salía;
+    # visto en producción el 2026-10-05).
+    token = models.TextField()
     expires_at = models.DateTimeField()
     updated_at = models.DateTimeField(auto_now=True)

@@ -7,6 +7,8 @@ from orders.functions.sync_sodimac_orders import sync_sodimac_orders
 from orders.functions.process_shopify_order_webhook import process_shopify_order_webhook
 from orders.functions.backfill_shopify_orders import backfill_shopify_orders
 from orders.functions.reconcile_shopify_orders import reconcile_shopify_orders
+from orders.functions.sync_dispatch_locations import sync_dispatch_locations
+from orders.functions.dispatch_orders import dispatch_orders
 from invoicing.functions.invoice_sodimac_orders import invoice_sodimac_orders
 from products.functions.upload_sku_equivalences import upload_sku_equivalences
 from customers.functions.reconcile_from_shopify import reconcile_from_shopify
@@ -24,6 +26,8 @@ register_process("orders.sync_sodimac", sync_sodimac_orders)
 register_process("orders.process_shopify_order_webhook", process_shopify_order_webhook)  # webhook, allow_concurrent=True
 register_process("orders.backfill_shopify_orders", backfill_shopify_orders)  # manual, allow_concurrent=False
 register_process("orders.reconcile_shopify_orders", reconcile_shopify_orders)  # programado, allow_concurrent=False
+register_process("orders.sync_dispatch_locations", sync_dispatch_locations)  # manual, allow_concurrent=False
+register_process("orders.dispatch_orders", dispatch_orders)  # manual por ahora (sin programar), allow_concurrent=False
 register_process("invoicing.invoice_sodimac", invoice_sodimac_orders)
 register_process("products.upload_sku_equivalences", upload_sku_equivalences)
 register_process("customers.reconcile_shopify", reconcile_from_shopify)

@@ -10,12 +10,12 @@ FALABELLA = MarketplaceOrder.Marketplace.FALABELLA
 def process_pending_orders(progress_callback=None, cancellation_token=None, limit=None):
     """Por cada MarketplaceOrder **de Falabella** sin `shopify_order_id` y
     pendiente o en error (`RETRYABLE_STATUSES`; ver
-    docs/implementations-plans/marketplace-orders-import.md), crea la orden
+    docs/apps/orders.md), crea la orden
     en Shopify a nombre del cliente fijo (`FALABELLA_SHOPIFY_CUSTOMER_ID`)
     con `process_shipment` (resolución de SKU, bodega y `create_order`; un
     pedido de Falabella = un envío). Los datos reales del comprador quedan
     en el MarketplaceOrder y en el `note` de la orden -- ver
-    docs/implementations-plans/falabella-fixed-customer.md.
+    docs/apps/orders.md.
 
     Solo Falabella: Mercado Libre llega por webhook y tiene su propio flujo
     (orders/functions/process_mercadolibre_order.py).

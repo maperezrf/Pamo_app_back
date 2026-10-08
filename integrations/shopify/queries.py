@@ -265,3 +265,22 @@ query GetOrder($id: ID!, $linesAfter: String) {
     + "\n\n"
     + ORDER_FIELDS
 )
+
+
+# Bodegas (ubicaciones) de la tienda, también las inactivas. Verificada
+# contra la tienda real el 2026-10-07 (7 ubicaciones). La usa el registro de
+# bodegas de despacho (`orders.DispatchLocation`).
+LIST_LOCATIONS = """
+query ListLocations {
+  locations(first: 250, includeInactive: true) {
+    nodes {
+      id
+      name
+      isActive
+      address {
+        city
+      }
+    }
+  }
+}
+"""

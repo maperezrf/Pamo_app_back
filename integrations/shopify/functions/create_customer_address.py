@@ -23,7 +23,7 @@ def create_customer_address(
 
     `customer_id` sin el prefijo `gid://shopify/...` (mismo formato que
     devuelve `create_customer`). `company` es donde vive la cédula/NIT en
-    este proyecto (ver docs/implementations-plans/shopify-customers-directory.md).
+    este proyecto (ver docs/apps/customers.md).
 
     Devuelve el `address_id` **tal cual lo entrega Shopify, sin recortar
     ningún prefijo** -- a diferencia del id de Customer/Order/ProductVariant,

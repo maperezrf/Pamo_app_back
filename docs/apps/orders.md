@@ -6,15 +6,8 @@ webhook. No es
 transporte de proveedor (eso vive en `integrations/`) y no depende de
 `customers/`: los pedidos de cada canal se crean en Shopify a nombre de un
 **cliente fijo por canal**, y los datos reales del comprador se guardan
-aquí para facturar después en Siigo. Planes en
-[`../implementations-plans/marketplace-orders-import.md`](../implementations-plans/marketplace-orders-import.md),
-[`../implementations-plans/falabella-fixed-customer.md`](../implementations-plans/falabella-fixed-customer.md)
-(cliente fijo, vigente) y
-[`../implementations-plans/mercadolibre-orders-import.md`](../implementations-plans/mercadolibre-orders-import.md)
-y
-[`../implementations-plans/madecentro-orders-import.md`](../implementations-plans/madecentro-orders-import.md)
-y
-[`../implementations-plans/sodimac-orders-and-invoicing.md`](../implementations-plans/sodimac-orders-and-invoicing.md).
+aquí para facturar después en Siigo. Los planes de cada canal ya se
+cerraron; su contenido vigente está en este documento.
 
 ## Capacidades
 
@@ -108,8 +101,6 @@ y
 
 ## Mercado Libre (webhook)
 
-Plan: [`../implementations-plans/mercadolibre-orders-import.md`](../implementations-plans/mercadolibre-orders-import.md).
-
 - **Disparo**: `POST /api/orders/webhooks/mercadolibre/`
   (`orders/webhooks.py`). Mercado Libre no firma: se valida tópico
   `orders_v2`, app (`MERCADOLIBRE_CLIENT_ID`) y cuenta conectada
@@ -139,9 +130,33 @@ Plan: [`../implementations-plans/mercadolibre-orders-import.md`](../implementati
   Nunca toca `procesando`. Reporta packs incompletos hace más de 6 h. Si
   algún pedido falla, la ejecución termina en error con el resumen.
 
-## Madecentro (rutina por API + webhook en captura)
+### Decisiones de Mercado Libre (A–G)
 
-Plan: [`../implementations-plans/madecentro-orders-import.md`](../implementations-plans/madecentro-orders-import.md).
+Confirmadas por el usuario el 2026-09-24; el código las cita por letra.
+
+- **A. Solo pedidos pagados.** Un aviso de un pedido no pagado se ignora
+  sin guardar; el de "pagado" llega después (la orden va `PAID` a Shopify).
+- **B. Webhook sin firma.** Mercado Libre no firma: el payload nunca se usa
+  como dato (solo el id; el pedido se lee de la API con el token propio) y
+  se valida tópico, recurso, app y cuenta; si no cumple, `200` sin proceso.
+- **C. Cliente fijo** del canal (`MERCADOLIBRE_SHOPIFY_CUSTOMER_ID`).
+- **D. Full se omite** (`logistic_type == "fulfillment"`): despacha Mercado
+  Libre desde su bodega.
+- **E. La unidad de despacho es el envío**: un envío = una guía = una sola
+  bodega = una orden de Shopify con todas las líneas. Las órdenes que
+  comparten `shipment_id` se procesan juntas y solo cuando el envío está
+  completo (pack con todas sus órdenes pagadas y cantidades por publicación
+  iguales a `shipping_items`). Sin bodega que cubra todo → novedad, y la
+  orden se crea igual.
+- **F. Concurrencia**: reclamo atómico de todas las órdenes del envío
+  (`claim_orders`, `procesando`). Una fila que se queda en `procesando` no
+  se reintenta sola: se revisa a mano.
+- **G. Recuperación** (`orders.recover_mercadolibre`): avisos no entregados
+  (`missed_feeds`), procesos fallidos tras responder `200` (marcadores en
+  `pending` con error) y pedidos en `error_creando_orden`. Reporta packs
+  incompletos hace más de 6 h.
+
+## Madecentro (rutina por API + webhook en captura)
 
 - **Rutina** `orders.import_madecentro`
   (`orders/functions/import_madecentro_orders.py`, `allow_concurrent=False`,
@@ -189,8 +204,9 @@ Plan: [`../implementations-plans/madecentro-orders-import.md`](../implementation
 
 ## Sodimac (cola por API)
 
-Plan:
-[`../implementations-plans/sodimac-orders-and-invoicing.md`](../implementations-plans/sodimac-orders-and-invoicing.md).
+Migrado desde `pamo_web` el 2026-10-01: las OC nuevas se crean y facturan
+aquí; `pamo_web` ya no crea órdenes y solo termina de facturar sus OC
+antiguas (convivencia, abajo).
 
 - **Rutina** `orders.sync_sodimac`
   (`orders/functions/sync_sodimac_orders.py`, `allow_concurrent=False`, se
@@ -215,21 +231,42 @@ Plan:
   (`FECHA_TRANSMISION`, ISO o día primero `DD/MM/AAAA[ HH:MM[:SS]]`).
 - **Nota en Shopify**: `"Sodimac #<OC>"` (no hay comprador final). Etiqueta
   `sodimac`.
-- **Convivencia con `pamo_web`** (Parte C del plan):
+- **Convivencia con `pamo_web`** (sin migrar datos: cada sistema factura
+  sus propias OC). Los dos leen la misma cola destructiva, así que nunca
+  corren a la vez: al terminar `orders.sync_sodimac` se llama en el mismo
+  proceso a `POST /pamo_bots/sodimac/invoices` de `pamo_web` (síncrono,
+  header `X-Bot-Token`), que reinyecta sus OC, lee la cola, devuelve a la
+  cola las OC que no conoce y factura las suyas en estado final. En
+  `pamo_web`, crear órdenes (`create_orders`) responde 410 y su workflow de
+  GitHub quedó vacío: solo corre cuando lo llama este backend.
   - `SODIMAC_CUTOVER_DATE` (obligatoria, ISO): una OC transmitida antes es
     de `pamo_web`; no se guarda y se reinyecta para que la lea `pamo_web`.
-    `SODIMAC_LEGACY_OCS` agrega las OC del día del corte que ya creó
+    Es el día de la **última corrida de creación de `pamo_web`**, no el del
+    despliegue (el corte se hizo con `pamo_web` pausado desde el
+    2026-09-25). `SODIMAC_LEGACY_OCS` agrega las OC de ese día que ya creó
     `pamo_web`.
   - Una OC con fecha no reconocida tampoco se guarda: se reinyecta y se
     reporta como fallo.
   - Si `pamo_web` informa OC nuevas que no pudo devolver a la cola
     (`not_returned`), se reportan como fallo: hay que reinyectarlas a mano.
+  - **Pendiente: fin de la convivencia.** Cuando `pamo_web` no tenga OC
+    sin factura desde el 2026-04-01 (o al cumplirse el plazo acordado;
+    propuesta: 60 días desde el corte, lo que quede se revisa a mano): quitar
+    la llamada del paso 4, el cliente `integrations/pamo_web/` y sus
+    constantes (`PAMO_WEB_*`), apagar el proceso en `pamo_web` y decidir qué
+    hacer con el filtro de `SODIMAC_CUTOVER_DATE` (sin `pamo_web`, una OC
+    antigua reinyectada nadie la leería).
+- **Diferencias con `pamo_web`**: la etiqueta en Shopify es `sodimac` (allá
+  `SODIMAC`; revisar filtros o automatizaciones de Shopify que dependan de
+  la mayúscula). `pamo_web` copiaba el estado en `TrakingOrders`; aquí queda
+  en `marketplace_status`. El RPA de `pamo_web` (`rpa/`,
+  `stock_dispatch.py`) no se migra: el usuario confirmó el 2026-10-01 que no
+  se usa. El stock hacia Sodimac sigue pendiente por un problema del lado de
+  Sodimac.
 - La factura de las OC en estado final es de la app `invoicing`
   ([`invoicing.md`](invoicing.md)); `orders` no la importa.
 
 ## Copia local de pedidos de Shopify
-
-Plan: [`../implementations-plans/shopify-orders-local-sync.md`](../implementations-plans/shopify-orders-local-sync.md).
 
 `ShopifyOrder` / `ShopifyOrderLine` guardan **todos** los pedidos de Shopify
 (marketplaces y tienda web) para que el listado del frontend no dependa de
@@ -289,11 +326,7 @@ Repetirla no duplicó nada.
 
 ## Listado para el frontend
 
-Planes:
-[`../implementations-plans/shopify-orders-listing.md`](../implementations-plans/shopify-orders-listing.md)
-(forma de la respuesta) y
-[`../implementations-plans/shopify-orders-local-sync.md`](../implementations-plans/shopify-orders-local-sync.md)
-(fuente local). Contrato: `GET /api/orders/` en
+Contrato: `GET /api/orders/` en
 [`../contracts/API.md`](../contracts/API.md) (`OrderListAPI`,
 `orders/apis.py`, roles `ORDERS_LIST_ROLES`).
 
@@ -329,9 +362,62 @@ Planes:
 - `order_listing_format.py`: formato común (comprador, bodega, importes con
   `Decimal`, rango de días).
 
-## Bodega de despacho
+## Despacho a bodegas
 
-Plan: [`../implementations-plans/shopify-inventory-by-location.md`](../implementations-plans/shopify-inventory-by-location.md).
+Plan: [`../implementations-plans/order-dispatch-to-warehouses.md`](../implementations-plans/order-dispatch-to-warehouses.md).
+Este backend decide qué bodega despacha cada pedido de Shopify (marketplace
+o tienda web) y le avisa por su canal. Ninguna tienda queda conectada a
+Envía: Envía es una bodega más, avisada por API.
+
+- **`DispatchLocation`**: una fila por ubicación de Shopify, con canales de
+  aviso independientes (`notify_api`, `notify_email`, `notify_whatsapp`),
+  contactos (`emails`, `whatsapp_numbers`), `envia_warehouse_id` y
+  `requires_label`. Las filas las crea y actualiza
+  `sync_dispatch_locations` (proceso `orders.sync_dispatch_locations`;
+  nunca toca canales ni contactos; una bodega quitada de Shopify queda
+  inactiva). Se configuran en el admin de Django. La primera sincronización
+  se lanza por la API del orquestador
+  (`POST /api/orchestrator/process-types/orders.sync_dispatch_locations/launch/`):
+  la acción del admin exige seleccionar filas y la tabla empieza vacía.
+- **`Dispatch`** (uno por `ShopifyOrder`) y **`DispatchNotification`** (uno
+  por despacho y canal).
+- **`dispatch_orders`** (proceso `orders.dispatch_orders`, registrado y
+  **sin programar**): pedidos desde `DISPATCH_START_DATE`, sin despachar ni
+  borrar ni cumplidos (`FULFILLED`).
+  1. Bodega con `assign_dispatch_location`: en marketplace, la que eligió la
+     importación (`MarketplaceOrder.fulfillment_location_*`, no se
+     recalcula); en la tienda web, `select_fulfillment_location` con el
+     inventario de Shopify en vivo. Sin bodega (novedad, Madecentro/Sodimac,
+     pedido sin registro local, bodega sin registrar) o sin canales →
+     `manual` con el motivo en `note`.
+  2. Si la bodega exige guía, `fetch_dispatch_label`: Mercado Libre
+     (`get_shipment_label`, solo en estados imprimibles) o Falabella
+     (`get_package_items` + `get_shipping_document`). Sin guía todavía, o
+     con `DISPATCH_FETCH_LABELS_ENABLED` apagado → `esperando_guia`. La
+     tienda web no tiene fuente de guía (decisión abierta). Se guarda el
+     número de guía y el hash del PDF, no el PDF.
+  3. Con `DISPATCH_NOTIFICATIONS_ENABLED`, un aviso por canal activo
+     (`notify_dispatch.notify`); sin él → `listo`. Cada aviso se reclama
+     (`procesando`) antes de enviarse: nunca sale dos veces; uno en `error`
+     se reintenta en la próxima corrida; uno que se quedó en `procesando`
+     no se reintenta (revisión manual). Todos enviados → `notificado`;
+     alguno en error → `error`.
+  4. Pedido cancelado → `cancelado` (salvo si ya se notificó).
+- **Canales** (`orders/functions/notify_dispatch.py`):
+  - `email`: `django.core.mail` por SMTP (`EMAIL_HOST`, `DEFAULT_FROM_EMAIL`
+    en `config/constants.py`), con la guía adjunta. Sin configurar → error
+    del aviso, no se intenta enviar.
+  - `whatsapp`: plantilla aprobada en Meta (`DISPATCH_WHATSAPP_TEMPLATE`;
+    variables: pedido, productos, ciudad; la guía como documento del
+    encabezado). Envía a todos los números antes de fallar y el error dice a
+    quiénes llegó.
+  - `api`: `integrations.envia_fulfillment.create_order`. **Bloqueado**:
+    falla hasta resolver el cruce SKU → `variantId` de Envía, y además el
+    cliente de Envía bloquea escrituras sin `ENVIA_FULFILLMENT_WRITES_ENABLED`.
+- Listado: `GET /api/orders/` trae `dispatch` por pedido (ver el contrato).
+- Pruebas: `orders/tests_dispatch.py`.
+
+## Bodega de despacho
 
 - **Una bodega por envío** (un envío = una guía; en Falabella un pedido es
   un envío, en Mercado Libre un pack puede juntar varias órdenes), elegida

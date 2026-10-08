@@ -3,7 +3,7 @@ from django.db import models
 
 class ShopifyCustomer(models.Model):
     """Directorio local sincronizado con los clientes de Shopify -- ver
-    docs/implementations-plans/shopify-customers-directory.md para el porqué:
+    docs/apps/customers.md para el porqué:
     la API de Shopify no permite buscar un cliente por `company` (donde
     vive la cédula), así que la resolución "¿ya existe este cliente?" se
     hace contra esta tabla, no contra Shopify en vivo.

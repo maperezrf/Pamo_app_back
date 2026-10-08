@@ -1,6 +1,7 @@
-from django.contrib import admin
+from django.contrib import admin, messages
 
-from .models import MarketplaceOrder, MarketplaceOrderItem
+from .functions.sync_dispatch_locations import sync_dispatch_locations
+from .models import Dispatch, DispatchLocation, DispatchNotification, MarketplaceOrder, MarketplaceOrderItem
 
 
 class MarketplaceOrderItemInline(admin.TabularInline):
@@ -30,3 +31,68 @@ class MarketplaceOrderAdmin(admin.ModelAdmin):
     # Una novedad se resuelve a mano: elegir fulfillment_location_id/_name,
     # pasar fulfillment_status a "resuelta_manual" y dejar la nota. El
     # proceso no vuelve a tocar un pedido resuelto manualmente.
+
+
+@admin.register(DispatchLocation)
+class DispatchLocationAdmin(admin.ModelAdmin):
+    """Registro de bodegas de despacho. Las filas salen de Shopify (acción
+    "Sincronizar"); aquí solo se configuran canales y contactos."""
+
+    list_display = ("name", "city", "is_active", "notify_api", "notify_email", "notify_whatsapp", "requires_label")
+    list_filter = ("is_active", "notify_api", "notify_email", "notify_whatsapp")
+    readonly_fields = ("shopify_location_id", "name", "city", "is_active", "updated_at")
+    fields = (
+        ("name", "city", "is_active"),
+        "shopify_location_id",
+        ("notify_api", "notify_email", "notify_whatsapp"),
+        "emails",
+        "whatsapp_numbers",
+        "envia_warehouse_id",
+        "requires_label",
+        "updated_at",
+    )
+    actions = ["sync_from_shopify"]
+
+    def has_add_permission(self, request):
+        return False  # se crean al sincronizar con Shopify
+
+    def has_delete_permission(self, request, obj=None):
+        return False  # pueden tener despachos; una bodega quitada queda inactiva
+
+    @admin.action(description="Sincronizar bodegas desde Shopify (solo lectura en Shopify)")
+    def sync_from_shopify(self, request, queryset):
+        summary = sync_dispatch_locations()
+        self.message_user(
+            request,
+            f"Bodegas: {summary['created']} nuevas, {summary['updated']} actualizadas, {summary['deactivated']} desactivadas.",
+            messages.SUCCESS,
+        )
+
+
+class DispatchNotificationInline(admin.TabularInline):
+    model = DispatchNotification
+    extra = 0
+    can_delete = False
+    readonly_fields = ("channel", "status", "recipient", "external_id", "error_description", "sent_at", "updated_at")
+
+    def has_add_permission(self, request, obj=None):
+        return False
+
+
+@admin.register(Dispatch)
+class DispatchAdmin(admin.ModelAdmin):
+    list_display = ("shopify_order", "channel", "location", "status", "tracking_number", "updated_at")
+    list_filter = ("status", "channel", "location")
+    search_fields = ("shopify_order__name", "shopify_order__shopify_id", "tracking_number")
+    readonly_fields = (
+        "shopify_order",
+        "channel",
+        "tracking_number",
+        "label_sha256",
+        "label_fetched_at",
+        "created_at",
+        "updated_at",
+    )
+    inlines = [DispatchNotificationInline]
+    # Se puede corregir a mano la bodega, el estado o la nota (p. ej. pasar
+    # un `manual` resuelto a `esperando_guia` para que el proceso siga).

@@ -23,14 +23,14 @@ def process_shipment(orders, customer_id, financial_status=FINANCIAL_STATUS, req
     `select_fulfillment_location` y la orden de Shopify lleva todas las
     líneas. Falabella llama con `[order]` (un pedido = un envío); Mercado
     Libre con todas las órdenes de un pack. Ver
-    docs/implementations-plans/mercadolibre-orders-import.md (decisión E).
+    docs/apps/orders.md (decisión E).
 
     - Un SKU que es kit va como una línea por componente, con el precio
       repartido (`products.expand_product`).
     - Algún SKU no resuelve en Shopify -> todas quedan `error_creando_orden`,
       sin orden parcial.
     - Sin bodega que cubra el envío completo -> novedad, pero la orden se
-      crea igual (docs/implementations-plans/shopify-inventory-by-location.md).
+      crea igual (docs/apps/orders.md).
     - Shopify rechaza la orden -> todas `error_creando_orden`.
     - Éxito -> todas `orden_creada` con el mismo `shopify_order_id`.
     - `requires_shipping`: si las líneas de la orden requieren despacho en

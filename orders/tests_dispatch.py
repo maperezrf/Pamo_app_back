@@ -1,0 +1,311 @@
+from datetime import datetime, timezone as dt_timezone
+from unittest.mock import patch
+
+from django.contrib.auth.models import Group, User
+from django.core import mail
+from django.core.exceptions import ValidationError
+from django.test import TestCase, override_settings
+
+from .functions.assign_dispatch_location import assign_dispatch_location
+from .functions.dispatch_orders import dispatch_orders
+from .functions.sync_dispatch_locations import sync_dispatch_locations
+from .models import Dispatch, DispatchLocation, DispatchNotification, MarketplaceOrder, ShopifyOrder, ShopifyOrderLine
+
+F = "orders.functions"
+PDF = b"%PDF-1.4 " + b"x" * 64 + b" %%EOF"
+ENVIA_LOCATION = "97615380757"
+BOCCHERINI = "99576545557"
+EMAIL_SETTINGS = {"EMAIL_HOST": "smtp.test", "DEFAULT_FROM_EMAIL": "despachos@pamo.co"}
+
+
+def _location(shopify_location_id=BOCCHERINI, name="Boccherini", **overrides):
+    return DispatchLocation.objects.create(shopify_location_id=shopify_location_id, name=name, **overrides)
+
+
+def _order(shopify_id="5001", name="20400", marketplace="mercadolibre", created=datetime(2026, 10, 8, 15, tzinfo=dt_timezone.utc), **overrides):
+    fields = dict(fulfillment_status="UNFULFILLED", total="78249.00", currency="COP")
+    fields.update(overrides)
+    order = ShopifyOrder.objects.create(
+        shopify_id=shopify_id, name=name, marketplace=marketplace, shopify_created_at=created, **fields
+    )
+    ShopifyOrderLine.objects.create(order=order, position=0, sku="I001", name="Dispensador", quantity=1, unit_price="78249.00")
+    return order
+
+
+def _marketplace_row(order, location_id=BOCCHERINI, marketplace="mercadolibre", **overrides):
+    defaults = dict(
+        marketplace=marketplace,
+        marketplace_order_id=f"mk-{order.shopify_id}",
+        marketplace_order_number="2000015399650969",
+        shipment_id="48195006881",
+        shopify_order_id=order.shopify_id,
+        status=MarketplaceOrder.Status.CREATED,
+        fulfillment_status=MarketplaceOrder.FulfillmentStatus.ASSIGNED,
+        fulfillment_location_id=location_id,
+        fulfillment_location_name="Boccherini",
+        customer_first_name="Ana",
+        customer_last_name="Gómez",
+        customer_city="Bogotá",
+        customer_address="Calle 1",
+        customer_phone="3000000000",
+    )
+    defaults.update(overrides)
+    return MarketplaceOrder.objects.create(**defaults)
+
+
+ML_SHIPMENT = {"status": "ready_to_ship", "substatus": "ready_for_pickup", "tracking_number": "MEL48195006881", "logistic_type": "cross_docking"}
+
+
+class DispatchLocationTests(TestCase):
+    @patch(f"{F}.sync_dispatch_locations.list_locations")
+    def test_sync_creates_updates_and_deactivates_without_touching_channels(self, list_locations):
+        configured = _location(name="Viejo nombre", notify_email=True, emails=["bodega@boccherini.com"])
+        _location(shopify_location_id="111", name="Cerrada")
+        list_locations.return_value = [
+            {"location_id": BOCCHERINI, "name": "Boccherini", "is_active": True, "city": "Bogotá"},
+            {"location_id": ENVIA_LOCATION, "name": "Bodega Envia", "is_active": True, "city": "Bogotá"},
+        ]
+
+        summary = sync_dispatch_locations()
+
+        self.assertEqual(summary, {"created": 1, "updated": 1, "deactivated": 1})
+        configured.refresh_from_db()
+        self.assertEqual(configured.name, "Boccherini")
+        self.assertTrue(configured.notify_email)
+        self.assertEqual(configured.emails, ["bodega@boccherini.com"])
+        self.assertFalse(DispatchLocation.objects.get(shopify_location_id="111").is_active)
+
+    def test_each_enabled_channel_needs_its_contact_data(self):
+        location = DispatchLocation(shopify_location_id="1", name="X", notify_api=True, notify_email=True, notify_whatsapp=True)
+        with self.assertRaises(ValidationError) as raised:
+            location.full_clean()
+        self.assertEqual(set(raised.exception.message_dict), {"envia_warehouse_id", "emails", "whatsapp_numbers"})
+
+        location.envia_warehouse_id = "311"
+        location.emails = ["bodega@boccherini.com"]
+        location.whatsapp_numbers = ["573001234567"]
+        location.full_clean()
+        self.assertEqual(location.channels(), ["api", "email", "whatsapp"])
+
+    def test_rejects_badly_formatted_contacts(self):
+        location = DispatchLocation(shopify_location_id="1", name="X", emails=["sin-arroba"], whatsapp_numbers=["+57 300"])
+        with self.assertRaises(ValidationError) as raised:
+            location.full_clean()
+        self.assertEqual(set(raised.exception.message_dict), {"emails", "whatsapp_numbers"})
+
+
+class AssignDispatchLocationTests(TestCase):
+    def test_marketplace_order_keeps_the_location_chosen_at_import(self):
+        location = _location()
+        order = _order()
+        _marketplace_row(order)
+        self.assertEqual(assign_dispatch_location(order), (location, ""))
+
+    def test_marketplace_novedad_goes_to_manual(self):
+        _location()
+        order = _order()
+        _marketplace_row(order, fulfillment_status=MarketplaceOrder.FulfillmentStatus.NOVEDAD, fulfillment_location_id="", fulfillment_note="Sin stock")
+        location, reason = assign_dispatch_location(order)
+        self.assertIsNone(location)
+        self.assertIn("Sin stock", reason)
+
+    def test_madecentro_sodimac_and_unknown_marketplace_orders_go_to_manual(self):
+        self.assertIsNone(assign_dispatch_location(_order(marketplace="sodimac"))[0])
+        self.assertIsNone(assign_dispatch_location(_order(shopify_id="2", marketplace="madecentro"))[0])
+        location, reason = assign_dispatch_location(_order(shopify_id="3", marketplace="falabella"))
+        self.assertIsNone(location)
+        self.assertIn("sin registro local", reason)
+
+    @patch(f"{F}.assign_dispatch_location.FULFILLMENT_PRIORITY_LOCATION_ID", ENVIA_LOCATION)
+    @patch(f"{F}.assign_dispatch_location.get_variant_inventory_by_sku")
+    def test_web_order_uses_the_same_rule_with_live_inventory(self, inventory):
+        envia = _location(shopify_location_id=ENVIA_LOCATION, name="Bodega Envia")
+        inventory.return_value = {
+            "variant_id": "1", "sku": "I001", "tracked": True,
+            "locations": [{"location_id": ENVIA_LOCATION, "name": "Bodega Envia", "available": 5}],
+        }
+        self.assertEqual(assign_dispatch_location(_order(marketplace="shopify")), (envia, ""))
+
+    @patch(f"{F}.assign_dispatch_location.get_variant_inventory_by_sku")
+    def test_web_order_without_stock_or_unregistered_location_goes_to_manual(self, inventory):
+        inventory.return_value = {"variant_id": "1", "sku": "I001", "tracked": True, "locations": []}
+        location, reason = assign_dispatch_location(_order(marketplace="shopify"))
+        self.assertIsNone(location)
+        self.assertIn("Novedad", reason)
+
+        inventory.return_value = {
+            "variant_id": "1", "sku": "I001", "tracked": True,
+            "locations": [{"location_id": "999", "name": "Nueva", "available": 5}],
+        }
+        location, reason = assign_dispatch_location(_order(shopify_id="2", marketplace="shopify"))
+        self.assertIsNone(location)
+        self.assertIn("sincronizar bodegas", reason)
+
+
+@patch(f"{F}.dispatch_orders.DISPATCH_START_DATE", "2026-10-08")
+class DispatchOrdersTests(TestCase):
+    def setUp(self):
+        self.location = _location(notify_email=True, emails=["bodega@boccherini.com"])
+        self.order = _order()
+        _marketplace_row(self.order)
+
+    def _dispatch(self):
+        return Dispatch.objects.get(shopify_order=self.order)
+
+    def test_without_a_start_date_nothing_enters_the_flow(self):
+        with patch(f"{F}.dispatch_orders.DISPATCH_START_DATE", ""):
+            self.assertEqual(dispatch_orders(), {})
+        self.assertFalse(Dispatch.objects.exists())
+
+    def test_old_and_fulfilled_orders_are_left_out(self):
+        _order(shopify_id="old", created=datetime(2026, 10, 7, 4, 59, tzinfo=dt_timezone.utc))  # 6 oct en Colombia
+        _order(shopify_id="done", fulfillment_status="FULFILLED")
+        dispatch_orders()
+        self.assertEqual(list(Dispatch.objects.values_list("shopify_order__shopify_id", flat=True)), ["5001"])
+
+    def test_waits_for_the_guide_while_label_download_is_off(self):
+        self.assertEqual(dispatch_orders(), {"esperando_guia": 1})
+        self.assertEqual(self._dispatch().location, self.location)
+        self.assertIn("DISPATCH_FETCH_LABELS_ENABLED", self._dispatch().note)
+
+    @patch(f"{F}.fetch_dispatch_label.DISPATCH_FETCH_LABELS_ENABLED", True)
+    @patch(f"{F}.fetch_dispatch_label.get_shipment_label", return_value=PDF)
+    @patch(f"{F}.fetch_dispatch_label.get_shipment", return_value=ML_SHIPMENT)
+    def test_with_the_guide_but_notifications_off_it_is_ready_and_sends_nothing(self, get_shipment, get_label):
+        self.assertEqual(dispatch_orders(), {"listo": 1})
+
+        dispatch = self._dispatch()
+        self.assertEqual(dispatch.tracking_number, "MEL48195006881")
+        self.assertEqual(len(dispatch.label_sha256), 64)
+        self.assertEqual(len(mail.outbox), 0)
+        self.assertFalse(DispatchNotification.objects.exists())
+
+    @patch(f"{F}.fetch_dispatch_label.DISPATCH_FETCH_LABELS_ENABLED", True)
+    @patch(f"{F}.fetch_dispatch_label.get_shipment", return_value={**ML_SHIPMENT, "substatus": "in_packing_list", "status": "shipped"})
+    def test_mercadolibre_guide_not_available_yet_waits(self, get_shipment):
+        self.assertEqual(dispatch_orders(), {"esperando_guia": 1})
+        self.assertIn("aún no disponible", self._dispatch().note)
+
+    @override_settings(**EMAIL_SETTINGS)
+    @patch(f"{F}.dispatch_orders.DISPATCH_NOTIFICATIONS_ENABLED", True)
+    @patch(f"{F}.fetch_dispatch_label.DISPATCH_FETCH_LABELS_ENABLED", True)
+    @patch(f"{F}.fetch_dispatch_label.get_shipment_label", return_value=PDF)
+    @patch(f"{F}.fetch_dispatch_label.get_shipment", return_value=ML_SHIPMENT)
+    def test_emails_the_warehouse_once_with_the_guide(self, get_shipment, get_label):
+        self.assertEqual(dispatch_orders(), {"notificado": 1})
+
+        [message] = mail.outbox
+        self.assertEqual(message.to, ["bodega@boccherini.com"])
+        self.assertIn("20400", message.subject)
+        self.assertIn("I001 x1", message.body)
+        self.assertIn("MEL48195006881", message.body)
+        self.assertEqual(message.attachments[0][1], PDF)
+        notification = DispatchNotification.objects.get()
+        self.assertEqual((notification.channel, notification.status), ("email", "enviado"))
+
+        dispatch_orders()  # ya notificado: no vuelve a enviar
+        self.assertEqual(len(mail.outbox), 1)
+
+    @patch(f"{F}.dispatch_orders.DISPATCH_NOTIFICATIONS_ENABLED", True)
+    def test_unconfigured_email_and_whatsapp_and_pending_envia_are_errors_not_sends(self):
+        self.location.requires_label = False
+        self.location.notify_whatsapp = True
+        self.location.whatsapp_numbers = ["573001234567"]
+        self.location.notify_api = True
+        self.location.envia_warehouse_id = "311"
+        self.location.save()
+
+        with patch(f"{F}.notify_dispatch.create_order") as create_order, \
+                patch(f"{F}.notify_dispatch.send_template_message") as send_template:
+            self.assertEqual(dispatch_orders(), {"error": 1})
+            create_order.assert_not_called()
+            send_template.assert_not_called()
+
+        errors = dict(DispatchNotification.objects.values_list("channel", "error_description"))
+        self.assertIn("EMAIL_HOST", errors["email"])
+        self.assertIn("DISPATCH_WHATSAPP_TEMPLATE", errors["whatsapp"])
+        self.assertIn("variantId", errors["api"])
+        self.assertEqual(len(mail.outbox), 0)
+
+    @patch(f"{F}.dispatch_orders.DISPATCH_NOTIFICATIONS_ENABLED", True)
+    @patch(f"{F}.notify_dispatch.DISPATCH_WHATSAPP_TEMPLATE", "despacho_bodega")
+    @patch(f"{F}.notify_dispatch.send_template_message", return_value={"message_id": "wamid.1"})
+    @patch(f"{F}.notify_dispatch.upload_document")
+    def test_whatsapp_uses_the_approved_template(self, upload, send_template):
+        self.location.requires_label = False
+        self.location.notify_email = False
+        self.location.notify_whatsapp = True
+        self.location.whatsapp_numbers = ["573001234567"]
+        self.location.save()
+
+        self.assertEqual(dispatch_orders(), {"notificado": 1})
+
+        upload.assert_not_called()  # sin guía, sin documento
+        args, kwargs = send_template.call_args
+        self.assertEqual(args, ("573001234567", "despacho_bodega"))
+        self.assertEqual(kwargs["body_params"], ["20400", "I001 x1", "Bogotá"])
+        self.assertEqual(DispatchNotification.objects.get().external_id, "wamid.1")
+
+    @override_settings(**EMAIL_SETTINGS)
+    @patch(f"{F}.dispatch_orders.DISPATCH_NOTIFICATIONS_ENABLED", True)
+    def test_a_failed_notification_is_retried_and_a_processing_one_is_not(self):
+        self.location.requires_label = False
+        self.location.save()
+        with patch(f"{F}.notify_dispatch.EmailMessage.send", side_effect=OSError("smtp caído")):
+            self.assertEqual(dispatch_orders(), {"error": 1})
+
+        self.assertEqual(dispatch_orders(), {"notificado": 1})  # reintento
+        self.assertEqual(len(mail.outbox), 1)
+
+        other = _order(shopify_id="5002", name="20401")
+        _marketplace_row(other, marketplace_order_id="mk-2")
+        dispatch = Dispatch.objects.create(shopify_order=other, location=self.location, channel="mercadolibre", status="error")
+        DispatchNotification.objects.create(dispatch=dispatch, channel="email", status="procesando")
+        dispatch_orders()
+        self.assertEqual(len(mail.outbox), 1)  # el que quedó procesando no se reenvía
+
+    def test_location_without_channels_goes_to_manual(self):
+        self.location.notify_email = False
+        self.location.save()
+        self.assertEqual(dispatch_orders(), {"manual": 1})
+        self.assertIn("no tiene canales", self._dispatch().note)
+
+    def test_cancelled_order_gets_a_cancelled_dispatch_and_leaves_the_flow(self):
+        self.order.cancelled_at = self.order.shopify_created_at
+        self.order.save()
+        self.assertEqual(dispatch_orders(), {"cancelado": 1})
+        self.assertEqual(dispatch_orders(), {})
+
+    @patch(f"{F}.fetch_dispatch_label.DISPATCH_FETCH_LABELS_ENABLED", True)
+    @patch(f"{F}.fetch_dispatch_label.get_shipping_document", return_value=PDF)
+    @patch(f"{F}.fetch_dispatch_label.get_package_items")
+    def test_falabella_guide_comes_from_the_package_items(self, package_items, get_document):
+        order = _order(shopify_id="6001", name="20402", marketplace="falabella")
+        _marketplace_row(order, marketplace="falabella", marketplace_order_id="8001737501", shipment_id="")
+        package_items.return_value = [
+            {"order_item_id": "11", "package_id": "PKG1", "tracking_code": "2298450467", "status": "ready_to_ship"},
+            {"order_item_id": "12", "package_id": "", "tracking_code": "", "status": "pending"},
+        ]
+
+        dispatch_orders(params={"shopify_order_ids": ["6001"]})
+
+        get_document.assert_called_once_with(["11"])
+        self.assertEqual(Dispatch.objects.get(shopify_order=order).tracking_number, "2298450467")
+
+
+class OrderListDispatchTests(TestCase):
+    def test_the_listing_includes_the_dispatch(self):
+        user = User.objects.create_user("ops", password="x")
+        user.groups.add(Group.objects.get_or_create(name="Operaciones")[0])
+        self.client.force_login(user)
+        location = _location()
+        order = _order()
+        dispatch = Dispatch.objects.create(shopify_order=order, location=location, channel="mercadolibre", status="notificado")
+        DispatchNotification.objects.create(dispatch=dispatch, channel="email", status="enviado", recipient="bodega@boccherini.com")
+        _order(shopify_id="5002", name="20401")
+
+        orders = {row["shopify_order_name"]: row for row in self.client.get("/api/orders/").json()["orders"]}
+
+        self.assertEqual(orders["20400"]["dispatch"]["location_name"], "Boccherini")
+        self.assertEqual(orders["20400"]["dispatch"]["notifications"][0]["channel"], "email")
+        self.assertIsNone(orders["20401"]["dispatch"])

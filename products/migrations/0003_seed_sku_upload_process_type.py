@@ -8,7 +8,7 @@ PROCESS_TYPES = [
         # Una segunda carga no falla con 409: queda en cola. Ojo:
         # `max_concurrent_global` se compara con TODAS las ejecuciones
         # activas del orquestador, así que la carga espera si corre cualquier
-        # otro proceso (ver docs/implementations-plans/sku-equivalence-upload.md).
+        # otro proceso (ver docs/apps/products.md).
         "allow_concurrent": True,
         "max_concurrent_global": 1,
     },

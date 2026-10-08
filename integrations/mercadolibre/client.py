@@ -96,6 +96,15 @@ class MercadoLibreClient:
         """GET autenticado. `path` relativo a MERCADOLIBRE_API_BASE_URL,
         con `/` inicial (ej. "/orders/123"). Ante un 401 renueva el token y
         reintenta una sola vez."""
+        return self._authorized_get(path, params, headers).json()
+
+    def get_bytes(self, path, params=None, headers=None):
+        """Como `get`, para respuestas que no son JSON (ej. el PDF de una
+        etiqueta). Devuelve (contenido, content-type)."""
+        response = self._authorized_get(path, params, headers)
+        return response.content, response.headers.get("Content-Type", "")
+
+    def _authorized_get(self, path, params, headers):
         access_token = self._valid_access_token()
         response = self._send(path, params, headers, access_token)
         if response.status_code == 401:
@@ -103,7 +112,7 @@ class MercadoLibreClient:
             response = self._send(path, params, headers, access_token)
         if not response.ok:
             raise MercadoLibreAPIError(response.status_code, _body(response))
-        return response.json()
+        return response
 
     def _send(self, path, params, headers, access_token):
         return requests.get(

@@ -22,7 +22,7 @@ def import_madecentro_orders(params=None, progress_callback=None, cancellation_t
     pedidos de Madecentro guardados en `pending`/`error_creando_orden`,
     aunque ya estén fuera del rango. Sirve de importación mientras no hay
     webhook y, después, de recuperación. Ver
-    docs/implementations-plans/madecentro-orders-import.md.
+    docs/apps/orders.md.
 
     `params` opcional:
     - `"days"`: cuántos días hacia atrás (por defecto 1: de ayer a hoy, en

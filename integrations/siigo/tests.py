@@ -27,6 +27,18 @@ class TokenCachingTests(TestCase):
         self.assertEqual(SiigoToken.objects.get(id=1).token, "brand-new-token")
 
     @patch("integrations.siigo.client.requests.post")
+    def test_caches_a_token_longer_than_512_characters(self, mock_post):
+        # El JWT real de Siigo pasa de 512: con CharField(512) Postgres
+        # rechazaba el guardado (SQLite no valida el largo, por eso también
+        # se comprueba el tipo de campo).
+        long_token = "eyJ" + "x" * 1500
+        mock_post.return_value.ok = True
+        mock_post.return_value.json.return_value = {"access_token": long_token}
+        self.assertEqual(SiigoClient()._valid_token(), long_token)
+        self.assertEqual(SiigoToken.objects.get(id=1).token, long_token)
+        self.assertIsNone(SiigoToken._meta.get_field("token").max_length)
+
+    @patch("integrations.siigo.client.requests.post")
     def test_reuses_a_valid_cached_token_without_calling_the_api(self, mock_post):
         _valid_cached_token("still-valid")
         token = SiigoClient()._valid_token()

@@ -29,7 +29,7 @@ def process_mercadolibre_order(order_id):
     demás órdenes de su envío. Lo usan el webhook y la recuperación, y es
     idempotente: se puede llamar varias veces por el mismo pedido.
 
-    Flujo (ver docs/implementations-plans/mercadolibre-orders-import.md):
+    Flujo (ver docs/apps/orders.md):
     1. Marcador local (`MarketplaceOrder` vacío) **antes** de llamar a
        Mercado Libre: si algo falla, la recuperación lo encuentra.
     2. No pagado -> se descarta el marcador (llegará otra notificación).

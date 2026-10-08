@@ -16,6 +16,7 @@ from .functions.create_customer_address import (
 from .functions.create_order import ShopifyOrderCreationError, create_order
 from .functions.get_variant_by_sku import get_variant_by_sku
 from .functions.get_variant_inventory_by_sku import get_variant_inventory_by_sku
+from .functions.list_locations import list_locations
 from .functions.get_variants_by_skus import get_variants_by_skus
 from .functions.list_customers_page import list_customers_page
 from .functions.get_order import get_order
@@ -611,3 +612,26 @@ class GetOrderTests(SimpleTestCase):
         mock_post.return_value.json.return_value = {"data": {"order": None}}
 
         self.assertIsNone(get_order("1"))
+
+
+class ListLocationsTests(SimpleTestCase):
+    @patch("integrations.shopify.functions.list_locations.ShopifyClient.request_graphql")
+    def test_normalizes_ids_and_keeps_inactive_locations(self, request_graphql):
+        request_graphql.return_value = {
+            "data": {
+                "locations": {
+                    "nodes": [
+                        {"id": "gid://shopify/Location/97615380757", "name": "Bodega Envia", "isActive": True, "address": {"city": "Bogotá"}},
+                        {"id": "gid://shopify/Location/1", "name": "Cerrada", "isActive": False, "address": None},
+                    ]
+                }
+            }
+        }
+
+        self.assertEqual(
+            list_locations(),
+            [
+                {"location_id": "97615380757", "name": "Bodega Envia", "is_active": True, "city": "Bogotá"},
+                {"location_id": "1", "name": "Cerrada", "is_active": False, "city": ""},
+            ],
+        )

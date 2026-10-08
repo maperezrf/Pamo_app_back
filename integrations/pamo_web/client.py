@@ -17,7 +17,7 @@ class PamoWebClient:
     (header X-Bot-Token, el BOT_API_TOKEN de pamo_web) y envía la
     solicitud -- qué endpoint se llama vive en
     integrations/pamo_web/functions/. Se quita al terminar la convivencia
-    (docs/implementations-plans/sodimac-orders-and-invoicing.md, Parte C).
+    (docs/apps/orders.md, "Sodimac" > convivencia).
     """
 
     def __init__(self):

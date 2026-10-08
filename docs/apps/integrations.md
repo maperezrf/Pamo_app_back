@@ -54,8 +54,8 @@ seller id; es estado de conexión, no información de clientes o facturas.
   entrega email ni teléfono del comprador. La cuenta se conecta desde el navegador con
   `GET /api/integrations/mercadolibre/connect/` → `callback/` (rol
   `Admin`, `state` de un solo uso en la sesión), en
-  `mercadolibre/apis.py`; rutas en `integrations/urls.py`. Plan:
-  [`../implementations-plans/mercadolibre-orders-import.md`](../implementations-plans/mercadolibre-orders-import.md).
+  `mercadolibre/apis.py`; rutas en `integrations/urls.py`. Flujo de
+  pedidos en [`orders.md`](orders.md) ("Mercado Libre").
 - `madecentro/`: API de Shipturtle (plataforma del marketplace
   Madecentro), con token Bearer fijo que no vence.
   - Shipturtle entrega un token por dominio. `MadecentroClient(token)`
@@ -68,8 +68,6 @@ seller id; es estado de conexión, no información de clientes o facturas.
     `{"orders": [{order_id, order_number, financial_status}], "count"}`. El
     listado de Shipturtle es resumido (sus líneas no traen SKU ni precio),
     así que solo sirve para descubrir pedidos.
-  - Plan:
-    [`../implementations-plans/madecentro-orders-import.md`](../implementations-plans/madecentro-orders-import.md).
 - `sodimac/`: cliente REST y funciones de pedidos: `get_orders(tipo)` (lee
   la cola, que es destructiva) y `reinject_order(oc)` (devuelve una OC a
   la cola). Los consume `orders.sync_sodimac`.
@@ -77,9 +75,11 @@ seller id; es estado de conexión, no información de clientes o facturas.
   `X-Bot-Token`, `PAMO_WEB_BASE_URL` / `PAMO_WEB_BOT_TOKEN`) y
   `run_sodimac_invoicing()`, que llama a `POST /pamo_bots/sodimac/invoices`
   para que `pamo_web` facture sus OC de Sodimac antiguas. Se quita al
-  terminar la convivencia (Parte C de
-  [`../implementations-plans/sodimac-orders-and-invoicing.md`](../implementations-plans/sodimac-orders-and-invoicing.md)).
+  terminar la convivencia (ver "Sodimac" en [`orders.md`](orders.md)).
 - `envia/`: cliente REST, cotización y validación de payload logístico.
+- `envia_fulfillment/`: cliente REST de Envía Fulfillment (otra API que
+  `envia/`), lecturas de bodegas y órdenes, y creación de órdenes con la
+  guía adjunta. Escrituras apagadas por defecto. En construcción.
 - `siigo/`: cliente REST, token cacheado y funciones de clientes/facturas.
 - `whatsapp/`: cliente REST (WhatsApp Cloud API de Meta) y funciones de
   envío (texto, documento, plantilla, botones) y de parseo de webhook.

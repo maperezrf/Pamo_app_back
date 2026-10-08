@@ -4,11 +4,11 @@ from decimal import Decimal
 # pamo_web (SigoConnection.create_invoice). No son secretos. Ver
 # docs/apps/invoicing.md.
 
-# Mientras se prueba, la factura NO se timbra ante la DIAN ni se envía por
-# correo (decidido 2026-09-25). Pasar a timbrar = cambiar estas dos
-# constantes a True (en pamo_web ambas eran True).
-SODIMAC_STAMP_SEND = False
-SODIMAC_MAIL_SEND = False
+# La factura se timbra ante la DIAN y se envía por correo, como en
+# pamo_web (activado por el usuario el 2026-10-07; antes, False mientras
+# se probaba). Un timbrado no se revierte: para volver a pruebas, False.
+SODIMAC_STAMP_SEND = True
+SODIMAC_MAIL_SEND = True
 
 SODIMAC_DOCUMENT_ID = 26647
 SODIMAC_COST_CENTER = 116

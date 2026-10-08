@@ -78,6 +78,7 @@ completar una estructura.
 | API, vistas y serializers | [`patterns/API_VIEWS_AND_SERIALIZERS.md`](patterns/API_VIEWS_AND_SERIALIZERS.md) | Al crear o modificar endpoints. |
 | Contrato de API | [`contracts/API.md`](contracts/API.md) | Al cambiar el contrato que consume el frontend. |
 | Expedientes de apps | `docs/apps/<app>.md` | Siempre que la tarea afecte la app respectiva. |
+| Planes en curso | `docs/implementations-plans/` | Antes de retomar un trabajo con fases pendientes. Solo contiene planes **con algo pendiente**; ver "Planes" abajo. |
 
 ## Qué merece documentación
 
@@ -94,6 +95,14 @@ modifica o depreca una capacidad que:
 Cambios locales, obvios y sin posibilidad razonable de reutilización no
 requieren un documento nuevo. Cuando haya duda, se actualiza el expediente
 de la app afectada en lugar de crear un patrón artificial.
+
+## Planes
+
+Un plan en `docs/implementations-plans/` vive mientras tenga trabajo
+pendiente. Al terminarlo, lo vigente (reglas, decisiones que el código cita,
+evidencia contra el proveedor) pasa al expediente de la app, a los patrones o
+al contrato, las referencias del código y de `docs/` se apuntan ahí, y el plan
+se borra. El historial de un plan cerrado queda en git.
 
 ## Regla de mantenimiento
 

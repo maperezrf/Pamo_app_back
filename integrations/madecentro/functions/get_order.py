@@ -7,7 +7,7 @@ def get_order(order_id):
     """Pedido de Madecentro por id interno de Shipturtle, normalizado.
 
     Shipturtle no entrega el documento (cédula/NIT) del comprador -- ver
-    docs/implementations-plans/madecentro-orders-import.md. El nombre sale
+    docs/apps/orders.md. El nombre sale
     de la dirección de facturación; si viene vacío (empresa), se usa el
     nombre completo o la razón social de esa dirección.
     """

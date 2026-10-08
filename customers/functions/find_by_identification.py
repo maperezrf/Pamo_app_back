@@ -3,7 +3,7 @@ from ..models import ShopifyCustomer
 
 def find_by_identification(identification):
     """Busca en el directorio LOCAL (nunca en Shopify en vivo -- ver
-    docs/implementations-plans/shopify-customers-directory.md) un cliente
+    docs/apps/customers.md) un cliente
     por su número de identificación (cédula/NIT), ya normalizado desde
     `company`.
 

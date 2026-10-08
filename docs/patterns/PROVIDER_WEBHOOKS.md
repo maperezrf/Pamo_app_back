@@ -84,5 +84,4 @@ customers/functions/process_customer_webhook.py -- callable registrado
 customers/functions/upsert_from_shopify_customer.py -- persistencia (también la usa la reconciliación)
 ```
 
-Ver `docs/implementations-plans/shopify-customers-directory.md` para el caso
-completo aplicado.
+Ver `docs/apps/customers.md` para el caso completo aplicado.

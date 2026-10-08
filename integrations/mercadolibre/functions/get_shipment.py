@@ -8,7 +8,7 @@ def get_shipment(shipment_id):
     """Trae un envío de Mercado Libre (`GET /shipments/{id}`), normalizado.
 
     Devuelve:
-        {"shipment_id", "status", "logistic_type",
+        {"shipment_id", "status", "substatus", "tracking_number", "logistic_type",
          "items": [{"item_id", "quantity"}],
          "receiver": {"name", "phone", "address", "city", "region"}}
 
@@ -29,6 +29,10 @@ def get_shipment(shipment_id):
     return {
         "shipment_id": _text(raw.get("id")),
         "status": _text(raw.get("status")),
+        "substatus": _text(raw.get("substatus")),
+        # Número de guía (ej. "MEL48195006881FMXDF01"); vacío hasta que
+        # Mercado Libre la genera.
+        "tracking_number": _text(raw.get("tracking_number")),
         "logistic_type": _text(raw.get("logistic_type") or (raw.get("logistic") or {}).get("type")),
         "items": [
             {"item_id": _text(item.get("id")), "quantity": int(item.get("quantity") or 0)}

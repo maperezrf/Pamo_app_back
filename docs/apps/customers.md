@@ -2,13 +2,13 @@
 
 `customers/` mantiene un directorio local sincronizado con los clientes de
 Shopify. Existe porque la API de Shopify **no permite buscar un cliente por
-`company`** (donde vive la cédula/NIT en este proyecto) — ver
-[`../implementations-plans/shopify-customers-directory.md`](../implementations-plans/shopify-customers-directory.md)
-para la evidencia completa. Cualquier canal que necesite resolver "¿ya
+`company`** (donde vive la cédula/NIT en este proyecto):
+`customers(query: "company:<valor>")` no filtra nada; devuelve lo mismo
+que con un valor inventado (verificado contra la tienda real en
+septiembre de 2026). Cualquier canal que necesite resolver "¿ya
 existe este cliente?" por cédula consulta esta tabla local, nunca Shopify en
 vivo. Falabella (`orders`) **ya no la consume**: sus pedidos van a un
-cliente fijo de Shopify (ver
-[`../implementations-plans/falabella-fixed-customer.md`](../implementations-plans/falabella-fixed-customer.md)).
+cliente fijo de Shopify por canal (ver [`orders.md`](orders.md)).
 
 ## Capacidades
 

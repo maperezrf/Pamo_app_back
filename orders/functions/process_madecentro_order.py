@@ -32,7 +32,7 @@ def process_madecentro_order(order_id):
     Devuelve el estado final del pedido o una de las constantes de este
     módulo. Si falla la API, deja el detalle en `error_description` de la
     fila (si existe) y relanza. Ver
-    docs/implementations-plans/madecentro-orders-import.md.
+    docs/apps/orders.md.
     """
     if not MADECENTRO_SHOPIFY_CUSTOMER_ID:
         raise ValueError("MADECENTRO_SHOPIFY_CUSTOMER_ID no está configurado")

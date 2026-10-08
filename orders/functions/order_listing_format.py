@@ -1,6 +1,6 @@
 """Formato común de las dos listas de `GET /api/orders/` (pedidos de
 Shopify y pedidos no creados). Ver
-docs/implementations-plans/shopify-orders-listing.md."""
+docs/apps/orders.md."""
 
 from datetime import datetime, time, timedelta
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP

@@ -17,7 +17,7 @@ class Marketplace(models.TextChoices):
 
 class Product(models.Model):
     """Producto del catálogo de Pamo -- ver
-    docs/implementations-plans/products-catalog.md.
+    docs/apps/products.md.
 
     `sku` es el SKU de Pamo: en un producto simple, el que existe en
     Shopify. Un kit (`is_kit=True`) NO existe en Shopify: a Shopify van sus
@@ -93,7 +93,7 @@ class SkuUpload(models.Model):
     entrada y el reporte fila por fila para descargarlo después. El estado
     y el progreso NO se duplican aquí: viven en la ejecución del
     orquestador (`execution_id`, entero porque `products` no importa
-    modelos de `orchestrator`). Ver docs/implementations-plans/sku-equivalence-upload.md.
+    modelos de `orchestrator`). Ver docs/apps/products.md.
     """
 
     marketplace = models.CharField(max_length=32, choices=Marketplace.choices)

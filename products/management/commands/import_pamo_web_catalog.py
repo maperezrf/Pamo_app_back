@@ -21,7 +21,7 @@ class Command(BaseCommand):
         "Excel que descarga pamo_web (productos_sodimac y kits_sodimac) "
         "guardados como CSV. Se puede repetir sin duplicar. Consulta Shopify "
         "(solo lectura) para descartar kits que no funcionarían. Ver "
-        "docs/implementations-plans/products-catalog.md."
+        "docs/apps/products.md."
     )
 
     def add_arguments(self, parser):
@@ -34,7 +34,7 @@ class Command(BaseCommand):
 
         # Reglas de limpieza de los datos de pamo_web (decididas por el
         # usuario el 2026-09-25): ver "Importación desde pamo_web" en
-        # docs/implementations-plans/products-catalog.md.
+        # docs/apps/products.md.
         if options["products"]:
             rows = _read_csv(options["products"], PRODUCTS_COLUMNS)
             equivalence_rows, skipped, inverted = _products_to_equivalences(rows)

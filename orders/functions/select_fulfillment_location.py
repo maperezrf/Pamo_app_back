@@ -1,9 +1,9 @@
 def select_fulfillment_location(lines, priority_location_id=""):
     """Elige UNA bodega que pueda despachar el envío completo -- una guía
     sale de una sola bodega, así que no se parte entre bodegas. Ver
-    docs/implementations-plans/shopify-inventory-by-location.md y, para
+    docs/apps/orders.md y, para
     envíos con varias órdenes (packs de Mercado Libre),
-    docs/implementations-plans/mercadolibre-orders-import.md (decisión E).
+    docs/apps/orders.md (decisión E).
 
     `lines`: uno por ítem del envío,
         {"sku": str, "quantity": int, "tracked": bool,

@@ -3,7 +3,7 @@ from collections import defaultdict
 from django.db.models import Q
 from django.utils import timezone
 
-from ..models import MarketplaceOrder, ShopifyOrder
+from ..models import Dispatch, MarketplaceOrder, ShopifyOrder
 from .order_listing_format import buyer_from_row, day_range, fulfillment_from_row, money_str
 
 
@@ -32,7 +32,11 @@ def filter_orders(*, marketplace=None, date_from=None, date_to=None, search=""):
             .values("shopify_order_id")
         )
         orders = orders.filter(Q(name=search) | Q(shopify_id__in=marketplace_ids))
-    return orders.prefetch_related("lines").order_by("-shopify_created_at", "-id")
+    return (
+        orders.select_related("dispatch__location")
+        .prefetch_related("lines", "dispatch__notifications")
+        .order_by("-shopify_created_at", "-id")
+    )
 
 
 def format_orders(orders):
@@ -74,6 +78,33 @@ def _format_order(order, rows):
         ],
         "total": money_str(order.total),
         "currency": order.currency,
+        "dispatch": _format_dispatch(order),
+    }
+
+
+def _format_dispatch(order):
+    """Despacho a bodega (`Dispatch`), o None si el proceso aún no lo creó
+    (pedidos anteriores a `DISPATCH_START_DATE` nunca lo tienen)."""
+    try:
+        dispatch = order.dispatch
+    except Dispatch.DoesNotExist:
+        return None
+    return {
+        "status": dispatch.status,
+        "location_name": dispatch.location.name if dispatch.location else "",
+        "note": dispatch.note,
+        "tracking_number": dispatch.tracking_number,
+        "notifications": [
+            {
+                "channel": notification.channel,
+                "status": notification.status,
+                "recipient": notification.recipient,
+                "sent_at": _iso(notification.sent_at),
+                "error": notification.error_description,
+            }
+            for notification in dispatch.notifications.all()
+        ],
+        "updated_at": _iso(dispatch.updated_at),
     }
 
 

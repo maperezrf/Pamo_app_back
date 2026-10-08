@@ -12,7 +12,7 @@ def get_pack(pack_id):
     `orders: [{"id", "static_tags"}]`, `shipment: {"id"}` y `status`
     (`released`). Todas las órdenes de un pack comparten el envío -- un
     envío es una guía y sale de una sola bodega (ver
-    docs/implementations-plans/mercadolibre-orders-import.md, decisión E).
+    docs/apps/orders.md, decisión E).
     """
     raw = MercadoLibreClient().get(f"/packs/{pack_id}")
     return {

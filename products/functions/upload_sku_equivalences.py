@@ -52,7 +52,7 @@ def upload_sku_equivalences(params=None, progress_callback=None, cancellation_to
     `products.upload_sku_equivalences`. Carga equivalencias de SKU de UN
     marketplace (`SkuUpload` con id `params["upload_id"]`) validando cada
     `sku_pamo` contra Shopify. Ver
-    docs/implementations-plans/sku-equivalence-upload.md.
+    docs/apps/products.md.
 
     1. Valida sin escribir: vacíos, largos, duplicados en el archivo y kits.
     2. Consulta Shopify por bloques (un reintento por bloque; si vuelve a

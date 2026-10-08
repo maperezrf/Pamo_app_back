@@ -17,7 +17,7 @@ def parse_customer_webhook(payload):
     Punto abierto real: la forma exacta de este payload (nombres de campo,
     si `default_address` puede venir `null`, etc.) no se verificó todavía
     contra un webhook real de Shopify -- ver
-    docs/implementations-plans/shopify-customers-directory.md. Se asume la
+    docs/apps/customers.md. Se asume la
     forma estándar del recurso REST `customer` de Shopify.
     """
     default_address = payload.get("default_address") or {}

@@ -3,9 +3,7 @@
 `products/` es el catálogo de Pamo: productos, kits y equivalencias de SKU
 por marketplace. Existe para que cualquier canal de `orders/` traduzca el
 SKU que reporta un marketplace a lo que se envía a Shopify. Es general para
-todos los marketplaces, no solo para Sodimac. El plan y sus decisiones están
-en
-[`../implementations-plans/products-catalog.md`](../implementations-plans/products-catalog.md).
+todos los marketplaces, no solo para Sodimac.
 
 `products` no depende de `orders`; la dependencia va en sentido
 `orders → products`.
@@ -59,8 +57,7 @@ en
   invertidas y kits que no funcionarían (reglas en el plan).
 - Admin: `Product` con sus equivalencias y componentes como inlines;
   `MarketplaceSku` con búsqueda propia; `SkuUpload` de solo lectura.
-- **Carga de equivalencias de UN marketplace validada contra Shopify**
-  (plan: [`../implementations-plans/sku-equivalence-upload.md`](../implementations-plans/sku-equivalence-upload.md)):
+- **Carga de equivalencias de UN marketplace validada contra Shopify**:
   - `SkuUpload(marketplace, uploaded_by, execution_id, rows, results, summary, created_at, finished_at)`.
     Guarda la entrada y el reporte por fila. El estado y el progreso no se
     duplican aquí: vienen de `orchestrator.services.get_execution_status`.

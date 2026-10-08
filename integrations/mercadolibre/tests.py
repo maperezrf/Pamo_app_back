@@ -14,6 +14,7 @@ from .functions.get_billing_info import get_billing_info
 from .functions.get_order import get_order
 from .functions.get_pack import get_pack
 from .functions.get_shipment import get_shipment
+from .functions.get_shipment_label import MercadoLibreLabelError, get_shipment_label, is_label_available
 from .models import MercadoLibreToken
 
 CREDENTIALS = {
@@ -339,3 +340,56 @@ class ReadFunctionTests(TestCase):
                 "status": "released",
             },
         )
+
+
+PDF = b"%PDF-1.4 " + b"x" * 64 + b" %%EOF"
+
+
+def _bytes_response(content=PDF, content_type="application/pdf", status=200):
+    response = _response(status=status)
+    response.content = content
+    response.headers = {"Content-Type": content_type}
+    return response
+
+
+class ShipmentLabelTests(TestCase):
+    def setUp(self):
+        _token()
+
+    @patch("integrations.mercadolibre.client.requests.get")
+    def test_downloads_the_label_pdf_of_one_shipment(self, mock_get):
+        mock_get.return_value = _bytes_response()
+
+        self.assertEqual(get_shipment_label("48190651143"), PDF)
+
+        self.assertTrue(mock_get.call_args.args[0].endswith("/shipment_labels"))
+        self.assertEqual(mock_get.call_args.kwargs["params"], {"shipment_ids": "48190651143", "response_type": "pdf"})
+        self.assertEqual(mock_get.call_args.kwargs["headers"]["Accept"], "application/pdf")
+
+    @patch("integrations.mercadolibre.client.requests.get")
+    def test_rejects_a_response_that_is_not_a_pdf(self, mock_get):
+        mock_get.return_value = _bytes_response(content=b'{"error": "x"}', content_type="application/json")
+        with self.assertRaises(MercadoLibreLabelError):
+            get_shipment_label("1")
+
+        mock_get.return_value = _bytes_response(content=b"<html>no</html>" * 4)
+        with self.assertRaises(MercadoLibreLabelError):
+            get_shipment_label("1")
+
+    @patch("integrations.mercadolibre.client.requests.get")
+    def test_a_non_printable_shipment_raises_the_api_error(self, mock_get):
+        mock_get.return_value = _bytes_response(content=b'{"message": "not printable"}', status=400)
+        mock_get.return_value.text = '{"message": "not printable"}'
+        with self.assertRaises(MercadoLibreAPIError):
+            get_shipment_label("1")
+
+    def test_label_is_available_only_in_printable_states_and_never_for_full(self):
+        def shipment(status="ready_to_ship", substatus="ready_to_print", logistic_type="cross_docking"):
+            return {"status": status, "substatus": substatus, "logistic_type": logistic_type}
+
+        self.assertTrue(is_label_available(shipment()))
+        self.assertTrue(is_label_available(shipment(substatus="ready_for_pickup")))
+        self.assertTrue(is_label_available(shipment(substatus="printed", logistic_type="self_service")))
+        self.assertFalse(is_label_available(shipment(status="shipped", substatus="")))
+        self.assertFalse(is_label_available(shipment(substatus="in_packing_list")))
+        self.assertFalse(is_label_available(shipment(logistic_type="fulfillment")))

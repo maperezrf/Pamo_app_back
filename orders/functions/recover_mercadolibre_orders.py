@@ -20,7 +20,7 @@ INCOMPLETE_REPORT_AFTER = timedelta(hours=6)
 def recover_mercadolibre_orders(params=None, progress_callback=None, cancellation_token=None):
     """Proceso programado `orders.recover_mercadolibre`: rescata pedidos de
     Mercado Libre que no llegaron a Shopify por el webhook (decisión G de
-    docs/implementations-plans/mercadolibre-orders-import.md):
+    docs/apps/orders.md):
 
     1. Avisos no entregados: `missed_feeds` del tópico `orders_v2`.
     2. Avisos entregados cuyo proceso falló, y

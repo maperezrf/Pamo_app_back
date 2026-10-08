@@ -12,7 +12,7 @@ def seed_process_type(apps, schema_editor):
             "app_label": "orders",
             # Dos corridas a la vez sobre los mismos pedidos pendientes
             # podrían duplicar la creación en Shopify -- ver
-            # docs/implementations-plans/marketplace-orders-import.md.
+            # docs/apps/orders.md.
             "allow_concurrent": False,
         },
     )

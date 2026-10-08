@@ -1,3 +1,6 @@
+import re
+
+from django.core.exceptions import ValidationError
 from django.db import models
 
 from products.models import Marketplace
@@ -6,7 +9,7 @@ from products.models import Marketplace
 class MarketplaceOrder(models.Model):
     """Pedido de un marketplace (Falabella, y a futuro otros) pendiente de
     importar a Shopify, o ya importado. Modelo general, no específico de un
-    canal -- ver docs/implementations-plans/marketplace-orders-import.md.
+    canal -- ver docs/apps/orders.md.
 
     El indicador de "falta procesar" es `shopify_order_id == ""`, sin
     distinguir entre un pedido nuevo y uno que quedó en error en una
@@ -25,7 +28,7 @@ class MarketplaceOrder(models.Model):
         # Mercado Libre, donde varios webhooks del mismo pedido pueden llegar
         # a la vez). Si el proceso muere acá, no se sabe si la orden quedó
         # creada: NO se reintenta solo, se revisa a mano -- ver
-        # docs/implementations-plans/mercadolibre-orders-import.md (decisión F).
+        # docs/apps/orders.md (decisión F).
         PROCESSING = "procesando", "Procesando"
         # Obsoleto: ya no se crean clientes en Shopify (todos los pedidos van
         # al cliente fijo). Se conserva por las filas históricas; no se
@@ -59,7 +62,7 @@ class MarketplaceOrder(models.Model):
     # orden queda a nombre de un cliente fijo por canal
     # (FALABELLA_, MERCADOLIBRE_, MADECENTRO_SHOPIFY_CUSTOMER_ID); estos
     # campos son la fuente para facturar en Siigo -- ver
-    # docs/implementations-plans/falabella-fixed-customer.md.
+    # docs/apps/orders.md.
     customer_identification_type = models.CharField(max_length=16, blank=True)  # CC, NIT... (Mercado Libre)
     customer_type = models.CharField(max_length=8, blank=True)  # CO persona / BU empresa (Mercado Libre)
     customer_identification = models.CharField(max_length=32, blank=True)
@@ -81,7 +84,7 @@ class MarketplaceOrder(models.Model):
     # Bodega de despacho: una por pedido (el marketplace da una guía por
     # pedido). Independiente de `status`: la orden en Shopify se crea
     # igual aunque haya novedad. Ver
-    # docs/implementations-plans/shopify-inventory-by-location.md.
+    # docs/apps/orders.md.
     fulfillment_status = models.CharField(
         max_length=20, choices=FulfillmentStatus.choices, blank=True, default=FulfillmentStatus.PENDING
     )
@@ -134,7 +137,7 @@ class ShopifyOrder(models.Model):
     tienda web), para que el listado del frontend no dependa de Shopify en
     vivo. La mantienen el webhook de pedidos y la reconciliación, siempre
     con `functions/upsert_shopify_order.py` -- ver
-    docs/implementations-plans/shopify-orders-local-sync.md.
+    docs/apps/orders.md.
 
     El comprador real de un pedido de marketplace NO está aquí (en Shopify
     va a nombre del cliente fijo del canal): se cruza con `MarketplaceOrder`
@@ -214,3 +217,149 @@ class ShopifyOrderSyncState(models.Model):
     @classmethod
     def get(cls):
         return cls.objects.get_or_create(pk=1)[0]
+
+
+class DispatchLocation(models.Model):
+    """Bodega de despacho: una por ubicación de Shopify (las sincroniza
+    `sync_dispatch_locations`; no se crean a mano) y cómo se le avisa que
+    tiene que despachar. Ver
+    docs/implementations-plans/order-dispatch-to-warehouses.md.
+
+    Cada canal se activa por separado. Sin ningún canal, sus despachos
+    quedan para gestión manual.
+    """
+
+    class Channel(models.TextChoices):
+        API = "api", "API de Envía"
+        EMAIL = "email", "Correo"
+        WHATSAPP = "whatsapp", "WhatsApp"
+
+    shopify_location_id = models.CharField(max_length=32, unique=True)
+    name = models.CharField(max_length=100)
+    city = models.CharField(max_length=100, blank=True)
+    # Activa en Shopify (lo actualiza la sincronización).
+    is_active = models.BooleanField(default=True)
+
+    notify_api = models.BooleanField("Avisar por API de Envía", default=False)
+    notify_email = models.BooleanField("Avisar por correo", default=False)
+    notify_whatsapp = models.BooleanField("Avisar por WhatsApp", default=False)
+    emails = models.JSONField(default=list, blank=True, help_text='Lista de correos, ej. ["bodega@ejemplo.com"].')
+    whatsapp_numbers = models.JSONField(
+        default=list, blank=True, help_text='Lista en formato E.164 sin "+", ej. ["573001234567"].'
+    )
+    envia_warehouse_id = models.CharField(
+        "Bodega en Envía", max_length=16, blank=True, help_text="Id de bodega de Envía Fulfillment (canal API)."
+    )
+    # No avisar hasta tener la guía del canal (Mercado Libre, Falabella).
+    requires_label = models.BooleanField("Exige guía", default=True)
+
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["name"]
+        verbose_name = "Bodega de despacho"
+        verbose_name_plural = "Bodegas de despacho"
+
+    def __str__(self):
+        return self.name
+
+    def channels(self):
+        """Canales activos, en orden fijo."""
+        flags = (
+            (self.Channel.API, self.notify_api),
+            (self.Channel.EMAIL, self.notify_email),
+            (self.Channel.WHATSAPP, self.notify_whatsapp),
+        )
+        return [channel for channel, enabled in flags if enabled]
+
+    def clean(self):
+        errors = {}
+        if self.notify_api and not str(self.envia_warehouse_id).isdigit():
+            errors["envia_warehouse_id"] = "El canal API necesita el id numérico de la bodega en Envía."
+        if self.notify_email and not (isinstance(self.emails, list) and self.emails):
+            errors["emails"] = "El canal correo necesita al menos un correo."
+        if not isinstance(self.emails, list) or any("@" not in str(email) for email in self.emails):
+            errors["emails"] = "Debe ser una lista de correos."
+        if self.notify_whatsapp and not (isinstance(self.whatsapp_numbers, list) and self.whatsapp_numbers):
+            errors["whatsapp_numbers"] = "El canal WhatsApp necesita al menos un número."
+        if not isinstance(self.whatsapp_numbers, list) or any(
+            not re.fullmatch(r"\d{10,15}", str(number)) for number in self.whatsapp_numbers
+        ):
+            errors["whatsapp_numbers"] = 'Debe ser una lista de números E.164 sin "+" (ej. "573001234567").'
+        if errors:
+            raise ValidationError(errors)
+
+
+class Dispatch(models.Model):
+    """Despacho de un pedido de Shopify (todos los pedidos, de marketplace o
+    de la tienda web, terminan en `ShopifyOrder`): qué bodega lo despacha,
+    con qué guía y si ya se le avisó. Lo crea y avanza `dispatch_orders`.
+    El PDF de la guía no se guarda; solo su hash.
+    """
+
+    class Status(models.TextChoices):
+        WAITING_LABEL = "esperando_guia", "Esperando guía"
+        READY = "listo", "Listo para avisar"
+        NOTIFIED = "notificado", "Bodega avisada"
+        ERROR = "error", "Error al avisar"
+        MANUAL = "manual", "Gestión manual"
+        CANCELLED = "cancelado", "Cancelado"
+
+    shopify_order = models.OneToOneField(ShopifyOrder, related_name="dispatch", on_delete=models.CASCADE)
+    location = models.ForeignKey(
+        DispatchLocation, related_name="dispatches", null=True, blank=True, on_delete=models.PROTECT
+    )
+    # Canal de venta (`ShopifyOrder.marketplace`): define de dónde sale la guía.
+    channel = models.CharField(max_length=20, blank=True)
+    status = models.CharField(max_length=20, choices=Status.choices, db_index=True)
+    # Motivo legible del estado (novedad de bodega, por qué es manual...).
+    note = models.TextField(blank=True)
+    tracking_number = models.CharField(max_length=64, blank=True)
+    label_sha256 = models.CharField(max_length=64, blank=True)
+    label_fetched_at = models.DateTimeField(null=True, blank=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "Despacho"
+        verbose_name_plural = "Despachos"
+
+    def __str__(self):
+        return f"{self.shopify_order} -> {self.location or 'sin bodega'} ({self.status})"
+
+
+class DispatchNotification(models.Model):
+    """Un aviso de un despacho por un canal. Uno por despacho y canal: se
+    reclama (`procesando`) antes de enviar, así un aviso nunca sale dos
+    veces. Si el proceso muere enviando, queda en `procesando` para
+    revisión manual (no se sabe si llegó)."""
+
+    class Status(models.TextChoices):
+        PENDING = "pendiente", "Pendiente"
+        PROCESSING = "procesando", "Procesando"
+        SENT = "enviado", "Enviado"
+        ERROR = "error", "Error"
+
+    dispatch = models.ForeignKey(Dispatch, related_name="notifications", on_delete=models.CASCADE)
+    channel = models.CharField(max_length=20, choices=DispatchLocation.Channel.choices)
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING)
+    # A quién se avisó (correos, números o bodega de Envía), para auditoría.
+    recipient = models.CharField(max_length=255, blank=True)
+    # Id del lado del proveedor: orden de Envía, mensaje de WhatsApp...
+    external_id = models.CharField(max_length=128, blank=True)
+    error_description = models.TextField(blank=True)
+    sent_at = models.DateTimeField(null=True, blank=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "Aviso de despacho"
+        verbose_name_plural = "Avisos de despacho"
+        constraints = [
+            models.UniqueConstraint(fields=["dispatch", "channel"], name="unique_dispatch_notification_channel"),
+        ]
+
+    def __str__(self):
+        return f"{self.dispatch_id} {self.channel} ({self.status})"

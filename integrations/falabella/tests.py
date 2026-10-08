@@ -3,7 +3,12 @@ from unittest.mock import patch
 
 from django.test import SimpleTestCase
 
+import base64
+
+from .client import FalabellaAPIError
 from .functions.get_order_items import get_order_items
+from .functions.get_package_items import get_package_items
+from .functions.get_shipping_document import FalabellaDocumentError, get_shipping_document
 from .functions.get_orders import get_orders
 
 
@@ -282,3 +287,80 @@ class GetOrderItemsTests(SimpleTestCase):
         self.assertIn("OrderId=8001456573", url)
         self.assertIn("Action=GetOrderItems", url)
         self.assertIn("Version=1.0", url)
+
+
+PDF = b"%PDF-1.4 " + b"x" * 64 + b" %%EOF"
+
+
+def _document_response(document, envelope="Documents"):
+    body = {"Documents": {"Document": document}} if envelope == "Documents" else {"Document": document}
+    return {"SuccessResponse": {"Head": {"RequestAction": "GetDocument"}, "Body": body}}
+
+
+def _document(content=PDF, mime="application/pdf", document_type="shippingParcel"):
+    return {"DocumentType": document_type, "MimeType": mime, "File": base64.b64encode(content).decode()}
+
+
+class GetShippingDocumentTests(SimpleTestCase):
+    @patch("integrations.falabella.client.FalabellaClient.request")
+    def test_returns_the_guide_pdf_of_the_package_items(self, mock_request):
+        mock_request.return_value = _document_response(_document())
+
+        self.assertEqual(get_shipping_document(["111", 222]), PDF)
+
+        action, version, parameters = mock_request.call_args.args
+        self.assertEqual(action, "GetDocument")
+        self.assertEqual(parameters, {"DocumentType": "shippingParcel", "OrderItemIds": "[111,222]"})
+
+    @patch("integrations.falabella.client.FalabellaClient.request")
+    def test_accepts_the_documented_envelope_without_documents(self, mock_request):
+        mock_request.return_value = _document_response(_document(), envelope="Document")
+        self.assertEqual(get_shipping_document([1]), PDF)
+
+    @patch("integrations.falabella.client.FalabellaClient.request")
+    def test_rejects_documents_that_are_not_a_pdf_guide(self, mock_request):
+        for document in (
+            _document(mime="text/html"),
+            _document(document_type="invoice"),
+            _document(content=b"<html>no es pdf</html>" * 3),
+            {"DocumentType": "shippingParcel", "MimeType": "application/pdf", "File": "%%%no-base64"},
+        ):
+            mock_request.return_value = _document_response(document)
+            with self.assertRaises(FalabellaDocumentError):
+                get_shipping_document([1])
+
+    @patch("integrations.falabella.client.FalabellaClient.request")
+    def test_rejects_an_ambiguous_envelope(self, mock_request):
+        response = _document_response(_document())
+        response["SuccessResponse"]["Body"]["Document"] = _document()
+        mock_request.return_value = response
+        with self.assertRaises(FalabellaDocumentError):
+            get_shipping_document([1])
+
+    @patch("integrations.falabella.client.FalabellaClient.request")
+    def test_provider_error_propagates(self, mock_request):
+        mock_request.side_effect = FalabellaAPIError({"Head": {"ErrorCode": "21"}})
+        with self.assertRaises(FalabellaAPIError):
+            get_shipping_document([1])
+
+    def test_requires_at_least_one_item(self):
+        with self.assertRaises(ValueError):
+            get_shipping_document([])
+
+
+class GetPackageItemsTests(SimpleTestCase):
+    @patch("integrations.falabella.client.FalabellaClient.request")
+    def test_keeps_one_row_per_unit_with_package_and_tracking(self, mock_request):
+        mock_request.return_value = {"SuccessResponse": {"Body": {"OrderItems": {"OrderItem": [
+            {"OrderItemId": 11, "PackageId": "PKG1", "TrackingCode": "2298450467", "Status": "ready_to_ship", "Sku": "I001"},
+            {"OrderItemId": 12, "PackageId": "", "TrackingCode": "", "Status": "pending", "Sku": "I001"},
+        ]}}}}
+
+        self.assertEqual(
+            get_package_items("8001737501"),
+            [
+                {"order_item_id": "11", "package_id": "PKG1", "tracking_code": "2298450467", "status": "ready_to_ship"},
+                {"order_item_id": "12", "package_id": "", "tracking_code": "", "status": "pending"},
+            ],
+        )
+        self.assertEqual(mock_request.call_args.args[2], {"OrderId": "8001737501"})

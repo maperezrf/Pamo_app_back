@@ -12,7 +12,7 @@ def get_order(order_id):
                     "variation_id"}]}
 
     Verificado contra 8 pedidos reales el 2026-09-24 (ver
-    docs/implementations-plans/mercadolibre-orders-import.md):
+    docs/apps/orders.md):
     - `sku` = `order_items[].item.seller_sku`, presente siempre, también
       en variantes (`variation_id` venía vacío aunque había
       `variation_attributes`). Si viene vacío queda `""` -- a propósito NO
