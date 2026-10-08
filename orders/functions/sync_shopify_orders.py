@@ -2,13 +2,14 @@ from collections import Counter
 
 from integrations.shopify.functions.list_orders_page import list_orders_page
 
+from .assign_web_dispatch import assign_web_dispatch
 from .order_listing_format import COLOMBIA_TZ
 from .upsert_shopify_order import upsert_shopify_order
 
 PAGE_SIZE = 50
 
 
-def iter_shopify_order_pages(query):
+def iter_shopify_order_pages(query, *, assign_web_dispatches=False):
     """Recorre todas las páginas de pedidos de Shopify que cumplen `query`,
     ordenadas por fecha de actualización ascendente, y guarda cada uno con
     `upsert_shopify_order`. Bucle compartido por la carga inicial y la
@@ -18,6 +19,10 @@ def iter_shopify_order_pages(query):
     resultados)` después de cada página, para que el proceso registrado
     reporte progreso y revise la cancelación entre páginas. Un error de
     Shopify se propaga.
+
+    `assign_web_dispatches=True` (reconciliación) asigna bodega a cada pedido
+    web pagado que todavía no la tiene (`assign_web_dispatch`); la carga
+    inicial no, para no asignar históricos.
     """
     cursor = None
     page_number = 0
@@ -26,6 +31,8 @@ def iter_shopify_order_pages(query):
         page = list_orders_page(first=PAGE_SIZE, after=cursor, query=query, sort_key="UPDATED_AT", reverse=False)
         for order in page["orders"]:
             counts[upsert_shopify_order(order)] += 1
+            if assign_web_dispatches and assign_web_dispatch(order["id"]):
+                counts["bodega_asignada"] += 1
         page_number += 1
         yield page_number, counts
         if not page["has_next_page"]:
@@ -40,4 +47,4 @@ def shopify_datetime(value):
 
 
 def summary(counts):
-    return ", ".join(f"{name}: {counts[name]}" for name in ("created", "updated", "skipped", "deleted") if counts[name]) or "sin pedidos"
+    return ", ".join(f"{name}: {counts[name]}" for name in ("created", "updated", "skipped", "deleted", "bodega_asignada") if counts[name]) or "sin pedidos"

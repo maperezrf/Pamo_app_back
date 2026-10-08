@@ -493,3 +493,103 @@ class DispatchActionAPITests(TestCase):
         response = self._post(order, "label/quote/")
         self.assertEqual(response.status_code, 400)
         self.assertIn("Traer guía", response.json()["detail"])
+
+
+W = f"{F}.assign_web_dispatch"
+ENVIA_STOCK = {
+    "variant_id": "1", "sku": "I001", "tracked": True,
+    "locations": [{"location_id": ENVIA_LOCATION, "name": "Bodega Envia", "available": 5}],
+}
+
+
+@patch(f"{F}.assign_dispatch_location.FULFILLMENT_PRIORITY_LOCATION_ID", ENVIA_LOCATION)
+@patch(f"{F}.assign_dispatch_location.get_variant_inventory_by_sku", return_value=ENVIA_STOCK)
+class AssignWebDispatchTests(TestCase):
+    def setUp(self):
+        self.envia = _location(shopify_location_id=ENVIA_LOCATION, name="Bodega Envia")
+
+    def test_a_paid_web_order_gets_its_warehouse_once(self, inventory):
+        from .functions.assign_web_dispatch import assign_web_dispatch
+
+        order = _order(marketplace="shopify", financial_status="PAID")
+
+        dispatch = assign_web_dispatch(order.shopify_id)
+
+        self.assertEqual(dispatch.location, self.envia)
+        self.assertIsNone(assign_web_dispatch(order.shopify_id))  # ya tiene despacho
+        self.assertEqual(inventory.call_count, 1)
+        self.assertEqual(Dispatch.objects.count(), 1)
+        self.assertFalse(DispatchNotification.objects.exists())  # no avisa a nadie
+
+    def test_skips_unpaid_cancelled_fulfilled_and_marketplace_orders(self, inventory):
+        from .functions.assign_web_dispatch import assign_web_dispatch
+
+        cases = [
+            _order(shopify_id="1", marketplace="shopify", financial_status="PENDING"),
+            _order(shopify_id="2", marketplace="shopify", financial_status="PAID",
+                   cancelled_at=datetime(2026, 10, 8, tzinfo=dt_timezone.utc)),
+            _order(shopify_id="3", marketplace="shopify", financial_status="PAID", fulfillment_status="FULFILLED"),
+            _order(shopify_id="4", marketplace="mercadolibre", financial_status="PAID"),
+        ]
+        for order in cases:
+            self.assertIsNone(assign_web_dispatch(order.shopify_id))
+        self.assertFalse(Dispatch.objects.exists())
+        inventory.assert_not_called()
+
+    def test_waits_while_the_warehouse_registry_is_empty(self, inventory):
+        from .functions.assign_web_dispatch import assign_web_dispatch
+
+        DispatchLocation.objects.all().delete()
+        order = _order(marketplace="shopify", financial_status="PAID")
+        self.assertIsNone(assign_web_dispatch(order.shopify_id))
+        self.assertFalse(Dispatch.objects.exists())
+
+    def test_an_inventory_error_does_not_break_the_caller(self, inventory):
+        from .functions.assign_web_dispatch import assign_web_dispatch
+
+        inventory.side_effect = ConnectionError("Shopify caído")
+        order = _order(marketplace="shopify", financial_status="PAID")
+        with self.assertLogs("orders.functions.assign_web_dispatch", level="ERROR"):
+            self.assertIsNone(assign_web_dispatch(order.shopify_id))
+        self.assertFalse(Dispatch.objects.exists())
+
+    def test_the_listing_shows_the_dispatch_warehouse_for_web_orders(self, inventory):
+        from .functions.assign_web_dispatch import assign_web_dispatch
+
+        user = User.objects.create_user("ops", password="x")
+        user.groups.add(Group.objects.get_or_create(name="Operaciones")[0])
+        self.client.force_login(user)
+        order = _order(marketplace="shopify", financial_status="PAID")
+        assign_web_dispatch(order.shopify_id)
+
+        [row] = self.client.get("/api/orders/").json()["orders"]
+
+        self.assertEqual(row["fulfillment"], {
+            "status": "asignada", "location_id": ENVIA_LOCATION, "location_name": "Bodega Envia", "note": "",
+        })
+
+
+class WebDispatchHooksTests(TestCase):
+    @patch(f"{F}.process_shopify_order_webhook.assign_web_dispatch")
+    @patch(f"{F}.process_shopify_order_webhook.upsert_shopify_order", return_value="created")
+    @patch(f"{F}.process_shopify_order_webhook.get_order", return_value={"id": "5001", "name": "20400"})
+    def test_the_order_webhook_assigns_after_saving(self, get_order, upsert, assign):
+        from .functions.process_shopify_order_webhook import process_shopify_order_webhook
+
+        process_shopify_order_webhook({"topic": "orders/create", "order_id": "5001"})
+
+        assign.assert_called_once_with("5001")
+
+    @patch(f"{F}.sync_shopify_orders.assign_web_dispatch", return_value=object())
+    @patch(f"{F}.sync_shopify_orders.upsert_shopify_order", return_value="updated")
+    @patch(f"{F}.sync_shopify_orders.list_orders_page")
+    def test_only_the_reconciliation_assigns_not_the_backfill(self, page, upsert, assign):
+        from .functions.sync_shopify_orders import iter_shopify_order_pages
+
+        page.return_value = {"orders": [{"id": "5001"}], "has_next_page": False, "end_cursor": None}
+
+        list(iter_shopify_order_pages("q"))  # carga inicial
+        assign.assert_not_called()
+        [(_, counts)] = list(iter_shopify_order_pages("q", assign_web_dispatches=True))  # reconciliación
+        assign.assert_called_once_with("5001")
+        self.assertEqual(counts["bodega_asignada"], 1)

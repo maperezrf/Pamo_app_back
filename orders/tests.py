@@ -1622,8 +1622,24 @@ class UpsertShopifyOrderTests(TestCase):
         self.assertEqual(len(calls), 2)
 
 
+class NoWebDispatchAssignmentMixin:
+    """El webhook y la reconciliación asignan bodega a pedidos web pagados
+    (`assign_web_dispatch`, probado en `tests_dispatch.py`); aquí no
+    interesa y consultaría el inventario de Shopify."""
+
+    def setUp(self):
+        super().setUp()
+        for target in (
+            "orders.functions.process_shopify_order_webhook.assign_web_dispatch",
+            "orders.functions.sync_shopify_orders.assign_web_dispatch",
+        ):
+            patcher = patch(target, return_value=None)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+
 @patch("orders.functions.process_shopify_order_webhook.get_order")
-class ProcessShopifyOrderWebhookTests(TestCase):
+class ProcessShopifyOrderWebhookTests(NoWebDispatchAssignmentMixin, TestCase):
     def _process(self, topic, order_id="10"):
         from .functions.process_shopify_order_webhook import process_shopify_order_webhook
 
@@ -1711,7 +1727,7 @@ class _CancelAfter:
 
 
 @patch(f"{SYNC}.list_orders_page")
-class SyncShopifyOrdersTests(TestCase):
+class SyncShopifyOrdersTests(NoWebDispatchAssignmentMixin, TestCase):
     def _backfill(self, params=None, token=None):
         from .functions.backfill_shopify_orders import backfill_shopify_orders
 

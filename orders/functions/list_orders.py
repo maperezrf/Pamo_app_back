@@ -65,7 +65,8 @@ def _format_order(order, rows):
         "marketplace_order_numbers": sorted({row.marketplace_order_number or row.marketplace_order_id for row in rows}),
         "customer": buyer_from_row(rows[0]) if rows else _shopify_customer(order),
         # Todas las filas de un envío comparten la bodega (process_shipment).
-        "fulfillment": fulfillment_from_row(rows[0] if rows else None),
+        # Sin fila local (tienda web), la del despacho (`assign_web_dispatch`).
+        "fulfillment": fulfillment_from_row(rows[0]) if rows else _fulfillment_from_dispatch(order),
         "items": [
             {
                 "sku": line.sku,
@@ -80,6 +81,26 @@ def _format_order(order, rows):
         "currency": order.currency,
         "dispatch": format_dispatch(order),
     }
+
+
+def _fulfillment_from_dispatch(order):
+    """Bodega de un pedido sin `MarketplaceOrder` (tienda web), con la misma
+    forma que `fulfillment_from_row`: asignada si el despacho tiene bodega;
+    novedad con el motivo si no (sin stock, SKU desconocido)."""
+    try:
+        dispatch = order.dispatch
+    except Dispatch.DoesNotExist:
+        return fulfillment_from_row(None)
+    if dispatch.location:
+        return {
+            "status": "asignada",
+            "location_id": dispatch.location.shopify_location_id,
+            "location_name": dispatch.location.name,
+            "note": "",
+        }
+    if dispatch.status == Dispatch.Status.CANCELLED:
+        return fulfillment_from_row(None)
+    return {"status": "novedad", "location_id": "", "location_name": "", "note": dispatch.note}
 
 
 def format_dispatch(order):

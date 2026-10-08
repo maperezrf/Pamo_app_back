@@ -414,6 +414,17 @@ Envía: Envía es una bodega más, avisada por API.
   - `api`: `integrations.envia_fulfillment.create_order`. **Bloqueado**:
     falla hasta resolver el cruce SKU → `variantId` de Envía, y además el
     cliente de Envía bloquea escrituras sin `ENVIA_FULFILLMENT_WRITES_ENABLED`.
+- **Bodega de los pedidos web** (tienda, Addi, cotizaciones; sin
+  `MarketplaceOrder`): `assign_web_dispatch` crea su `Dispatch` con la bodega
+  (misma regla de inventario) **apenas el pedido está pagado**, desde el
+  webhook de pedidos (al instante) y la reconciliación (red de seguridad; el
+  backfill no, para no asignar históricos). Una sola vez, sin avisar a nadie
+  ni pedir guía; no corre mientras el registro de bodegas esté vacío. Los de
+  marketplace no pasan por aquí (ya traen bodega, y el webhook puede llegar
+  antes del vínculo con `MarketplaceOrder`). El listado muestra esa bodega
+  en `fulfillment` (o la novedad con su motivo). Para pedidos ya existentes:
+  `python manage.py assign_web_dispatches --since AAAA-MM-DD` (sin `--apply`
+  solo lista).
 - **Acciones manuales del panel** (`orders/functions/dispatch_actions.py`,
   endpoints `POST /api/orders/<id>/dispatch/...` en el contrato), para
   probar el flujo de forma controlada mientras no se automatiza:

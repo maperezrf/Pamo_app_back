@@ -1,5 +1,6 @@
 from integrations.shopify.functions.get_order import get_order
 
+from .assign_web_dispatch import assign_web_dispatch
 from .mark_shopify_order_deleted import mark_shopify_order_deleted
 from .upsert_shopify_order import upsert_shopify_order
 
@@ -31,4 +32,8 @@ def process_shopify_order_webhook(params, progress_callback=None, cancellation_t
         progress_callback(100, f"Pedido {order_id} no existe en Shopify: marcado como borrado")
         return
     result = upsert_shopify_order(data)
-    progress_callback(100, f"Pedido {data['name'] or order_id}: {result}")
+    # Pedido web pagado: se le asigna bodega al llegar (sin avisar a nadie).
+    dispatch = assign_web_dispatch(data["id"])
+    suffix = f"; bodega {dispatch.location.name}" if dispatch and dispatch.location else ""
+    suffix = suffix or ("; sin bodega (ver despacho)" if dispatch else "")
+    progress_callback(100, f"Pedido {data['name'] or order_id}: {result}{suffix}")
