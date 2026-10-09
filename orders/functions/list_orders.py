@@ -113,6 +113,7 @@ def format_dispatch(order):
     return {
         "status": dispatch.status,
         "location_name": dispatch.location.name if dispatch.location else "",
+        "location_creates_own_label": bool(dispatch.location and dispatch.location.creates_own_label),
         "note": dispatch.note,
         "tracking_number": dispatch.tracking_number,
         "label_source": dispatch.label_source,

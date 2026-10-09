@@ -11,7 +11,7 @@ from integrations.envia.functions.download_label import download_label
 
 from .assign_dispatch_location import assign_dispatch_location
 from .dispatch_details import dispatch_details
-from .fetch_dispatch_label import fetch_dispatch_label
+from .fetch_dispatch_label import CHANNEL_LABELS, fetch_dispatch_label
 from .notify_dispatch import notify
 from .order_listing_format import day_range
 
@@ -85,6 +85,8 @@ def process_order_dispatch(order, *, manual=False):
     if dispatch.label_source == Dispatch.LabelSource.ENVIA and dispatch.label_url:
         # Guía generada en Envía: se vuelve a bajar, nunca se genera otra.
         label = {"pdf": download_label(dispatch.label_url), "tracking_number": dispatch.tracking_number}
+    elif location.creates_own_label and order.marketplace not in CHANNEL_LABELS:
+        pass  # la bodega genera la guía: se le avisa sin guía
     elif location.requires_label:
         label, reason = fetch_dispatch_label(order, force=manual)
         if label is None:

@@ -1,0 +1,8 @@
+{% extends "admin/change_list.html" %}
+
+{% block object-tools-items %}
+  {% if request.user.is_superuser %}
+    <li><a href="{% url 'admin:orders_dispatchlocation_test_notifications' %}">Probar avisos</a></li>
+  {% endif %}
+  {{ block.super }}
+{% endblock %}

@@ -1,5 +1,12 @@
 from django.contrib import admin, messages
+from django.core.exceptions import PermissionDenied
+from django.shortcuts import redirect
+from django.template.response import TemplateResponse
+from django.urls import path
 
+from .functions.send_test_notification import (
+    TestNotificationError, email_settings_summary, send_test_email, send_test_whatsapp,
+)
 from .functions.sync_dispatch_locations import sync_dispatch_locations
 from .models import Dispatch, DispatchLocation, DispatchNotification, MarketplaceOrder, MarketplaceOrderItem
 
@@ -38,7 +45,9 @@ class DispatchLocationAdmin(admin.ModelAdmin):
     """Registro de bodegas de despacho. Las filas salen de Shopify (acción
     "Sincronizar"); aquí solo se configuran canales y contactos."""
 
-    list_display = ("name", "city", "is_active", "notify_api", "notify_email", "notify_whatsapp", "requires_label")
+    list_display = (
+        "name", "city", "is_active", "notify_api", "notify_email", "notify_whatsapp", "requires_label", "creates_own_label",
+    )
     list_filter = ("is_active", "notify_api", "notify_email", "notify_whatsapp")
     readonly_fields = ("shopify_location_id", "name", "city", "is_active", "updated_at")
     fields = (
@@ -48,10 +57,45 @@ class DispatchLocationAdmin(admin.ModelAdmin):
         "emails",
         "whatsapp_numbers",
         "envia_warehouse_id",
-        "requires_label",
+        ("requires_label", "creates_own_label"),
         "updated_at",
     )
     actions = ["sync_from_shopify"]
+    # Botón "Probar avisos": correo y WhatsApp de prueba enviados desde el
+    # servidor (sirve en Railway sin CLI).
+    change_list_template = "admin/orders/dispatchlocation/change_list.html"
+
+    def get_urls(self):
+        test_view = self.admin_site.admin_view(self.test_notifications_view)
+        return [path("probar-avisos/", test_view, name="orders_dispatchlocation_test_notifications"), *super().get_urls()]
+
+    def test_notifications_view(self, request):
+        """Envía un correo o un WhatsApp de prueba a quien prueba. Solo
+        superusuarios: manda mensajes reales con las credenciales del
+        servidor."""
+        if not request.user.is_superuser:
+            raise PermissionDenied
+        if request.method == "POST":
+            to = request.POST.get("to", "").strip()
+            try:
+                if request.POST.get("channel") == "whatsapp":
+                    message_id = send_test_whatsapp(to)
+                    self.message_user(request, f"WhatsApp enviado a {to} (id {message_id}).", messages.SUCCESS)
+                else:
+                    if not to:
+                        raise TestNotificationError("Escribe el correo de destino.")
+                    elapsed = send_test_email(to)
+                    self.message_user(request, f"Correo enviado a {to} en {elapsed:.1f}s.", messages.SUCCESS)
+            except TestNotificationError as error:
+                self.message_user(request, str(error), messages.ERROR)
+            return redirect(request.path)
+        context = {
+            **self.admin_site.each_context(request),
+            "opts": self.model._meta,
+            "title": "Probar avisos",
+            "email_settings": email_settings_summary(),
+        }
+        return TemplateResponse(request, "admin/orders/dispatchlocation/test_notifications.html", context)
 
     def has_add_permission(self, request):
         return False  # se crean al sincronizar con Shopify

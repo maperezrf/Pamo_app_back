@@ -593,3 +593,106 @@ class WebDispatchHooksTests(TestCase):
         [(_, counts)] = list(iter_shopify_order_pages("q", assign_web_dispatches=True))  # reconciliación
         assign.assert_called_once_with("5001")
         self.assertEqual(counts["bodega_asignada"], 1)
+
+
+@patch(f"{F}.dispatch_orders.DISPATCH_START_DATE", "2026-10-08")
+@patch(f"{F}.dispatch_orders.DISPATCH_NOTIFICATIONS_ENABLED", True)
+class OwnLabelWarehouseTests(TestCase):
+    """Operaciones (2026-10-08): Bodega Envia crea la guía de los pedidos de
+    Shopify; otras bodegas necesitan que se la generemos."""
+
+    def setUp(self):
+        self.web = _order(marketplace="shopify", financial_status="PAID")
+
+    def _dispatch(self, **location):
+        place = _location(notify_email=True, emails=["bodega@example.com"], **location)
+        Dispatch.objects.create(shopify_order=self.web, location=place, channel="shopify", status=Dispatch.Status.WAITING_LABEL)
+        return place
+
+    @override_settings(**EMAIL_SETTINGS)
+    def test_a_warehouse_that_creates_its_label_is_notified_without_one(self):
+        self._dispatch(creates_own_label=True)
+
+        self.assertEqual(dispatch_orders(), {"notificado": 1})
+
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertEqual(mail.outbox[0].attachments, [])
+
+    def test_otherwise_the_web_order_waits_for_a_generated_label(self):
+        self._dispatch(creates_own_label=False)
+
+        self.assertEqual(dispatch_orders(), {"esperando_guia": 1})
+        self.assertEqual(len(mail.outbox), 0)
+
+    @patch(f"{F}.fetch_dispatch_label.DISPATCH_FETCH_LABELS_ENABLED", True)
+    @patch(f"{F}.fetch_dispatch_label.get_shipment", return_value={**ML_SHIPMENT, "substatus": "ready_to_print"})
+    @patch(f"{F}.fetch_dispatch_label.get_shipment_label", return_value=PDF)
+    @override_settings(**EMAIL_SETTINGS)
+    def test_mercadolibre_still_carries_its_channel_label(self, get_label, get_shipment):
+        place = _location(shopify_location_id="777", name="Envia ML", notify_email=True, emails=["b@example.com"],
+                          creates_own_label=True)
+        order = _order(shopify_id="9001", name="20500")
+        _marketplace_row(order, location_id="777", marketplace_order_id="ml-1")
+        Dispatch.objects.create(shopify_order=order, location=place, channel="mercadolibre", status=Dispatch.Status.WAITING_LABEL)
+
+        dispatch_orders(params={"shopify_order_ids": ["9001"]})
+
+        get_label.assert_called_once()
+        self.assertEqual(mail.outbox[0].attachments[0][1], PDF)
+
+    def test_generate_label_is_refused_for_a_warehouse_that_creates_its_own(self):
+        self._dispatch(creates_own_label=True)
+        user = User.objects.create_user("ops", password="x")
+        user.groups.add(Group.objects.get_or_create(name="Operaciones")[0])
+        self.client.force_login(user)
+
+        response = self.client.post(f"/api/orders/{self.web.shopify_id}/dispatch/label/quote/")
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("crea su propia guía", response.json()["detail"])
+
+
+class TestNotificationsAdminTests(TestCase):
+    """Página del admin "Probar avisos" (Bodegas de despacho): prueba los
+    canales desde el servidor, sin CLI de Railway."""
+
+    URL = "/admin/orders/dispatchlocation/probar-avisos/"
+
+    def _login(self, **flags):
+        user = User.objects.create_user("admin", password="x", is_staff=True, **flags)
+        self.client.force_login(user)
+
+    @override_settings(**EMAIL_SETTINGS)
+    def test_a_superuser_sends_a_test_email(self):
+        self._login(is_superuser=True)
+
+        self.assertContains(self.client.get(self.URL), "Enviar correo de prueba")
+        response = self.client.post(self.URL, {"channel": "email", "to": "yo@example.com"}, follow=True)
+
+        self.assertContains(response, "Correo enviado a yo@example.com")
+        self.assertEqual(mail.outbox[0].to, ["yo@example.com"])
+
+    @patch(f"{F}.send_test_notification.send_template_message", return_value={"message_id": "wamid.1", "raw": {}})
+    def test_a_superuser_sends_a_test_whatsapp(self, send):
+        self._login(is_superuser=True)
+
+        response = self.client.post(self.URL, {"channel": "whatsapp", "to": "573001234567"}, follow=True)
+
+        self.assertContains(response, "WhatsApp enviado a 573001234567")
+        send.assert_called_once_with("573001234567", "hello_world", language="en_US", body_params=())
+
+    @override_settings(EMAIL_HOST="", DEFAULT_FROM_EMAIL="")
+    def test_a_missing_email_setup_is_shown_as_an_error(self):
+        self._login(is_superuser=True)
+
+        response = self.client.post(self.URL, {"channel": "email", "to": "yo@example.com"}, follow=True)
+
+        self.assertContains(response, "Falta EMAIL_HOST")
+        self.assertEqual(mail.outbox, [])
+
+    @override_settings(**EMAIL_SETTINGS)
+    def test_staff_without_superuser_is_refused(self):
+        self._login()
+
+        self.assertEqual(self.client.post(self.URL, {"channel": "email", "to": "yo@example.com"}).status_code, 403)
+        self.assertEqual(mail.outbox, [])

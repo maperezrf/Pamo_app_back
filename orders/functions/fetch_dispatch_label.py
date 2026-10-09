@@ -7,6 +7,9 @@ from products.models import Marketplace
 
 from ..models import MarketplaceOrder
 
+# Canales que traen su propia guía (se pide al canal, no se genera).
+CHANNEL_LABELS = (Marketplace.MERCADOLIBRE, Marketplace.FALABELLA)
+
 
 def fetch_dispatch_label(order, *, force=False):
     """Guía del canal para el pedido de Shopify `order`.

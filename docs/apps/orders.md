@@ -375,7 +375,12 @@ Envía: Envía es una bodega más, avisada por API.
   `requires_label`. Las filas las crea y actualiza
   `sync_dispatch_locations` (proceso `orders.sync_dispatch_locations`;
   nunca toca canales ni contactos; una bodega quitada de Shopify queda
-  inactiva). Se configuran en el admin de Django. La primera sincronización
+  inactiva). Se configuran en el admin de Django. `creates_own_label`
+  ("La bodega crea su guía"): sus pedidos sin guía del canal (tienda web,
+  Addi, cotizaciones) se avisan sin guía y no se generan guías en Envía para
+  ella; Mercado Libre y Falabella siguen con la guía del canal. Operaciones
+  (2026-10-08): así trabaja Bodega Envia, probablemente también Boccherini;
+  las demás bodegas necesitan que se les genere la guía. La primera sincronización
   se lanza por la API del orquestador
   (`POST /api/orchestrator/process-types/orders.sync_dispatch_locations/launch/`):
   la acción del admin exige seleccionar filas y la tabla empieza vacía.
@@ -444,8 +449,22 @@ Envía: Envía es una bodega más, avisada por API.
   - Las escrituras siguen sujetas a `ENVIA_WRITES_ENABLED` (guías) y
     `ENVIA_FULFILLMENT_WRITES_ENABLED` (órdenes).
 - Listado: `GET /api/orders/` trae `dispatch` por pedido (ver el contrato).
+- Probar avisos sin CLI: en `/admin/` → *Bodegas de despacho* → botón
+  **Probar avisos** (solo superusuarios; `orders/functions/send_test_notification.py`).
+  Envía desde el servidor un correo de prueba o la plantilla
+  `hello_world` por WhatsApp. Es la vía para probar en Railway: en algunos
+  equipos Windows el Control inteligente de aplicaciones bloquea el
+  `railway.exe` de la CLI.
 - Correo: `python manage.py send_test_email <correo>` prueba el SMTP
   configurado (local y Railway).
+- WhatsApp: `python manage.py send_test_whatsapp --list` lista las
+  plantillas de la cuenta (solo lectura);
+  `python manage.py send_test_whatsapp 573001234567` envía `hello_world`
+  (`--template`, `--language`, `--param` para otra plantilla; `--text` para
+  texto libre, que solo llega dentro de la ventana de 24 h). Requiere un
+  token **permanente** de usuario del sistema de Meta: el temporal de la
+  consola de desarrolladores vence (visto el 2026-10-08: vencido desde el
+  2026-09-14, error 190).
 - Pruebas: `orders/tests_dispatch.py`.
 
 ## Bodega de despacho

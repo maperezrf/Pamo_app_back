@@ -7,14 +7,11 @@ from integrations.envia.functions.download_label import download_label
 from integrations.envia.functions.quote import quote
 from integrations.envia.functions.resolve_colombia_city import resolve_colombia_city
 from integrations.shopify.functions.get_order_shipping_address import get_order_shipping_address
-from products.models import Marketplace
 
 from ..models import Dispatch
 from .dispatch_orders import ensure_dispatch, process_order_dispatch
-from .fetch_dispatch_label import fetch_dispatch_label
+from .fetch_dispatch_label import CHANNEL_LABELS, fetch_dispatch_label
 
-# Canales que traen su propia guía: el botón la trae del canal, no la genera.
-CHANNEL_LABELS = (Marketplace.MERCADOLIBRE, Marketplace.FALABELLA)
 # Paquete por defecto mientras Shopify no tenga peso y medidas reales: el de
 # referencia de pamo-one-engineering (1 kg, 10×10×10 cm).
 DEFAULT_PACKAGE = {"weight": 1, "dimensions": {"length": 10, "width": 10, "height": 10}}
@@ -100,6 +97,8 @@ def _dispatch_for_generation(order):
     dispatch = _dispatch_with_location(order)
     if order.marketplace in CHANNEL_LABELS:
         raise DispatchActionError("Este canal trae su propia guía: usar \"Traer guía\".")
+    if dispatch.location.creates_own_label:
+        raise DispatchActionError(f"{dispatch.location.name} crea su propia guía: no se genera en Envía.")
     if dispatch.label_source == Dispatch.LabelSource.ENVIA:
         raise DispatchActionError(f"Ya tiene una guía generada ({dispatch.tracking_number}); no se genera otra.")
     return dispatch

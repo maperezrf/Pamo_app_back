@@ -252,6 +252,15 @@ class DispatchLocation(models.Model):
     )
     # No avisar hasta tener la guía del canal (Mercado Libre, Falabella).
     requires_label = models.BooleanField("Exige guía", default=True)
+    # La bodega genera la guía de los pedidos que no traen una del canal
+    # (tienda web, Addi, cotizaciones): se le avisa sin guía y no se genera en
+    # Envía. Operaciones (2026-10-08): así trabaja Bodega Envia (y
+    # probablemente Boccherini). Mercado Libre y Falabella siguen con la guía
+    # del canal.
+    creates_own_label = models.BooleanField(
+        "La bodega crea su guía", default=False,
+        help_text="Pedidos sin guía del canal se avisan sin guía; no se generan guías en Envía para esta bodega.",
+    )
     # Dirección de origen para generar guías (Envía Shipping). La copia
     # `sync_dispatch_locations` desde la ubicación de Shopify.
     origin_address = models.CharField(max_length=255, blank=True)

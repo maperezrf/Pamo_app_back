@@ -7,6 +7,7 @@ from config.constants import (
     WHATSAPP_ACCESS_TOKEN,
     WHATSAPP_API_VERSION,
     WHATSAPP_APP_SECRET,
+    WHATSAPP_BUSINESS_ACCOUNT_ID,
     WHATSAPP_PHONE_NUMBER_ID,
 )
 
@@ -51,6 +52,18 @@ class WhatsAppClient:
             f"{self.base_url}/media",
             data={"messaging_product": "whatsapp", "type": mime_type},
             files={"file": (filename, content, mime_type)},
+            headers={"Authorization": f"Bearer {WHATSAPP_ACCESS_TOKEN}"},
+            timeout=TIMEOUT,
+            allow_redirects=False,
+        )
+        return self._parse(response)
+
+    def get_business(self, path, params=None):
+        """GET sobre la cuenta de WhatsApp Business (WABA), no sobre el
+        número: ej. `message_templates`. Solo lectura."""
+        response = requests.get(
+            f"{GRAPH_BASE_URL}/{WHATSAPP_API_VERSION}/{WHATSAPP_BUSINESS_ACCOUNT_ID}/{path}",
+            params=params,
             headers={"Authorization": f"Bearer {WHATSAPP_ACCESS_TOKEN}"},
             timeout=TIMEOUT,
             allow_redirects=False,
