@@ -6,6 +6,8 @@ from django.core.mail import EmailMessage
 
 from integrations.whatsapp.functions.send_template_message import send_template_message
 
+from .notify_dispatch import email_configured
+
 
 class TestNotificationError(Exception):
     """La prueba no se pudo enviar; el texto es para quien prueba."""
@@ -15,20 +17,22 @@ def send_test_email(to):
     """Correo de prueba con la configuración EMAIL_* (canal de correo de los
     avisos de despacho). Lo usan el comando `send_test_email` y la página
     "Probar avisos" del admin. Devuelve los segundos que tardó."""
-    if not settings.EMAIL_HOST or not settings.DEFAULT_FROM_EMAIL:
-        raise TestNotificationError("Falta EMAIL_HOST o DEFAULT_FROM_EMAIL en la configuración.")
+    if not email_configured():
+        raise TestNotificationError(
+            "Correo no configurado: falta DEFAULT_FROM_EMAIL o un transporte (GMAIL_REFRESH_TOKEN o EMAIL_HOST)."
+        )
     started = time.monotonic()
     try:
         EmailMessage(
             subject="Prueba de correo - Pamo backend",
-            body="Correo de prueba del canal de avisos de despacho. Si llegó, el SMTP funciona.",
+            body="Correo de prueba del canal de avisos de despacho. Si llegó, el envío de correo funciona.",
             from_email=settings.DEFAULT_FROM_EMAIL,
             to=[to],
         ).send(fail_silently=False)
     except Exception as error:  # noqa: BLE001 -- se muestra el motivo para diagnosticar
         elapsed = time.monotonic() - started
         hint = (
-            " Un timeout suele ser el puerto SMTP bloqueado por el proveedor de hosting."
+            " Un timeout suele ser el puerto SMTP bloqueado por el proveedor de hosting (usar la API de Gmail)."
             if "timed out" in str(error).lower() or isinstance(error, TimeoutError)
             else ""
         )
@@ -37,11 +41,14 @@ def send_test_email(to):
 
 
 def email_settings_summary():
-    """Qué configuración de correo hay, sin mostrar la contraseña."""
+    """Qué configuración de correo hay, sin mostrar secretos."""
+    sender = f"desde {settings.DEFAULT_FROM_EMAIL or 'VACÍO'}"
+    if settings.GMAIL_REFRESH_TOKEN:
+        client = "configurado" if settings.GMAIL_CLIENT_ID and settings.GMAIL_CLIENT_SECRET else "VACÍO"
+        return f"API de Gmail (HTTPS), cliente OAuth {client}, {sender}"
     return (
-        f"Servidor {settings.EMAIL_HOST or 'VACÍO'}:{settings.EMAIL_PORT} (TLS={settings.EMAIL_USE_TLS}), "
-        f"usuario {'configurado' if settings.EMAIL_HOST_USER else 'VACÍO'}, "
-        f"desde {settings.DEFAULT_FROM_EMAIL or 'VACÍO'}"
+        f"SMTP {settings.EMAIL_HOST or 'VACÍO'}:{settings.EMAIL_PORT} (TLS={settings.EMAIL_USE_TLS}), "
+        f"usuario {'configurado' if settings.EMAIL_HOST_USER else 'VACÍO'}, {sender}"
     )
 
 

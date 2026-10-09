@@ -455,8 +455,10 @@ Envía: Envía es una bodega más, avisada por API.
   `hello_world` por WhatsApp. Es la vía para probar en Railway: en algunos
   equipos Windows el Control inteligente de aplicaciones bloquea el
   `railway.exe` de la CLI.
-- Correo: `python manage.py send_test_email <correo>` prueba el SMTP
-  configurado (local y Railway).
+- Correo: `python manage.py send_test_email <correo>` prueba el
+  transporte configurado (API de Gmail o SMTP; ver
+  `architecture/INTEGRATIONS.md`). En Railway solo funciona la API de
+  Gmail: el SMTP está bloqueado.
 - WhatsApp: `python manage.py send_test_whatsapp --list` lista las
   plantillas de la cuenta (solo lectura);
   `python manage.py send_test_whatsapp 573001234567` envía `hello_world`

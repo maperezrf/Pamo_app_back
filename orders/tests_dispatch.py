@@ -687,7 +687,7 @@ class TestNotificationsAdminTests(TestCase):
 
         response = self.client.post(self.URL, {"channel": "email", "to": "yo@example.com"}, follow=True)
 
-        self.assertContains(response, "Falta EMAIL_HOST")
+        self.assertContains(response, "Correo no configurado")
         self.assertEqual(mail.outbox, [])
 
     @override_settings(**EMAIL_SETTINGS)

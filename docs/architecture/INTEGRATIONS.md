@@ -33,7 +33,9 @@ documentación ni las respuestas de la API muestran sus valores.
 | Siigo | REST Bearer con token cacheado | `SiigoClient.request()` reutiliza `SiigoToken` vigente. |
 | WhatsApp | REST Bearer (WhatsApp Cloud API, Meta) | `WhatsAppClient.send_message()`/`upload_media()` son transporte puro; cada tipo de mensaje (texto, documento, plantilla, botones) tiene su propia función en `functions/`, sin depender entre sí. `get_business()` lee la cuenta (WABA): `list_message_templates` lista las plantillas y su estado. El token debe ser permanente (usuario del sistema); el temporal vence. |
 
-**Correo**: no hay proveedor propio en `integrations/`. Los avisos de despacho usan `django.core.mail` por SMTP, configurado con `EMAIL_*` y `DEFAULT_FROM_EMAIL` en `config/constants.py`; cualquier proveedor SMTP sirve sin cambiar código.
+| Gmail | REST OAuth 2.0 (refresh token fijo de la cuenta remitente, permiso solo `gmail.send`) | `GmailClient.post()` renueva el access token (~1 h, en memoria) y transporta. `send_message` envía un `EmailMessage` como MIME crudo. `GmailApiEmailBackend` es el backend de `django.core.mail` que lo usa. El refresh token se obtiene una vez con `python manage.py gmail_authorize` (local, abre el navegador). |
+
+**Correo**: los avisos de despacho usan `django.core.mail` (`EmailMessage`), sin saber el transporte. `EMAIL_BACKEND` (`config/constants.py`) usa la **API de Gmail** si hay `GMAIL_REFRESH_TOKEN` y, si no, SMTP con `EMAIL_*`. En Railway se usa la API de Gmail: Railway bloquea la salida SMTP fuera del plan Pro (visto el 2026-10-08: `Network is unreachable`). El cliente OAuth es tipo "App de escritorio" y la pantalla de consentimiento debe estar **publicada** ("En producción"): en modo "Prueba" Google vence el refresh token a los 7 días.
 
 Antes de agregar una operación, revisar el cliente y las funciones existentes
 del proveedor. Si usa GraphQL, revisar primero

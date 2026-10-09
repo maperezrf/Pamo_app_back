@@ -40,9 +40,17 @@ def notify(channel, *, dispatch, details, label):
     return senders[channel](dispatch.location, details, label)
 
 
+def email_configured():
+    """Hay remitente y un transporte: la API de Gmail (GMAIL_REFRESH_TOKEN)
+    o SMTP (EMAIL_HOST). Ver EMAIL_BACKEND en config/constants.py."""
+    return bool(settings.DEFAULT_FROM_EMAIL and (settings.GMAIL_REFRESH_TOKEN or settings.EMAIL_HOST))
+
+
 def _notify_email(location, details, label):
-    if not settings.EMAIL_HOST or not settings.DEFAULT_FROM_EMAIL:
-        raise DispatchNotificationError("Correo no configurado (EMAIL_HOST / DEFAULT_FROM_EMAIL).")
+    if not email_configured():
+        raise DispatchNotificationError(
+            "Correo no configurado (DEFAULT_FROM_EMAIL y GMAIL_REFRESH_TOKEN o EMAIL_HOST)."
+        )
     tracking_number = label["tracking_number"] if label else ""
     message = EmailMessage(
         subject=f"Despacho pedido {details['order_name']} - {location.name}",

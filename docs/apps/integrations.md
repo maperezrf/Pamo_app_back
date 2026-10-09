@@ -83,6 +83,10 @@ seller id; es estado de conexión, no información de clientes o facturas.
   `envia/`), lecturas de bodegas y órdenes, y creación de órdenes con la
   guía adjunta. Escrituras apagadas por defecto. En construcción.
 - `siigo/`: cliente REST, token cacheado y funciones de clientes/facturas.
+- `gmail/`: cliente OAuth de la API de Gmail, función `send_message` y el
+  backend de correo `GmailApiEmailBackend` (envío por HTTPS; ver
+  `architecture/INTEGRATIONS.md`). Comando `gmail_authorize` para obtener
+  el refresh token.
 - `whatsapp/`: cliente REST (WhatsApp Cloud API de Meta) y funciones de
   envío (texto, documento, plantilla, botones) y de parseo de webhook.
 

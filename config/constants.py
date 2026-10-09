@@ -135,9 +135,20 @@ DISPATCH_WHATSAPP_TEMPLATE_LANGUAGE = config("DISPATCH_WHATSAPP_TEMPLATE_LANGUAG
 # comprador (Envía lo exige sin customerId).
 DISPATCH_ENVIA_FALLBACK_EMAIL = config("DISPATCH_ENVIA_FALLBACK_EMAIL", default="")
 
-# CORREO (django.core.mail por SMTP; sirve para cualquier proveedor SMTP).
-# settings.py los toma de aquí (import *). Sin EMAIL_HOST, el aviso por
-# correo queda en error en vez de intentar enviar.
+# CORREO (django.core.mail). settings.py los toma de aquí (import *).
+# Dos transportes: la API de Gmail por HTTPS (integrations/gmail/) si hay
+# GMAIL_REFRESH_TOKEN -- Railway bloquea la salida SMTP fuera del plan Pro
+# (visto el 2026-10-08: "Network is unreachable") -- o SMTP con EMAIL_HOST.
+# Sin ninguno, el aviso por correo queda en error en vez de intentar enviar.
+# El refresh token se obtiene con `python manage.py gmail_authorize`.
+GMAIL_CLIENT_ID = config("GMAIL_CLIENT_ID", default="")
+GMAIL_CLIENT_SECRET = config("GMAIL_CLIENT_SECRET", default="")
+GMAIL_REFRESH_TOKEN = config("GMAIL_REFRESH_TOKEN", default="")
+EMAIL_BACKEND = (
+    "integrations.gmail.email_backend.GmailApiEmailBackend"
+    if GMAIL_REFRESH_TOKEN
+    else "django.core.mail.backends.smtp.EmailBackend"
+)
 EMAIL_HOST = config("EMAIL_HOST", default="")
 EMAIL_PORT = config("EMAIL_PORT", default=587, cast=int)
 EMAIL_HOST_USER = config("EMAIL_HOST_USER", default="")
