@@ -238,7 +238,7 @@ antiguas (convivencia, abajo).
 - **Nota en Shopify**: `"Sodimac #<OC> — <comprador> CC <cédula>"`, como en
   los demás canales. Etiqueta `sodimac`.
 - **Guía** (rótulo + relación de TCC): Sodimac no la entrega por API. La
-  genera el **RPA de guías** (proyecto `rpa_homecenter`, servicio aparte en
+  genera el **RPA de guías** (repositorio `maperezrf/rpa_sodimac`, servicio aparte en
   Railway; Selenium sobre el portal `hub.homecenter.co`). Desde el
   2026-10-11 lo usa este backend en vez de `pamo_web`
   (`orders/functions/sodimac_rpa.py`, `integrations/sodimac_rpa/`):

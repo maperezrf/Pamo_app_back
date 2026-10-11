@@ -122,7 +122,7 @@ DISPATCH_WHATSAPP_TEMPLATE_LANGUAGE = config("DISPATCH_WHATSAPP_TEMPLATE_LANGUAG
 # comprador (Envía lo exige sin customerId).
 DISPATCH_ENVIA_FALLBACK_EMAIL = config("DISPATCH_ENVIA_FALLBACK_EMAIL", default="")
 
-# RPA de guías de Sodimac (proyecto `rpa_homecenter`, servicio aparte en
+# RPA de guías de Sodimac (repositorio `maperezrf/rpa_sodimac`, servicio aparte en
 # Railway; integrations/sodimac_rpa/). Genera la guía de cada OC en el portal
 # de Homecenter y devuelve rótulo y relación por webhook.
 # - SODIMAC_RPA_URL: URL base del servicio (`/trigger`, `/status`...).

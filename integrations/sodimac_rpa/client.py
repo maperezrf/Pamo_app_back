@@ -14,7 +14,7 @@ class SodimacRpaBusy(SodimacRpaError):
 
 
 class SodimacRpaClient:
-    """Conexión con el RPA de guías de Sodimac (proyecto `rpa_homecenter`,
+    """Conexión con el RPA de guías de Sodimac (repositorio `maperezrf/rpa_sodimac`,
     panel FastAPI en Railway). Solo transporta. El RPA no exige credenciales
     a quien lo llama; las suyas hacia este backend van en el webhook."""
 
