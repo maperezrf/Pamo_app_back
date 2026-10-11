@@ -12,9 +12,16 @@ from .select_fulfillment_location import select_fulfillment_location
 # está cobrando nada a través de Shopify, solo se registra la venta.
 # Sodimac es la excepción (paga a crédito): llama con "PENDING".
 FINANCIAL_STATUS = "PAID"
+# Ninguna orden de marketplace requiere despacho en Shopify ("No se
+# requiere envío"): la tienda de Shopify sigue conectada a Envía, y Envía
+# importa solo las órdenes con despacho. Así no las toma por su cuenta: la
+# bodega la decide este backend y le avisa (despacho a bodegas). Decisión
+# con operaciones del 2026-10-11; Mercado Libre ya iba así desde el
+# 2026-10-05.
+REQUIRES_SHIPPING = False
 
 
-def process_shipment(orders, customer_id, financial_status=FINANCIAL_STATUS, requires_shipping=True):
+def process_shipment(orders, customer_id, financial_status=FINANCIAL_STATUS):
     """Crea UNA orden de Shopify para las órdenes de marketplace de un mismo
     envío, a nombre del cliente fijo `customer_id`.
 
@@ -33,10 +40,7 @@ def process_shipment(orders, customer_id, financial_status=FINANCIAL_STATUS, req
       crea igual (docs/apps/orders.md).
     - Shopify rechaza la orden -> todas `error_creando_orden`.
     - Éxito -> todas `orden_creada` con el mismo `shopify_order_id`.
-    - `requires_shipping`: si las líneas de la orden requieren despacho en
-      Shopify. Mercado Libre llama con `False` (decisión de negocio,
-      2026-10-05); Madecentro, Sodimac y Falabella, con despacho (por
-      defecto).
+    - Las líneas van sin despacho en Shopify (`REQUIRES_SHIPPING`).
     - Ya existe en Shopify una orden con la etiqueta de alguno de los
       pedidos (`<marketplace>-<número>`) -> se vincula esa orden, sin crear
       otra. Cubre a otro proceso (u otra base) que ya la creó; ver
@@ -64,7 +68,7 @@ def process_shipment(orders, customer_id, financial_status=FINANCIAL_STATUS, req
             financial_status=financial_status,
             note=_order_note(orders),
             tags=[orders[0].marketplace, *_order_keys(orders)],
-            requires_shipping=requires_shipping,
+            requires_shipping=REQUIRES_SHIPPING,
         )
     except ShopifyOrderCreationError as error:
         _mark_error(orders, str(error))

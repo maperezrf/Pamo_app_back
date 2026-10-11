@@ -170,9 +170,10 @@ corte) y no aplican.
   Shopify y cancelar la copia que importe Envía.
 - Facturación: la OC se factura cuando llegue a `4-ESTADO FINAL` solo si
   existe su `MarketplaceOrder`; si se excluye del sync, no se facturará sola.
-- Si sale bien, siguiente paso: guardar los datos de entrega de Sodimac en
-  `orders.sync_sodimac` y conectar Sodimac al flujo de despacho a bodegas
-  (hoy Sodimac queda `manual` en `assign_dispatch_location`).
+- Hecho el 2026-10-11: `orders.sync_sodimac` guarda los datos de entrega y
+  Sodimac entra al flujo de despacho, con la guía que carga el RPA
+  (`docs/apps/orders.md`, "Sodimac"). Las órdenes se crean sin despacho en
+  Shopify, así que Envía ya no las importa por la tienda conectada.
 - Registrar el resultado en
   [`envia-fulfillment-dispatch.md`](envia-fulfillment-dispatch.md) ("Avance")
   y borrar este documento.

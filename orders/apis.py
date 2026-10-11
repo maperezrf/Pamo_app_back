@@ -1,13 +1,15 @@
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from rest_framework.pagination import PageNumberPagination
+from rest_framework.parsers import JSONParser
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from accounts.permissions import RoleRequiredMixin
+from accounts.permissions import BearerTokenRequiredMixin, RoleRequiredMixin
+from config.constants import SODIMAC_RPA_TOKEN
 
 from integrations.envia.client import EnviaAPIError
-from integrations.envia.functions.create_label import LabelUnknownResult, LabelWritesDisabled
+from integrations.envia.functions.create_label import LabelUnknownResult
 from integrations.envia_fulfillment.client import EnviaFulfillmentAPIError
 
 from .functions.dispatch_actions import (
@@ -19,6 +21,7 @@ from .functions.dispatch_actions import (
 )
 from .functions.list_orders import filter_orders, format_dispatch, format_orders
 from .functions.list_orders_not_created import list_orders_not_created
+from .functions.sodimac_rpa import RpaEventError, process_rpa_event, stock_dispatch
 from .models import ShopifyOrder, ShopifyOrderSyncState
 from .serializers import OrderListQuerySerializer
 
@@ -74,11 +77,10 @@ class DispatchActionAPI(RoleRequiredMixin, APIView):
     """Acciones manuales sobre el despacho de UN pedido de Shopify, desde el
     panel (botones "Traer/Generar guía" y "Notificar a proveedor"). Para
     probar el flujo de forma controlada mientras no se automatiza. La lógica
-    vive en `orders/functions/dispatch_actions.py`; las escrituras en Envía
-    siguen sujetas a `ENVIA_WRITES_ENABLED` / `ENVIA_FULFILLMENT_WRITES_ENABLED`.
+    vive en `orders/functions/dispatch_actions.py`.
     Respuesta: {"dispatch": ...} (misma forma que en `GET /api/orders/`) o
-    {"detail": ...} con 400 (no aplica), 409 (escritura apagada) o 502
-    (proveedor; "resultado incierto" incluido)."""
+    {"detail": ...} con 400 (no aplica) o 502 (proveedor; "resultado
+    incierto" incluido)."""
 
     allowed_roles = ORDERS_LIST_ROLES
 
@@ -93,8 +95,6 @@ class DispatchActionAPI(RoleRequiredMixin, APIView):
             return Response({"detail": str(error)}, status=400)
         except ValueError as error:  # validación del payload de Envía, antes de enviar
             return Response({"detail": str(error)}, status=400)
-        except LabelWritesDisabled:
-            return Response({"detail": "Generación de guías apagada (ENVIA_WRITES_ENABLED)."}, status=409)
         except LabelUnknownResult as error:
             return Response({"detail": f"Resultado incierto: {error}. Revisar en Envía antes de reintentar."}, status=502)
         except (EnviaAPIError, EnviaFulfillmentAPIError) as error:
@@ -146,3 +146,34 @@ class DispatchGenerateLabelAPI(DispatchActionAPI):
             return Response({"detail": "Falta la opción elegida (carrier y service)."}, status=400)
         generate_dispatch_label(order, carrier=carrier, service=service)
         return self.dispatch_response(order)
+
+
+class SodimacRpaStockDispatchAPI(BearerTokenRequiredMixin, APIView):
+    """GET /api/orders/sodimac/rpa/orders/<oc>/stock-dispatch/: el RPA de
+    guías pregunta desde qué bodega sale la OC para elegir la dirección de
+    despacho en el portal. Token `SODIMAC_RPA_TOKEN` (el RPA lo manda como
+    `X-Bot-Token`). 200 con `bodega_despacho`, 404 OC desconocida, 409 sin
+    bodega (novedad)."""
+
+    bearer_token = SODIMAC_RPA_TOKEN
+
+    def get(self, request, purchase_order):
+        body, status = stock_dispatch(purchase_order)
+        return Response(body, status=status)
+
+
+class SodimacRpaCallbackAPI(BearerTokenRequiredMixin, APIView):
+    """POST /api/orders/sodimac/rpa/callback/: webhook del RPA de guías
+    (`orden_procesada`, `validacion_humana`, `proceso_finalizado`). Token
+    `SODIMAC_RPA_TOKEN` en `Authorization: Bearer`. 200 procesado, 400
+    payload inválido. La lógica vive en `orders/functions/sodimac_rpa.py`."""
+
+    bearer_token = SODIMAC_RPA_TOKEN
+    parser_classes = [JSONParser]
+
+    def post(self, request):
+        try:
+            result = process_rpa_event(request.data)
+        except RpaEventError as error:
+            return Response({"detail": str(error)}, status=400)
+        return Response({"detail": result})

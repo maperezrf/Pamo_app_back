@@ -35,6 +35,10 @@ class GetOrdersTests(SimpleTestCase):
                     "ORDEN_COMPRA": "OC-1",
                     "ESTADO_OC": "1-Pendiente",
                     "FECHA_TRANSMISION": "2026-09-01",
+                    "CLIENTE": "Ana María Gómez", "CEDULA": 100, "EMAIL_CLIENTE": "ana@example.com",
+                    "TELEFONO_CLIENTE": "3001112233", "DIRECCION_ENTREGA": " Calle 1 # 2-3 ",
+                    "CIUDAD_ENTREGA": "SANTA MARTA", "DEPARTAMENTO_ENTREGA": "MAGDALENA",
+                    "DIRECCION_FAC": "otra dirección (factura)",
                     "PRODUCTOS": [
                         {"SKU": " ABC-1 ", "CANTIDAD_SKU": 2, "COSTO_SKU": 1000},
                         {"SKU": "XYZ-2", "CANTIDAD_SKU": 1, "COSTO_SKU": 500},
@@ -54,6 +58,11 @@ class GetOrdersTests(SimpleTestCase):
                     "quantity": 2,
                     "cost": Decimal("1000"),
                     "cost_with_vat": Decimal("1190.00"),
+                    "delivery": {
+                        "name": "Ana María Gómez", "identification": "100", "email": "ana@example.com",
+                        "phone": "3001112233", "address": "Calle 1 # 2-3", "city": "SANTA MARTA",
+                        "region": "MAGDALENA",
+                    },
                 },
                 {
                     "purchase_order": "OC-1",
@@ -63,6 +72,11 @@ class GetOrdersTests(SimpleTestCase):
                     "quantity": 1,
                     "cost": Decimal("500"),
                     "cost_with_vat": Decimal("595.00"),
+                    "delivery": {
+                        "name": "Ana María Gómez", "identification": "100", "email": "ana@example.com",
+                        "phone": "3001112233", "address": "Calle 1 # 2-3", "city": "SANTA MARTA",
+                        "region": "MAGDALENA",
+                    },
                 },
             ],
         )

@@ -229,8 +229,52 @@ antiguas (convivencia, abajo).
 - **Campos genéricos** de `MarketplaceOrder`, vacíos en los demás canales:
   `marketplace_status` (`ESTADO_OC`) y `marketplace_created_at`
   (`FECHA_TRANSMISION`, ISO o día primero `DD/MM/AAAA[ HH:MM[:SS]]`).
-- **Nota en Shopify**: `"Sodimac #<OC>"` (no hay comprador final). Etiqueta
-  `sodimac`.
+- **Comprador y entrega** (desde el 2026-10-11): `get_orders` trae por OC
+  `delivery` (`CLIENTE`, `CEDULA`, `EMAIL_CLIENTE`, `TELEFONO_CLIENTE`,
+  `DIRECCION_ENTREGA`, `CIUDAD_ENTREGA`, `DEPARTAMENTO_ENTREGA`) y se guarda
+  en los campos `customer_*` de `MarketplaceOrder` (nombre: primera palabra
+  como nombre, el resto como apellido). Lo usa el aviso a Envía. Las OC
+  guardadas antes se completan en la siguiente reinyección.
+- **Nota en Shopify**: `"Sodimac #<OC> — <comprador> CC <cédula>"`, como en
+  los demás canales. Etiqueta `sodimac`.
+- **Guía** (rótulo + relación de TCC): Sodimac no la entrega por API. La
+  genera el **RPA de guías** (proyecto `rpa_homecenter`, servicio aparte en
+  Railway; Selenium sobre el portal `hub.homecenter.co`). Desde el
+  2026-10-11 lo usa este backend en vez de `pamo_web`
+  (`orders/functions/sodimac_rpa.py`, `integrations/sodimac_rpa/`):
+  1. Al final de `orders.sync_sodimac` (paso 3b), `request_sodimac_labels`
+     manda al RPA (`POST {SODIMAC_RPA_URL}/trigger`) las OC con orden en
+     Shopify, bodega asignada, sin guía y abiertas, cuya solicitud no
+     exista, haya fallado o lleve más de 6 h sin respuesta. Si el RPA está
+     ocupado (409) no se marca nada y se piden en el siguiente sync.
+  2. Por cada OC, el RPA consulta la bodega
+     (`GET /api/orders/sodimac/rpa/orders/<oc>/stock-dispatch/`): responde
+     `fulfillment_location_name`, el nombre de la ubicación de Shopify. El
+     RPA solo conoce **Bodega Envia, Baru y Taumm** (elige con eso la
+     dirección de despacho en el portal); otra bodega le da error.
+  3. El RPA genera la guía y llama al webhook
+     (`POST /api/orders/sodimac/rpa/callback/`) con `orden_procesada`
+     (rótulo y relación en base64). El número de guía no lo envía: se lee
+     de "REMESA <número>" en el rótulo (`read_label_tracking`, `pypdf`) y se
+     compara con el de la relación. Se guarda en `MarketplaceLabel` (con los
+     PDF: no hay de dónde volver a pedirlos) y el despacho la toma solo.
+  4. `validacion_humana`: el RPA quedó esperando un CAPTCHA; se avisa por
+     correo a `SODIMAC_RPA_ALERT_EMAILS` con el enlace del visor (noVNC).
+     Al resolverlo, el RPA sigue solo. `proceso_finalizado`: las OC del lote
+     sin respuesta pasan a `error` y se vuelven a pedir.
+  - Estado por OC en `MarketplaceOrder.label_request_status`: `solicitada`,
+    `recibida`, `error` (se reintenta) o `manual` (no se reintenta; el
+    motivo en `label_request_note`): guía ya generada en el portal sin PDF,
+    números distintos en rótulo y relación, número no encontrado, o guía
+    nueva cuando la bodega ya había sido avisada.
+  - Token: `SODIMAC_RPA_TOKEN`, el mismo valor en las variables del RPA
+    `RPA_BOT_TOKEN` (lo manda como `X-Bot-Token` al consultar la bodega) y
+    `RPA_CALLBACK_AUTH_TOKEN` (`Authorization: Bearer` en el webhook). En el
+    RPA: `RPA_ORDERS_API_URL_TEMPLATE` =
+    `<backend>/api/orders/sodimac/rpa/orders/{numero_orden}/stock-dispatch/`
+    y `RPA_CALLBACK_URL` = `<backend>/api/orders/sodimac/rpa/callback/`.
+  - El `/trigger` del RPA no pide credenciales (riesgo conocido del RPA:
+    cualquiera con su URL puede lanzarlo).
 - **Convivencia con `pamo_web`** (sin migrar datos: cada sistema factura
   sus propias OC). Los dos leen la misma cola destructiva, así que nunca
   corren a la vez: al terminar `orders.sync_sodimac` se llama en el mismo
@@ -366,8 +410,19 @@ Contrato: `GET /api/orders/` en
 
 Plan: [`../implementations-plans/order-dispatch-to-warehouses.md`](../implementations-plans/order-dispatch-to-warehouses.md).
 Este backend decide qué bodega despacha cada pedido de Shopify (marketplace
-o tienda web) y le avisa por su canal. Ninguna tienda queda conectada a
-Envía: Envía es una bodega más, avisada por API.
+o tienda web) y le avisa por su canal; a Envía, por API.
+
+**Conexión de la tienda con Envía (operaciones, 2026-10-11):** la tienda de
+Shopify **sigue conectada** a Envía (cambia la decisión del 2026-10-07 de
+desconectarla). Envía importa por esa conexión solo las órdenes **con
+despacho**, así que las de marketplace se crean sin despacho (ver "Reglas de
+cambio") y pasan por este flujo: bodega según el stock en Shopify y aviso a
+esa bodega. Los pedidos de la tienda web siguen con despacho y Envía los
+importa como hasta ahora; el aviso por API a Envía busca primero la orden
+(`find_order`) y vincula la existente en vez de duplicarla. Las conexiones
+directas de Mercado Libre y Falabella con Envía **se desconectan**
+(decisión del 2026-10-11): sus órdenes en Envía las crea este flujo, con la
+guía del canal.
 
 - **`DispatchLocation`**: una fila por ubicación de Shopify, con canales de
   aviso independientes (`notify_api`, `notify_email`, `notify_whatsapp`),
@@ -376,49 +431,66 @@ Envía: Envía es una bodega más, avisada por API.
   `sync_dispatch_locations` (proceso `orders.sync_dispatch_locations`;
   nunca toca canales ni contactos; una bodega quitada de Shopify queda
   inactiva). Se configuran en el admin de Django. `creates_own_label`
-  ("La bodega crea su guía"): sus pedidos sin guía del canal (tienda web,
-  Addi, cotizaciones) se avisan sin guía y no se generan guías en Envía para
-  ella; Mercado Libre y Falabella siguen con la guía del canal. Operaciones
-  (2026-10-08): así trabaja Bodega Envia, probablemente también Boccherini;
-  las demás bodegas necesitan que se les genere la guía. La primera sincronización
+  ("La bodega crea su guía"): sus pedidos de la **tienda web** (y Addi,
+  cotizaciones) se avisan sin guía y no se generan guías en Envía para
+  ellos; los de marketplace siguen con su guía (del canal, del RPA o
+  generada, ver el paso 2). Operaciones (2026-10-08 y 2026-10-11): así
+  trabaja Bodega Envia, probablemente también Boccherini; las demás bodegas
+  necesitan que se les genere la guía. La primera sincronización
   se lanza por la API del orquestador
   (`POST /api/orchestrator/process-types/orders.sync_dispatch_locations/launch/`):
   la acción del admin exige seleccionar filas y la tabla empieza vacía.
 - **`Dispatch`** (uno por `ShopifyOrder`) y **`DispatchNotification`** (uno
   por despacho y canal).
-- **`dispatch_orders`** (proceso `orders.dispatch_orders`, registrado y
-  **sin programar**): pedidos desde `DISPATCH_START_DATE`, sin despachar ni
-  borrar ni cumplidos (`FULFILLED`).
+- **`dispatch_orders`** (proceso `orders.dispatch_orders`): pedidos creados
+  desde `since`, sin despachar ni borrar ni cumplidos (`FULFILLED`). **No
+  tiene interruptores** (se quitaron el 2026-10-11): se enciende creando su
+  programación en el orquestador con `params={"since": "AAAA-MM-DD"}` (cada
+  pocos minutos, `allow_concurrent=False`) y se pausa desactivándola, sin
+  redesplegar. Sin `since` la ejecución falla en vez de tomar históricos;
+  `shopify_order_ids` acota una corrida a esos pedidos (piloto) y `limit`
+  limita cuántos.
   1. Bodega con `assign_dispatch_location`: en marketplace, la que eligió la
      importación (`MarketplaceOrder.fulfillment_location_*`, no se
      recalcula); en la tienda web, `select_fulfillment_location` con el
-     inventario de Shopify en vivo. Sin bodega (novedad, Madecentro/Sodimac,
-     pedido sin registro local, bodega sin registrar) o sin canales →
-     `manual` con el motivo en `note`.
-  2. Si la bodega exige guía, `fetch_dispatch_label`: Mercado Libre
-     (`get_shipment_label`, solo en estados imprimibles) o Falabella
-     (`get_package_items` + `get_shipping_document`). Sin guía todavía, o
-     con `DISPATCH_FETCH_LABELS_ENABLED` apagado → `esperando_guia`. La
-     tienda web no tiene fuente de guía (decisión abierta). Se guarda el
-     número de guía y el hash del PDF, no el PDF.
-  3. Con `DISPATCH_NOTIFICATIONS_ENABLED`, un aviso por canal activo
-     (`notify_dispatch.notify`); sin él → `listo`. Cada aviso se reclama
-     (`procesando`) antes de enviarse: nunca sale dos veces; uno en `error`
-     se reintenta en la próxima corrida; uno que se quedó en `procesando`
-     no se reintenta (revisión manual). Todos enviados → `notificado`;
+     inventario de Shopify en vivo. Sin bodega (novedad, pedido sin
+     registro local, bodega sin registrar) o sin canales → `manual` con el
+     motivo en `note`. Desde el 2026-10-11 todos los canales entran, también
+     Madecentro y Sodimac.
+  2. Guía, según el canal (si la bodega la exige, `requires_label`):
+
+     | Canal | Guía |
+     | --- | --- |
+     | Mercado Libre, Falabella | Del canal por API (`fetch_dispatch_label`): `get_shipment_label` (solo en estados imprimibles) o `get_package_items` + `get_shipping_document`. En Mercado Libre, descargar una guía sin imprimir la deja impresa. |
+     | Sodimac | La que carga el RPA (`MarketplaceLabel`): rótulo + relación. |
+     | Madecentro | Generada en Envía con el botón "Generar guía", siempre. |
+     | Tienda web (Addi, cotizaciones) | Bodega con `creates_own_label` (Bodega Envia): ninguna, se avisa sin guía y la bodega la crea. Otras bodegas: generada con el botón "Generar guía". |
+
+     Sin guía todavía → `esperando_guia` con el motivo, y se reintenta en la
+     próxima corrida. De las guías de canal se guarda el número y el hash
+     del PDF; las generadas en Envía se vuelven a bajar de su URL. La
+     generación es manual por ahora (cobra); automatizarla queda pendiente
+     de definir reglas (transportadora, peso y medidas).
+  3. Un aviso por canal activo (`notify_dispatch.notify`). Cada aviso se
+     reclama (`procesando`) antes de enviarse: nunca sale dos veces; uno en
+     `error` se reintenta en la próxima corrida; uno que se quedó en
+     `procesando` no se reintenta (revisión manual). Todos enviados → `notificado`;
      alguno en error → `error`.
   4. Pedido cancelado → `cancelado` (salvo si ya se notificó).
 - **Canales** (`orders/functions/notify_dispatch.py`):
-  - `email`: `django.core.mail` por SMTP (`EMAIL_HOST`, `DEFAULT_FROM_EMAIL`
-    en `config/constants.py`), con la guía adjunta. Sin configurar → error
-    del aviso, no se intenta enviar.
+  - `email`: `django.core.mail` (API de Gmail o SMTP, ver
+    `architecture/INTEGRATIONS.md`), con la guía adjunta y, en Sodimac, la
+    relación. Sin configurar → error del aviso, no se intenta enviar.
   - `whatsapp`: plantilla aprobada en Meta (`DISPATCH_WHATSAPP_TEMPLATE`;
     variables: pedido, productos, ciudad; la guía como documento del
     encabezado). Envía a todos los números antes de fallar y el error dice a
     quiénes llegó.
-  - `api`: `integrations.envia_fulfillment.create_order`. **Bloqueado**:
-    falla hasta resolver el cruce SKU → `variantId` de Envía, y además el
-    cliente de Envía bloquea escrituras sin `ENVIA_FULFILLMENT_WRITES_ENABLED`.
+  - `api`: `integrations.envia_fulfillment.create_order` con el rótulo como
+    guía (pre-tracking). La relación de Sodimac va después como comentario
+    con archivo (`add_order_comment`); si esa carga falla, el aviso queda
+    enviado con la advertencia en `error_description` para cargarla a mano
+    (un reintento vincularía la orden sin volver a cargarla). Escrituras
+    reales (sin interruptor).
 - **Bodega de los pedidos web** (tienda, Addi, cotizaciones; sin
   `MarketplaceOrder`): `assign_web_dispatch` crea su `Dispatch` con la bodega
   (misma regla de inventario) **apenas el pedido está pagado**, desde el
@@ -433,21 +505,29 @@ Envía: Envía es una bodega más, avisada por API.
 - **Acciones manuales del panel** (`orders/functions/dispatch_actions.py`,
   endpoints `POST /api/orders/<id>/dispatch/...` en el contrato), para
   probar el flujo de forma controlada mientras no se automatiza:
-  - "Notificar a proveedor": `process_order_dispatch(order, manual=True)`
-    (trae la guía y avisa aunque `DISPATCH_*_ENABLED` estén apagados).
-  - "Traer guía" (Mercado Libre, Falabella): guía del canal.
-  - "Generar guía" (tienda web, Addi, cotizaciones): cotiza y genera en Envía
-    Shipping desde la dirección de la bodega (copiada de Shopify al
-    sincronizar bodegas) a la dirección de envío del pedido (consultada a
-    Shopify), paquete por defecto 1 kg 10×10×10. La guía generada queda en
+  - "Notificar a proveedor": `process_order_dispatch(order)`, lo mismo que
+    hace el proceso, para un pedido y sin esperar a la próxima corrida.
+  - "Traer guía" (Mercado Libre, Falabella): guía del canal. Sodimac no
+    lleva botón: el aviso toma la guía cargada por el RPA.
+  - "Generar guía" (tienda web, Addi, cotizaciones y Madecentro): cotiza y
+    genera en Envía Shipping desde la dirección de la bodega (copiada de
+    Shopify al sincronizar bodegas) a la dirección de entrega (tienda web:
+    la de envío del pedido en Shopify; Madecentro: la del comprador en
+    `MarketplaceOrder`, porque en Shopify va al cliente fijo), paquete por
+    defecto 1 kg 10×10×10. Deshabilitado en la tienda web cuando la bodega
+    crea su guía. La guía generada queda en
     el despacho (`label_source="envia"`, `label_url`) y no se repite.
   - Aviso por **API de Envía**: busca primero la orden en Envía (nuestro
     identificador o número de Shopify, recorriendo el listado por fecha con
     `find_order`) y la vincula si existe (le carga la guía si no tiene); si
     no, la crea con `find_variant_ids` (SKU → `variantId` por el inventario
     de Envía) y el código de departamento (`resolve_colombia_state`).
-  - Las escrituras siguen sujetas a `ENVIA_WRITES_ENABLED` (guías) y
-    `ENVIA_FULFILLMENT_WRITES_ENABLED` (órdenes).
+  - No hay interruptores de escritura en Envía (se quitaron el
+    2026-10-11). Protecciones: las pruebas bloquean la red
+    (`NoNetworkTestRunner`); una guía solo se genera con el botón y nunca una
+    segunda; en Envía no se duplican órdenes (aviso reclamado + búsqueda
+    previa). Ojo: el `.env` local apunta a producción, así que correr el
+    proceso o los botones desde un equipo escribe de verdad.
 - Listado: `GET /api/orders/` trae `dispatch` por pedido (ver el contrato).
 - Probar avisos sin CLI: en `/admin/` → *Bodegas de despacho* → botón
   **Probar avisos** (solo superusuarios; `orders/functions/send_test_notification.py`).
@@ -510,13 +590,16 @@ Envía: Envía es una bodega más, avisada por API.
 - `financial_status="PAID"` es el valor por defecto de `process_shipment`:
   los pedidos de marketplace llegan ya pagados por el comprador, Shopify
   solo registra la venta. Excepción: Sodimac (`PENDING`, paga a crédito).
-- **Despacho en Shopify** (`requiresShipping` en cada línea, vía
-  `process_shipment(..., requires_shipping=)` → `create_order`):
-  Mercado Libre va **sin despacho** ("No se requiere envío", decisión de
-  negocio del 2026-10-05); Madecentro, Sodimac y Falabella, **con
-  despacho**. El campo se envía siempre explícito: sin él Shopify mostraba
-  "No se requiere envío" en todo (corregido 2026-10-02). Las órdenes
-  creadas antes del cambio no se modifican.
+- **Despacho en Shopify** (`requiresShipping` en cada línea,
+  `process_shipment.REQUIRES_SHIPPING` → `create_order`): **todas** las
+  órdenes de marketplace van **sin despacho** ("No se requiere envío").
+  La tienda de Shopify sigue conectada a Envía y Envía solo importa las
+  órdenes con despacho: así no toma por su cuenta los pedidos de
+  marketplace, cuya bodega decide este backend (ver "Despacho a bodegas").
+  Mercado Libre desde el 2026-10-05; Falabella, Madecentro y Sodimac desde
+  el 2026-10-11 (decisión con operaciones). El campo se envía siempre
+  explícito: sin él Shopify mostraba "No se requiere envío" en todo
+  (corregido 2026-10-02). Las órdenes creadas antes no se modifican.
 - El número de orden del marketplace va en el `note` de la orden de
   Shopify (`"{marketplace} #{numero}"`) — no se usa un campo dedicado (no
   se verificó si existe uno).

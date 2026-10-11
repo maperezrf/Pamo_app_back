@@ -77,8 +77,8 @@ seller id; es estado de conexión, no información de clientes o facturas.
   para que `pamo_web` facture sus OC de Sodimac antiguas. Se quita al
   terminar la convivencia (ver "Sodimac" en [`orders.md`](orders.md)).
 - `envia/`: API de Shipping de Envía: cliente REST, validación del payload,
-  cotización (`quote`), generación de guía (`create_label`, bloqueada sin
-  `ENVIA_WRITES_ENABLED`) y descarga del PDF (`download_label`).
+  cotización (`quote`), generación de guía (`create_label`, **cobra**) y
+  descarga del PDF (`download_label`).
 - `envia_fulfillment/`: cliente REST de Envía Fulfillment (otra API que
   `envia/`), lecturas de bodegas y órdenes, y creación de órdenes con la
   guía adjunta. Escrituras apagadas por defecto. En construcción.
@@ -87,6 +87,9 @@ seller id; es estado de conexión, no información de clientes o facturas.
   backend de correo `GmailApiEmailBackend` (envío por HTTPS; ver
   `architecture/INTEGRATIONS.md`). Comando `gmail_authorize` para obtener
   el refresh token.
+- `sodimac_rpa/`: cliente del RPA de guías de Sodimac (servicio propio en
+  Railway) y `trigger_labels`; el webhook y la consulta de bodega viven en
+  `orders`.
 - `whatsapp/`: cliente REST (WhatsApp Cloud API de Meta) y funciones de
   envío (texto, documento, plantilla, botones) y de parseo de webhook.
 

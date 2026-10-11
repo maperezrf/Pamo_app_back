@@ -13,6 +13,7 @@ from integrations.sodimac.functions.reinject_order import reinject_order
 from ..models import MarketplaceOrder, MarketplaceOrderItem
 from .claim_orders import RETRYABLE_STATUSES, claim_orders
 from .process_shipment import process_shipment
+from .sodimac_rpa import request_sodimac_labels
 
 SODIMAC = MarketplaceOrder.Marketplace.SODIMAC
 FINAL_STATUS = "4-ESTADO FINAL"
@@ -39,6 +40,8 @@ def sync_sodimac_orders(params=None, progress_callback=None, cancellation_token=
          la lea pamo_web.
     3. Crea en Shopify las OC sin orden, con reclamo atómico. Un pedido =
        un envío.
+    3b. Pide al RPA la guía de las OC que la necesitan (las recién creadas y
+       las que fallaron antes); llega por webhook (`sodimac_rpa`).
     4. Llama a pamo_web para que facture sus OC antiguas, justo después
        (Parte C). Si falla, se informa; lo de aquí no se revierte.
 
@@ -78,6 +81,13 @@ def sync_sodimac_orders(params=None, progress_callback=None, cancellation_token=
     progress_callback(50, "Creando órdenes en Shopify")
     created = _create_shopify_orders(customer_id, params.get("limit"), failures, progress_callback, cancellation_token)
 
+    progress_callback(85, "Pidiendo guías al RPA")
+    try:
+        labels_requested = len(request_sodimac_labels())
+    except Exception as error:  # un RPA caído no deshace lo creado
+        labels_requested = "falló"
+        failures.append(f"RPA de guías ({type(error).__name__}: {error})")
+
     progress_callback(90, "Facturación de pamo_web")
     try:
         result = run_sodimac_invoicing()
@@ -95,7 +105,8 @@ def sync_sodimac_orders(params=None, progress_callback=None, cancellation_token=
             failures.append(f"pamo_web no devolvió a la cola: {', '.join(map(str, result['not_returned']))}")
 
     summary = (
-        f"reinyectadas {reinjected}; cola: {counts}; creadas en Shopify {created}; pamo_web: {pamo_web}"
+        f"reinyectadas {reinjected}; cola: {counts}; creadas en Shopify {created}; "
+        f"guías pedidas al RPA {labels_requested}; pamo_web: {pamo_web}"
     )
     if failures:
         raise RuntimeError(f"{summary}; fallaron {len(failures)}: {'; '.join(failures)}")
@@ -157,6 +168,7 @@ def _save_purchase_order(purchase_order, rows, cutover, legacy_ocs, counts, fail
                     marketplace_order_number=purchase_order,
                     marketplace_status=status,
                     marketplace_created_at=transmitted_at,
+                    **_buyer_fields(rows[0].get("delivery") or {}),
                 )
                 _create_items(order, rows)
         except IntegrityError:
@@ -168,9 +180,30 @@ def _save_purchase_order(purchase_order, rows, cutover, legacy_ocs, counts, fail
     # Solo el estado del marketplace: un `save()` completo podría pisar el
     # reclamo de otro proceso (docs/apps/orders.md).
     MarketplaceOrder.objects.filter(pk=order.pk).update(marketplace_status=status, updated_at=timezone.now())
+    if not order.customer_address and (rows[0].get("delivery") or {}).get("address"):
+        # OC guardadas antes de leer los datos de entrega (2026-10-11): se
+        # completan con la reinyección. Solo campos del comprador.
+        MarketplaceOrder.objects.filter(pk=order.pk).update(**_buyer_fields(rows[0]["delivery"]))
     if not order.items.exists():
         _create_items(order, rows)
     counts["actualizadas"] += 1
+
+
+def _buyer_fields(delivery):
+    """Comprador y entrega de la OC en los campos de `MarketplaceOrder`
+    (los usa el aviso a Envía). Sodimac trae el nombre en un solo campo:
+    primera palabra como nombre, el resto como apellido."""
+    first, _, last = (delivery.get("name") or "").partition(" ")
+    return {
+        "customer_first_name": first[:150],
+        "customer_last_name": last.strip()[:150],
+        "customer_identification": (delivery.get("identification") or "")[:32],
+        "customer_email": (delivery.get("email") or "")[:254],
+        "customer_phone": (delivery.get("phone") or "")[:32],
+        "customer_address": (delivery.get("address") or "")[:255],
+        "customer_city": (delivery.get("city") or "")[:100],
+        "customer_region": (delivery.get("region") or "")[:100],
+    }
 
 
 def _create_items(order, rows):

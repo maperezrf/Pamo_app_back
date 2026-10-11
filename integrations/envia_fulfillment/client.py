@@ -7,7 +7,6 @@ from config.constants import (
     ENVIA_FULFILLMENT_API_TOKEN,
     ENVIA_FULFILLMENT_BASE_URL,
     ENVIA_FULFILLMENT_COMPANY_ID,
-    ENVIA_FULFILLMENT_WRITES_ENABLED,
 )
 
 # Una guía en base64 dentro de la orden ocupa ~1,4x el PDF.
@@ -29,21 +28,11 @@ class EnviaFulfillmentAPIError(Exception):
         super().__init__(f"{code}: {provider_message}" if provider_message else code)
 
 
-class EnviaFulfillmentWritesDisabled(EnviaFulfillmentAPIError):
-    """Escritura bloqueada por configuración (`ENVIA_FULFILLMENT_WRITES_ENABLED`)."""
-
-    def __init__(self, method, path):
-        super().__init__("ENVIA_FULFILLMENT_WRITES_DISABLED", provider_message=f"{method} {path}")
-
-
 class EnviaFulfillmentClient:
     """Conexión con la API de Envía Fulfillment (`apifulfillment.envia.com`),
     distinta de la de Shipping (`integrations/envia/`). Solo autentica y
     envía; no sabe qué es una orden. `{company_id}` en `path` se reemplaza
     por `ENVIA_FULFILLMENT_COMPANY_ID`.
-
-    Toda solicitud que no sea GET es una escritura y se bloquea mientras
-    `ENVIA_FULFILLMENT_WRITES_ENABLED` sea falso, antes de tocar la red.
     """
 
     def __init__(self):
@@ -62,8 +51,6 @@ class EnviaFulfillmentClient:
 
     def _send(self, method, path, params=None, payload=None):
         path = self._resolve(path)
-        if method != "GET" and not ENVIA_FULFILLMENT_WRITES_ENABLED:
-            raise EnviaFulfillmentWritesDisabled(method, path)
         response = requests.request(
             method,
             f"{self.base_url}{path}",

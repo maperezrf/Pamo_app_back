@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, patch
 
 from django.test import SimpleTestCase
 
-from .client import EnviaFulfillmentAPIError, EnviaFulfillmentClient, EnviaFulfillmentWritesDisabled
+from .client import EnviaFulfillmentAPIError, EnviaFulfillmentClient
 from .functions.add_order_comment import add_order_comment
 from .functions.add_order_tracking import add_order_tracking
 from .functions.create_order import EnviaFulfillmentOrderError, create_order
@@ -67,13 +67,6 @@ class ClientTests(SimpleTestCase):
         self.assertEqual((method, url), ("GET", "https://apifulfillment.envia.com/company/2156/warehouse/client"))
         self.assertEqual(request.call_args.kwargs["headers"]["Authorization"], "Bearer token-secreto")
         self.assertFalse(request.call_args.kwargs["allow_redirects"])
-
-    @patch(f"{CLIENT}.ENVIA_FULFILLMENT_WRITES_ENABLED", False)
-    @patch(f"{CLIENT}.requests.request")
-    def test_writes_are_blocked_before_touching_the_network(self, request):
-        with self.assertRaises(EnviaFulfillmentWritesDisabled):
-            EnviaFulfillmentClient().post("/company/{company_id}/client/order/create", [{}])
-        request.assert_not_called()
 
     @patch(f"{CLIENT}.requests.request")
     def test_http_error_keeps_the_provider_message_but_not_the_token(self, request):
@@ -155,7 +148,6 @@ class ReadFunctionTests(SimpleTestCase):
 
 @patch(f"{CLIENT}.ENVIA_FULFILLMENT_API_TOKEN", "token-secreto")
 @patch(f"{CLIENT}.ENVIA_FULFILLMENT_COMPANY_ID", "2156")
-@patch(f"{CLIENT}.ENVIA_FULFILLMENT_WRITES_ENABLED", True)
 @patch("integrations.envia_fulfillment.functions.create_order.ENVIA_FULFILLMENT_SHOP_ID", "1631")
 class CreateOrderTests(SimpleTestCase):
     @patch(f"{CLIENT}.requests.request")
@@ -216,7 +208,6 @@ class CreateOrderTests(SimpleTestCase):
 @patch(f"{CLIENT}.ENVIA_FULFILLMENT_API_TOKEN", "token-secreto")
 @patch(f"{CLIENT}.ENVIA_FULFILLMENT_COMPANY_ID", "2156")
 class OrderCommentTests(SimpleTestCase):
-    @patch(f"{CLIENT}.ENVIA_FULFILLMENT_WRITES_ENABLED", True)
     @patch(f"{CLIENT}.requests.request")
     def test_attaches_the_remittance_pdf_to_the_order(self, request):
         request.return_value = _response({"check": True})
@@ -229,13 +220,6 @@ class OrderCommentTests(SimpleTestCase):
         self.assertEqual(body["comment"], "Remesa")
         self.assertEqual(body["file"]["name"], "relacion.pdf")
         self.assertEqual(base64.b64decode(body["file"]["raw"].split(",", 1)[1]), PDF)
-
-    @patch(f"{CLIENT}.ENVIA_FULFILLMENT_WRITES_ENABLED", False)
-    @patch(f"{CLIENT}.requests.request")
-    def test_is_blocked_without_writes_enabled(self, request):
-        with self.assertRaises(EnviaFulfillmentWritesDisabled):
-            add_order_comment(1, comment="Remesa")
-        request.assert_not_called()
 
 
 class LabelTests(SimpleTestCase):

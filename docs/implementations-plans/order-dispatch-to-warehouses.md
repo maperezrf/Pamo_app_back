@@ -1,5 +1,12 @@
 # Plan: despacho de pedidos a bodegas con notificación por canal
 
+> **Actualización 2026-10-11:** se quitaron los interruptores
+> (`DISPATCH_START_DATE`, `DISPATCH_FETCH_LABELS_ENABLED`,
+> `DISPATCH_NOTIFICATIONS_ENABLED`, `ENVIA_WRITES_ENABLED`,
+> `ENVIA_FULFILLMENT_WRITES_ENABLED`). El proceso se enciende programándolo
+> con `{"since": "AAAA-MM-DD"}`. Las menciones de abajo son históricas; lo
+> vigente está en [`../apps/orders.md`](../apps/orders.md).
+
 Estado: **implementado sin activar (2026-10-07)**: fases 1 y 2 completas;
 avisos de correo y WhatsApp construidos y apagados; aviso por API de Envía
 bloqueado hasta el cruce SKU → `variantId`. Nada se ha enviado a ninguna
@@ -12,8 +19,11 @@ pasa a ser una parte de este.
 
 ## Decisiones confirmadas por el usuario (2026-10-07)
 
-1. **Ninguna tienda queda conectada a Envía** (ni Shopify, ni Mercado
-   Libre, ni Falabella). Todo lo que se cree en Envía lo crea este backend.
+1. ~~**Ninguna tienda queda conectada a Envía**~~ **Cambió el
+   2026-10-11** (operaciones): la tienda de Shopify **sigue conectada**.
+   Las órdenes de marketplace se crean sin despacho en Shopify para que
+   Envía no las importe, y este backend las envía a su bodega. Ver
+   `docs/apps/orders.md` ("Despacho a bodegas").
 2. **Este backend decide qué bodega despacha cada pedido** y le avisa a esa
    bodega por su canal. Envía es una bodega más: se le avisa por API.
 3. **Bodegas: las ubicaciones de Shopify.** Cada una se parametriza con uno,

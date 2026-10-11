@@ -16,6 +16,7 @@ PDF = b"%PDF-1.4 " + b"x" * 64 + b" %%EOF"
 ENVIA_LOCATION = "97615380757"
 BOCCHERINI = "99576545557"
 EMAIL_SETTINGS = {"EMAIL_HOST": "smtp.test", "DEFAULT_FROM_EMAIL": "despachos@pamo.co"}
+SINCE = {"since": "2026-10-08"}
 
 
 def _location(shopify_location_id=BOCCHERINI, name="Boccherini", **overrides):
@@ -142,7 +143,6 @@ class AssignDispatchLocationTests(TestCase):
         self.assertIn("sincronizar bodegas", reason)
 
 
-@patch(f"{F}.dispatch_orders.DISPATCH_START_DATE", "2026-10-08")
 class DispatchOrdersTests(TestCase):
     def setUp(self):
         self.location = _location(notify_email=True, emails=["bodega@boccherini.com"])
@@ -152,47 +152,30 @@ class DispatchOrdersTests(TestCase):
     def _dispatch(self):
         return Dispatch.objects.get(shopify_order=self.order)
 
-    def test_without_a_start_date_nothing_enters_the_flow(self):
-        with patch(f"{F}.dispatch_orders.DISPATCH_START_DATE", ""):
-            self.assertEqual(dispatch_orders(), {})
+    def test_without_a_start_date_the_process_fails_instead_of_taking_everything(self):
+        with self.assertRaisesMessage(ValueError, "since"):
+            dispatch_orders({})
+        with self.assertRaisesMessage(ValueError, "since"):
+            dispatch_orders({"since": "8/10/2026"})
         self.assertFalse(Dispatch.objects.exists())
 
-    def test_old_and_fulfilled_orders_are_left_out(self):
+    @patch(f"{F}.fetch_dispatch_label.get_shipment", return_value={**ML_SHIPMENT, "status": "shipped", "substatus": ""})
+    def test_old_and_fulfilled_orders_are_left_out(self, get_shipment):
         _order(shopify_id="old", created=datetime(2026, 10, 7, 4, 59, tzinfo=dt_timezone.utc))  # 6 oct en Colombia
         _order(shopify_id="done", fulfillment_status="FULFILLED")
-        dispatch_orders()
+        dispatch_orders(SINCE)
         self.assertEqual(list(Dispatch.objects.values_list("shopify_order__shopify_id", flat=True)), ["5001"])
 
-    def test_waits_for_the_guide_while_label_download_is_off(self):
-        self.assertEqual(dispatch_orders(), {"esperando_guia": 1})
-        self.assertEqual(self._dispatch().location, self.location)
-        self.assertIn("DISPATCH_FETCH_LABELS_ENABLED", self._dispatch().note)
-
-    @patch(f"{F}.fetch_dispatch_label.DISPATCH_FETCH_LABELS_ENABLED", True)
-    @patch(f"{F}.fetch_dispatch_label.get_shipment_label", return_value=PDF)
-    @patch(f"{F}.fetch_dispatch_label.get_shipment", return_value=ML_SHIPMENT)
-    def test_with_the_guide_but_notifications_off_it_is_ready_and_sends_nothing(self, get_shipment, get_label):
-        self.assertEqual(dispatch_orders(), {"listo": 1})
-
-        dispatch = self._dispatch()
-        self.assertEqual(dispatch.tracking_number, "MEL48195006881")
-        self.assertEqual(len(dispatch.label_sha256), 64)
-        self.assertEqual(len(mail.outbox), 0)
-        self.assertFalse(DispatchNotification.objects.exists())
-
-    @patch(f"{F}.fetch_dispatch_label.DISPATCH_FETCH_LABELS_ENABLED", True)
     @patch(f"{F}.fetch_dispatch_label.get_shipment", return_value={**ML_SHIPMENT, "substatus": "in_packing_list", "status": "shipped"})
     def test_mercadolibre_guide_not_available_yet_waits(self, get_shipment):
-        self.assertEqual(dispatch_orders(), {"esperando_guia": 1})
+        self.assertEqual(dispatch_orders(SINCE), {"esperando_guia": 1})
         self.assertIn("aún no disponible", self._dispatch().note)
 
     @override_settings(**EMAIL_SETTINGS)
-    @patch(f"{F}.dispatch_orders.DISPATCH_NOTIFICATIONS_ENABLED", True)
-    @patch(f"{F}.fetch_dispatch_label.DISPATCH_FETCH_LABELS_ENABLED", True)
     @patch(f"{F}.fetch_dispatch_label.get_shipment_label", return_value=PDF)
     @patch(f"{F}.fetch_dispatch_label.get_shipment", return_value=ML_SHIPMENT)
     def test_emails_the_warehouse_once_with_the_guide(self, get_shipment, get_label):
-        self.assertEqual(dispatch_orders(), {"notificado": 1})
+        self.assertEqual(dispatch_orders(SINCE), {"notificado": 1})
 
         [message] = mail.outbox
         self.assertEqual(message.to, ["bodega@boccherini.com"])
@@ -203,11 +186,10 @@ class DispatchOrdersTests(TestCase):
         notification = DispatchNotification.objects.get()
         self.assertEqual((notification.channel, notification.status), ("email", "enviado"))
 
-        dispatch_orders()  # ya notificado: no vuelve a enviar
+        dispatch_orders(SINCE)  # ya notificado: no vuelve a enviar
         self.assertEqual(len(mail.outbox), 1)
 
     @override_settings(EMAIL_HOST="", DEFAULT_FROM_EMAIL="")  # sin depender del .env
-    @patch(f"{F}.dispatch_orders.DISPATCH_NOTIFICATIONS_ENABLED", True)
     def test_unconfigured_email_whatsapp_and_unknown_envia_sku_are_errors_not_sends(self):
         self.location.requires_label = False
         self.location.notify_whatsapp = True
@@ -220,7 +202,7 @@ class DispatchOrdersTests(TestCase):
                 patch(f"{F}.notify_dispatch.send_template_message") as send_template, \
                 patch(f"{F}.notify_dispatch.find_order", return_value=None), \
                 patch(f"{F}.notify_dispatch.find_variant_ids", return_value={}):
-            self.assertEqual(dispatch_orders(), {"error": 1})
+            self.assertEqual(dispatch_orders(SINCE), {"error": 1})
             create_order.assert_not_called()
             send_template.assert_not_called()
 
@@ -230,7 +212,6 @@ class DispatchOrdersTests(TestCase):
         self.assertIn("SKU sin producto en Envía: I001", errors["api"])
         self.assertEqual(len(mail.outbox), 0)
 
-    @patch(f"{F}.dispatch_orders.DISPATCH_NOTIFICATIONS_ENABLED", True)
     @patch(f"{F}.notify_dispatch.DISPATCH_WHATSAPP_TEMPLATE", "despacho_bodega")
     @patch(f"{F}.notify_dispatch.send_template_message", return_value={"message_id": "wamid.1"})
     @patch(f"{F}.notify_dispatch.upload_document")
@@ -241,7 +222,7 @@ class DispatchOrdersTests(TestCase):
         self.location.whatsapp_numbers = ["573001234567"]
         self.location.save()
 
-        self.assertEqual(dispatch_orders(), {"notificado": 1})
+        self.assertEqual(dispatch_orders(SINCE), {"notificado": 1})
 
         upload.assert_not_called()  # sin guía, sin documento
         args, kwargs = send_template.call_args
@@ -250,36 +231,34 @@ class DispatchOrdersTests(TestCase):
         self.assertEqual(DispatchNotification.objects.get().external_id, "wamid.1")
 
     @override_settings(**EMAIL_SETTINGS)
-    @patch(f"{F}.dispatch_orders.DISPATCH_NOTIFICATIONS_ENABLED", True)
     def test_a_failed_notification_is_retried_and_a_processing_one_is_not(self):
         self.location.requires_label = False
         self.location.save()
         with patch(f"{F}.notify_dispatch.EmailMessage.send", side_effect=OSError("smtp caído")):
-            self.assertEqual(dispatch_orders(), {"error": 1})
+            self.assertEqual(dispatch_orders(SINCE), {"error": 1})
 
-        self.assertEqual(dispatch_orders(), {"notificado": 1})  # reintento
+        self.assertEqual(dispatch_orders(SINCE), {"notificado": 1})  # reintento
         self.assertEqual(len(mail.outbox), 1)
 
         other = _order(shopify_id="5002", name="20401")
         _marketplace_row(other, marketplace_order_id="mk-2")
         dispatch = Dispatch.objects.create(shopify_order=other, location=self.location, channel="mercadolibre", status="error")
         DispatchNotification.objects.create(dispatch=dispatch, channel="email", status="procesando")
-        dispatch_orders()
+        dispatch_orders(SINCE)
         self.assertEqual(len(mail.outbox), 1)  # el que quedó procesando no se reenvía
 
     def test_location_without_channels_goes_to_manual(self):
         self.location.notify_email = False
         self.location.save()
-        self.assertEqual(dispatch_orders(), {"manual": 1})
+        self.assertEqual(dispatch_orders(SINCE), {"manual": 1})
         self.assertIn("no tiene canales", self._dispatch().note)
 
     def test_cancelled_order_gets_a_cancelled_dispatch_and_leaves_the_flow(self):
         self.order.cancelled_at = self.order.shopify_created_at
         self.order.save()
-        self.assertEqual(dispatch_orders(), {"cancelado": 1})
-        self.assertEqual(dispatch_orders(), {})
+        self.assertEqual(dispatch_orders(SINCE), {"cancelado": 1})
+        self.assertEqual(dispatch_orders(SINCE), {})
 
-    @patch(f"{F}.fetch_dispatch_label.DISPATCH_FETCH_LABELS_ENABLED", True)
     @patch(f"{F}.fetch_dispatch_label.get_shipping_document", return_value=PDF)
     @patch(f"{F}.fetch_dispatch_label.get_package_items")
     def test_falabella_guide_comes_from_the_package_items(self, package_items, get_document):
@@ -290,7 +269,7 @@ class DispatchOrdersTests(TestCase):
             {"order_item_id": "12", "package_id": "", "tracking_code": "", "status": "pending"},
         ]
 
-        dispatch_orders(params={"shopify_order_ids": ["6001"]})
+        dispatch_orders({**SINCE, "shopify_order_ids": ["6001"]})
 
         get_document.assert_called_once_with(["11"])
         self.assertEqual(Dispatch.objects.get(shopify_order=order).tracking_number, "2298450467")
@@ -328,8 +307,6 @@ ENVIA_EXISTING = {"order_id": 49607578, "identifier": "20400", "warehouse_id": 3
                   "fulfillment_status": "unfulfilled", "shop_name": "Pamo.co", "pretrackings": []}
 
 
-@patch(f"{F}.dispatch_orders.DISPATCH_START_DATE", "2026-10-08")
-@patch(f"{F}.dispatch_orders.DISPATCH_NOTIFICATIONS_ENABLED", True)
 class EnviaNotifierTests(TestCase):
     def setUp(self):
         self.location = _location(
@@ -342,8 +319,8 @@ class EnviaNotifierTests(TestCase):
             customer_email="c@example.com", customer_region="MAGDALENA", customer_city="SANTA MARTA",
             customer_first_name="Ana María", customer_last_name="",
         )
-        # Sodimac es "manual" en la asignación automática; aquí se prueba el
-        # notificador con el despacho ya asignado.
+        # Se prueba el notificador con el despacho ya asignado (bodega sin
+        # exigencia de guía).
         self.dispatch = Dispatch.objects.create(
             shopify_order=self.order, location=self.location, channel="sodimac", status=Dispatch.Status.WAITING_LABEL
         )
@@ -352,7 +329,7 @@ class EnviaNotifierTests(TestCase):
     @patch(f"{N}.create_order")
     @patch(f"{N}.find_order", return_value=ENVIA_EXISTING)
     def test_links_the_order_envia_already_has_instead_of_creating_another(self, find_order, create_order, add_tracking):
-        dispatch_orders()
+        dispatch_orders(SINCE)
 
         create_order.assert_not_called()
         add_tracking.assert_not_called()  # no hay guía aquí
@@ -365,7 +342,7 @@ class EnviaNotifierTests(TestCase):
     @patch(f"{N}.create_order", return_value={"order_id": 49690001, "identifier": "16200704", "warehouse_status": "PENDING"})
     @patch(f"{N}.find_order", return_value=None)
     def test_creates_the_order_with_envia_variant_state_code_and_split_name(self, find_order, create_order, variants, state):
-        dispatch_orders()
+        dispatch_orders(SINCE)
 
         kwargs = create_order.call_args.kwargs
         self.assertEqual(kwargs["identifier"], "16200704")
@@ -384,7 +361,7 @@ class EnviaNotifierTests(TestCase):
     def test_missing_delivery_data_is_an_error_before_calling_envia(self, find_order, variants):
         MarketplaceOrder.objects.update(customer_address="")
         with patch(f"{N}.create_order") as create_order:
-            dispatch_orders()
+            dispatch_orders(SINCE)
             create_order.assert_not_called()
         self.assertIn(
             "Faltan datos de entrega para Envía: dirección", DispatchNotification.objects.get().error_description
@@ -474,13 +451,11 @@ class DispatchActionAPITests(TestCase):
         self.assertEqual(create_label.call_count, 1)
 
     @patch(f"{A}._shipping_payload", return_value={})
-    def test_generate_with_writes_disabled_is_409_and_unknown_result_is_502(self, payload):
-        from integrations.envia.functions.create_label import LabelUnknownResult, LabelWritesDisabled
+    def test_generate_with_an_unknown_result_is_502_and_noted(self, payload):
+        from integrations.envia.functions.create_label import LabelUnknownResult
 
         order = self._web_order()
         body = {"carrier": "tcc", "service": "mensajeria"}
-        with patch(f"{A}.create_label", side_effect=LabelWritesDisabled()):
-            self.assertEqual(self._post(order, "label/", body).status_code, 409)
         with patch(f"{A}.create_label", side_effect=LabelUnknownResult("ENVIA_LABEL_UNKNOWN_RESULT (timeout)")):
             self.assertEqual(self._post(order, "label/", body).status_code, 502)
         self.assertIn("pamo-20412", Dispatch.objects.get(shopify_order=order).note)
@@ -595,8 +570,6 @@ class WebDispatchHooksTests(TestCase):
         self.assertEqual(counts["bodega_asignada"], 1)
 
 
-@patch(f"{F}.dispatch_orders.DISPATCH_START_DATE", "2026-10-08")
-@patch(f"{F}.dispatch_orders.DISPATCH_NOTIFICATIONS_ENABLED", True)
 class OwnLabelWarehouseTests(TestCase):
     """Operaciones (2026-10-08): Bodega Envia crea la guía de los pedidos de
     Shopify; otras bodegas necesitan que se la generemos."""
@@ -613,7 +586,7 @@ class OwnLabelWarehouseTests(TestCase):
     def test_a_warehouse_that_creates_its_label_is_notified_without_one(self):
         self._dispatch(creates_own_label=True)
 
-        self.assertEqual(dispatch_orders(), {"notificado": 1})
+        self.assertEqual(dispatch_orders(SINCE), {"notificado": 1})
 
         self.assertEqual(len(mail.outbox), 1)
         self.assertEqual(mail.outbox[0].attachments, [])
@@ -621,10 +594,9 @@ class OwnLabelWarehouseTests(TestCase):
     def test_otherwise_the_web_order_waits_for_a_generated_label(self):
         self._dispatch(creates_own_label=False)
 
-        self.assertEqual(dispatch_orders(), {"esperando_guia": 1})
+        self.assertEqual(dispatch_orders(SINCE), {"esperando_guia": 1})
         self.assertEqual(len(mail.outbox), 0)
 
-    @patch(f"{F}.fetch_dispatch_label.DISPATCH_FETCH_LABELS_ENABLED", True)
     @patch(f"{F}.fetch_dispatch_label.get_shipment", return_value={**ML_SHIPMENT, "substatus": "ready_to_print"})
     @patch(f"{F}.fetch_dispatch_label.get_shipment_label", return_value=PDF)
     @override_settings(**EMAIL_SETTINGS)
@@ -635,7 +607,7 @@ class OwnLabelWarehouseTests(TestCase):
         _marketplace_row(order, location_id="777", marketplace_order_id="ml-1")
         Dispatch.objects.create(shopify_order=order, location=place, channel="mercadolibre", status=Dispatch.Status.WAITING_LABEL)
 
-        dispatch_orders(params={"shopify_order_ids": ["9001"]})
+        dispatch_orders({**SINCE, "shopify_order_ids": ["9001"]})
 
         get_label.assert_called_once()
         self.assertEqual(mail.outbox[0].attachments[0][1], PDF)
@@ -696,3 +668,115 @@ class TestNotificationsAdminTests(TestCase):
 
         self.assertEqual(self.client.post(self.URL, {"channel": "email", "to": "yo@example.com"}).status_code, 403)
         self.assertEqual(mail.outbox, [])
+
+
+SODIMAC_ROW = dict(marketplace="sodimac", location_id=ENVIA_LOCATION, marketplace_order_id="16200704",
+                   marketplace_order_number="16200704", shipment_id="")
+RELATION = b"%PDF-1.4 relacion %%EOF"
+
+
+@override_settings(**EMAIL_SETTINGS)
+class SodimacAndMadecentroDispatchTests(TestCase):
+    """2026-10-11: Sodimac espera la guía del RPA; Madecentro, una generada
+    en Envía (aunque la bodega cree las de la tienda web)."""
+
+    def _location(self, **overrides):
+        return _location(
+            shopify_location_id=ENVIA_LOCATION, name="Bodega Envia", notify_email=True, emails=["b@example.com"],
+            creates_own_label=True, **overrides,
+        )
+
+    def test_sodimac_waits_for_the_uploaded_label_then_sends_both_pdfs(self):
+        from .models import MarketplaceLabel
+
+        self._location()
+        order = _order(marketplace="sodimac")
+        row = _marketplace_row(order, **SODIMAC_ROW)
+
+        self.assertEqual(dispatch_orders(SINCE), {"esperando_guia": 1})
+        self.assertIn("RPA", Dispatch.objects.get().note)
+        self.assertEqual(len(mail.outbox), 0)
+
+        MarketplaceLabel.objects.create(order=row, tracking_number="474231303", label_pdf=PDF, relation_pdf=RELATION)
+        self.assertEqual(dispatch_orders(SINCE), {"notificado": 1})
+
+        self.assertEqual(Dispatch.objects.get().tracking_number, "474231303")
+        attachments = {name: content for name, content, _ in mail.outbox[0].attachments}
+        self.assertEqual(attachments, {"guia-20400.pdf": PDF, "relacion-20400.pdf": RELATION})
+
+    def test_madecentro_waits_for_a_generated_label_even_where_the_warehouse_creates_web_labels(self):
+        self._location()
+        order = _order(marketplace="madecentro")
+        _marketplace_row(order, marketplace="madecentro", location_id=ENVIA_LOCATION, shipment_id="")
+
+        self.assertEqual(dispatch_orders(SINCE), {"esperando_guia": 1})
+        self.assertIn("Generar guía", Dispatch.objects.get().note)
+        self.assertEqual(len(mail.outbox), 0)
+
+    @patch(f"{A}.quote", return_value=[QUOTE_OPTION])
+    @patch(f"{A}.resolve_colombia_city", return_value={"city": "05001000", "state": "AN"})
+    @patch(f"{A}.get_order_shipping_address")
+    def test_madecentro_quote_goes_to_the_buyer_address(self, shipping, city, quote):
+        self._location(origin_address="Calle 1", origin_phone="3000000000", origin_province_code="CUN", city="Cota")
+        order = _order(marketplace="madecentro")
+        _marketplace_row(order, marketplace="madecentro", location_id=ENVIA_LOCATION, shipment_id="",
+                         customer_address="Cra 50 # 10-20", customer_city="Medellín", customer_region="Antioquia",
+                         customer_email="ana@example.com")
+        user = User.objects.create_user("ops", password="x")
+        user.groups.add(Group.objects.get_or_create(name="Operaciones")[0])
+        self.client.force_login(user)
+
+        response = self.client.post(f"/api/orders/{order.shopify_id}/dispatch/label/quote/")
+
+        self.assertEqual(response.status_code, 200)
+        shipping.assert_not_called()  # en Shopify va al cliente fijo, sin dirección
+        destination = quote.call_args.args[0]["destination"]
+        self.assertEqual((destination["street"], destination["email"]), ("Cra 50 # 10-20", "ana@example.com"))
+        city.assert_called_with("Medellín", "Antioquia")
+
+
+class EnviaRelationTests(TestCase):
+    def setUp(self):
+        from .models import MarketplaceLabel
+
+        location = _location(
+            shopify_location_id=ENVIA_LOCATION, name="Bodega Envia", notify_api=True, envia_warehouse_id="311"
+        )
+        order = _order(marketplace="sodimac")
+        row = _marketplace_row(order, **SODIMAC_ROW, customer_email="c@example.com", customer_region="MAGDALENA",
+                               customer_city="SANTA MARTA")
+        MarketplaceLabel.objects.create(order=row, tracking_number="474231303", label_pdf=PDF, relation_pdf=RELATION)
+        Dispatch.objects.create(
+            shopify_order=order, location=location, channel="sodimac", status=Dispatch.Status.WAITING_LABEL
+        )
+        self.order = order
+
+    def _notify(self):
+        from .functions.dispatch_orders import process_order_dispatch
+
+        created = {"order_id": 49690001, "identifier": "16200704", "warehouse_status": "PENDING"}
+        variants = {"I001": {"variant_id": 1, "ecart_id": "1", "available": {}}}
+        with patch(f"{N}.resolve_colombia_state", return_value="MA"), \
+                patch(f"{N}.find_variant_ids", return_value=variants), \
+                patch(f"{N}.find_order", return_value=None), \
+                patch(f"{N}.create_order", return_value=created) as create:
+            status = process_order_dispatch(self.order)
+        return status, create
+
+    @patch(f"{N}.add_order_comment")
+    def test_the_relation_goes_as_a_comment_with_the_file(self, comment):
+        status, create = self._notify()
+
+        self.assertEqual(status, Dispatch.Status.NOTIFIED)
+        self.assertEqual(create.call_args.kwargs["label_pdf"], PDF)
+        self.assertEqual(comment.call_args.args[0], 49690001)
+        self.assertEqual(comment.call_args.kwargs["pdf"], RELATION)
+
+    @patch(f"{N}.add_order_comment", side_effect=ConnectionError("caído"))
+    def test_a_failed_relation_is_a_warning_not_a_failed_notification(self, comment):
+        status, _ = self._notify()
+
+        self.assertEqual(status, Dispatch.Status.NOTIFIED)
+        notification = DispatchNotification.objects.get()
+        self.assertEqual(notification.status, "enviado")
+        self.assertIn("relación no se cargó", notification.error_description)

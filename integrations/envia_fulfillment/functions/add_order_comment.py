@@ -12,8 +12,7 @@ def add_order_comment(order_id, *, comment, pdf=None, filename=None):
     (`create_order` / `add_order_tracking`). La colección oficial pide el
     archivo como "Base64 file dataUri", el mismo formato de la guía.
 
-    Escritura: bloqueada sin `ENVIA_FULFILLMENT_WRITES_ENABLED`. Devuelve
-    la respuesta de Envía.
+    Devuelve la respuesta de Envía.
     """
     payload = {"comment": comment, "file": None}
     if pdf is not None:

@@ -92,6 +92,19 @@ class MarketplaceOrder(models.Model):
     fulfillment_location_name = models.CharField(max_length=100, blank=True)
     fulfillment_note = models.TextField(blank=True)
 
+    class LabelRequestStatus(models.TextChoices):
+        REQUESTED = "solicitada", "Solicitada al RPA"
+        RECEIVED = "recibida", "Recibida"
+        ERROR = "error", "Error (se reintenta)"
+        MANUAL = "manual", "Revisión manual"
+
+    # Solicitud de la guía a un tercero (hoy el RPA de Sodimac): vacío = no
+    # se ha pedido. `error` se vuelve a pedir en la próxima corrida;
+    # `manual` no (el motivo queda en la nota).
+    label_request_status = models.CharField(max_length=12, choices=LabelRequestStatus.choices, blank=True)
+    label_request_note = models.TextField(blank=True)
+    label_requested_at = models.DateTimeField(null=True, blank=True)
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -131,6 +144,28 @@ class MarketplaceOrderItem(models.Model):
     def __str__(self):
         return f"{self.marketplace_sku} x{self.quantity}"
 
+
+
+class MarketplaceLabel(models.Model):
+    """Guía de un pedido de marketplace que genera un tercero porque el canal
+    no la entrega por API. Hoy Sodimac: el RPA la genera en el portal de
+    Homecenter y la devuelve por webhook con dos PDF, el rótulo (la guía) y
+    la relación de la transportadora; el número se lee del rótulo. A
+    diferencia de las guías de Mercado Libre y Falabella, aquí sí se guardan
+    los PDF: no hay de dónde volver a pedirlos."""
+
+    order = models.OneToOneField(MarketplaceOrder, related_name="label", on_delete=models.CASCADE)
+    tracking_number = models.CharField("Número de guía", max_length=64)
+    label_pdf = models.BinaryField("Rótulo (PDF)")
+    relation_pdf = models.BinaryField("Relación / remesa (PDF)")
+    uploaded_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "Guía cargada de marketplace"
+        verbose_name_plural = "Guías cargadas de marketplace"
+
+    def __str__(self):
+        return f"{self.order} guía {self.tracking_number}"
 
 class ShopifyOrder(models.Model):
     """Copia local de un pedido de Shopify (todos los canales, también la

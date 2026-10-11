@@ -5,7 +5,7 @@ import requests
 from django.test import SimpleTestCase
 
 from .client import EnviaAPIError
-from .functions.create_label import LabelUnknownResult, LabelWritesDisabled, create_label
+from .functions.create_label import LabelUnknownResult, create_label
 from .functions.download_label import download_label
 from .functions.quote import QuoteError, quote
 from .functions.resolve_colombia_city import resolve_colombia_city
@@ -94,6 +94,20 @@ class ResolveColombiaCityTests(SimpleTestCase):
         with self.assertRaises(EnviaAPIError):
             resolve_colombia_city("Cali", "VAC")
 
+    @patch("integrations.envia.client.requests.post")
+    @patch("integrations.envia.client.requests.get")
+    def test_accepts_the_department_name_a_marketplace_sends(self, mock_get, mock_post):
+        mock_get.return_value.is_redirect = False
+        mock_get.return_value.status_code = 200
+        mock_get.return_value.content = (
+            b'{"data": [{"country_code": "CO", "name": "Antioquia", "code_shopify": "ANT", "code_2_digits": "AN"}]}'
+        )
+        mock_post.return_value.is_redirect = False
+        mock_post.return_value.status_code = 200
+        mock_post.return_value.content = b'{"city": "05001000", "state": "AN", "name": "Medellin"}'
+
+        self.assertEqual(resolve_colombia_city("Medellín", "ANTIOQUIA"), {"city": "05001000", "state": "AN"})
+
     @patch("integrations.envia.client.requests.get")
     def test_raises_when_the_shopify_state_has_no_unique_match(self, mock_get):
         mock_get.return_value.is_redirect = False
@@ -161,14 +175,6 @@ def _generate_response(content, status=200):
 
 @patch(f"{LABEL}.ENVIA_ALLOWED_CARRIERS", ["tcc", "servientrega"])
 class CreateLabelTests(SimpleTestCase):
-    @patch(f"{LABEL}.ENVIA_WRITES_ENABLED", False)
-    @patch("integrations.envia.client.requests.post")
-    def test_is_blocked_without_writes_enabled(self, mock_post):
-        with self.assertRaises(LabelWritesDisabled):
-            create_label(_valid_payload(), OPTION, order_reference="shopify-20412")
-        mock_post.assert_not_called()
-
-    @patch(f"{LABEL}.ENVIA_WRITES_ENABLED", True)
     @patch("integrations.envia.client.requests.post")
     def test_validates_before_sending(self, mock_post):
         with self.assertRaises(ValueError):
@@ -179,7 +185,6 @@ class CreateLabelTests(SimpleTestCase):
             create_label(_valid_payload(), {"providerPayload": {"carrier": "tcc"}}, order_reference="a")
         mock_post.assert_not_called()
 
-    @patch(f"{LABEL}.ENVIA_WRITES_ENABLED", True)
     @patch("integrations.envia.client.requests.post")
     def test_generates_the_selected_option_and_returns_tracking_and_label(self, mock_post):
         mock_post.return_value = _generate_response(
@@ -197,7 +202,6 @@ class CreateLabelTests(SimpleTestCase):
         sent = json.loads(mock_post.call_args.kwargs["data"].decode("utf-8"))
         self.assertEqual(sent["shipment"], {"type": 1, "carrier": "tcc", "service": "mensajeria", "orderReference": "shopify-20412"})
 
-    @patch(f"{LABEL}.ENVIA_WRITES_ENABLED", True)
     @patch("integrations.envia.client.requests.post")
     def test_any_failure_after_sending_is_an_unknown_result(self, mock_post):
         cases = [

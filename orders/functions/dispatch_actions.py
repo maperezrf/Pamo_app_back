@@ -8,9 +8,10 @@ from integrations.envia.functions.quote import quote
 from integrations.envia.functions.resolve_colombia_city import resolve_colombia_city
 from integrations.shopify.functions.get_order_shipping_address import get_order_shipping_address
 
-from ..models import Dispatch
+from ..models import Dispatch, MarketplaceOrder
 from .dispatch_orders import ensure_dispatch, process_order_dispatch
 from .fetch_dispatch_label import CHANNEL_LABELS, fetch_dispatch_label
+from .shopify_order_marketplace import SHOPIFY_CHANNEL
 
 # Paquete por defecto mientras Shopify no tenga peso y medidas reales: el de
 # referencia de pamo-one-engineering (1 kg, 10×10×10 cm).
@@ -24,11 +25,10 @@ class DispatchActionError(Exception):
 
 
 def notify_dispatch_now(order):
-    """Botón "Notificar a proveedor": avanza el despacho en modo manual
-    (trae la guía y avisa por los canales de la bodega). Ver
-    `process_order_dispatch(manual=True)`."""
+    """Botón "Notificar a proveedor": avanza el despacho ya (trae la guía y
+    avisa por los canales de la bodega), sin esperar al proceso."""
     ensure_dispatch(order)
-    process_order_dispatch(order, manual=True)
+    process_order_dispatch(order)
     return Dispatch.objects.select_related("location").get(shopify_order=order)
 
 
@@ -39,7 +39,7 @@ def fetch_channel_label_now(order):
     dispatch = _dispatch_with_location(order)
     if order.marketplace not in CHANNEL_LABELS:
         raise DispatchActionError("Este canal no trae guía propia: hay que generarla en Envía.")
-    label, reason = fetch_dispatch_label(order, force=True)
+    label, reason = fetch_dispatch_label(order)
     if label is None:
         raise DispatchActionError(reason)
     dispatch.tracking_number = label["tracking_number"]
@@ -97,7 +97,7 @@ def _dispatch_for_generation(order):
     dispatch = _dispatch_with_location(order)
     if order.marketplace in CHANNEL_LABELS:
         raise DispatchActionError("Este canal trae su propia guía: usar \"Traer guía\".")
-    if dispatch.location.creates_own_label:
+    if dispatch.location.creates_own_label and order.marketplace == SHOPIFY_CHANNEL:
         raise DispatchActionError(f"{dispatch.location.name} crea su propia guía: no se genera en Envía.")
     if dispatch.label_source == Dispatch.LabelSource.ENVIA:
         raise DispatchActionError(f"Ya tiene una guía generada ({dispatch.tracking_number}); no se genera otra.")
@@ -107,9 +107,7 @@ def _dispatch_for_generation(order):
 def _shipping_payload(order, location):
     if not location.origin_address or not location.origin_phone:
         raise DispatchActionError(f"A {location.name} le falta dirección o teléfono en Shopify (sincronizar bodegas).")
-    shipping = get_order_shipping_address(order.shopify_id)
-    if not shipping or not shipping["address1"] or not shipping["city"]:
-        raise DispatchActionError("El pedido no tiene dirección de envío en Shopify.")
+    shipping = _destination(order)
     origin_city = resolve_colombia_city(location.city, location.origin_province_code)
     destination_city = resolve_colombia_city(shipping["city"], shipping["province_code"])
     names = ", ".join(line.name for line in order.lines.all() if line.name)
@@ -121,7 +119,8 @@ def _shipping_payload(order, location):
         },
         "destination": {
             "name": " ".join(part for part in (shipping["first_name"], shipping["last_name"]) if part) or "-",
-            "company": shipping["company"], "phone": shipping["phone"] or order.phone, "email": order.email,
+            "company": shipping["company"], "phone": shipping["phone"] or order.phone,
+            "email": shipping.get("email") or order.email,
             "street": " ".join(part for part in (shipping["address1"], shipping["address2"]) if part),
             "city": destination_city["city"], "state": destination_city["state"], "country": "CO",
             "postalCode": shipping["zip"],
@@ -135,4 +134,24 @@ def _shipping_payload(order, location):
                 **DEFAULT_PACKAGE,
             }
         ],
+    }
+
+
+def _destination(order):
+    """Destino de la guía. Tienda web: la dirección de envío del pedido en
+    Shopify. Marketplace (Madecentro): la del comprador guardada en
+    `MarketplaceOrder`, porque en Shopify el pedido va al cliente fijo del
+    canal, sin dirección de envío."""
+    if order.marketplace == SHOPIFY_CHANNEL:
+        shipping = get_order_shipping_address(order.shopify_id)
+        if not shipping or not shipping["address1"] or not shipping["city"]:
+            raise DispatchActionError("El pedido no tiene dirección de envío en Shopify.")
+        return shipping
+    row = MarketplaceOrder.objects.filter(shopify_order_id=order.shopify_id).order_by("id").first()
+    if row is None or not row.customer_address or not row.customer_city:
+        raise DispatchActionError("El pedido no tiene dirección de entrega del comprador.")
+    return {
+        "first_name": row.customer_first_name, "last_name": row.customer_last_name, "company": "",
+        "email": row.customer_email, "phone": row.customer_phone, "address1": row.customer_address, "address2": "",
+        "city": row.customer_city, "province_code": row.customer_region, "zip": "",
     }

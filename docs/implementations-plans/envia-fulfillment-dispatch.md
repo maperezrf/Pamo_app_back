@@ -1,5 +1,9 @@
 # Plan: despachos de Mercado Libre y Falabella a Envía Fulfillment con su guía
 
+> **Actualización 2026-10-11:** ya no existe
+> `ENVIA_FULFILLMENT_WRITES_ENABLED`: las escrituras son reales. Las
+> menciones de abajo son históricas.
+
 **Subplan de [`order-dispatch-to-warehouses.md`](order-dispatch-to-warehouses.md)**
 (2026-10-07): ninguna tienda quedará conectada a Envía y Envía es una bodega
 más, notificada por API. Este documento conserva la evidencia y el avance

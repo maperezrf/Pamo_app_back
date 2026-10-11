@@ -8,7 +8,9 @@ from .functions.send_test_notification import (
     TestNotificationError, email_settings_summary, send_test_email, send_test_whatsapp,
 )
 from .functions.sync_dispatch_locations import sync_dispatch_locations
-from .models import Dispatch, DispatchLocation, DispatchNotification, MarketplaceOrder, MarketplaceOrderItem
+from .models import (
+    Dispatch, DispatchLocation, DispatchNotification, MarketplaceLabel, MarketplaceOrder, MarketplaceOrderItem,
+)
 
 
 class MarketplaceOrderItemInline(admin.TabularInline):
@@ -30,9 +32,10 @@ class MarketplaceOrderAdmin(admin.ModelAdmin):
         "shopify_order_name",
         "fulfillment_status",
         "fulfillment_location_name",
+        "label_request_status",
         "updated_at",
     )
-    list_filter = ("marketplace", "status", "marketplace_status", "fulfillment_status")
+    list_filter = ("marketplace", "status", "marketplace_status", "fulfillment_status", "label_request_status")
     search_fields = ("marketplace_order_id", "marketplace_order_number", "customer_identification", "shopify_order_id")
     inlines = [MarketplaceOrderItemInline]
     # Una novedad se resuelve a mano: elegir fulfillment_location_id/_name,
@@ -140,3 +143,20 @@ class DispatchAdmin(admin.ModelAdmin):
     inlines = [DispatchNotificationInline]
     # Se puede corregir a mano la bodega, el estado o la nota (p. ej. pasar
     # un `manual` resuelto a `esperando_guia` para que el proceso siga).
+
+
+@admin.register(MarketplaceLabel)
+class MarketplaceLabelAdmin(admin.ModelAdmin):
+    """Guías que devolvió el RPA de Sodimac. Solo consulta: llegan por el
+    webhook `POST /api/orders/sodimac/rpa/callback/`."""
+
+    list_display = ("order", "tracking_number", "uploaded_at")
+    search_fields = ("order__marketplace_order_id", "tracking_number")
+    fields = ("order", "tracking_number", "uploaded_at")
+    readonly_fields = fields
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False

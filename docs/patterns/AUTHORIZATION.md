@@ -14,6 +14,7 @@ endpoint.
 | Usuario con uno o más grupos | `RoleRequiredMixin` | Requiere sesión y alguno de los grupos indicados. |
 | Proceso interno sin sesión | `ApiKeyRequiredMixin` | Requiere `X-API-Key` válido. |
 | Lectura para humano con rol o proceso interno | `RoleOrApiKeyRequiredMixin` | Acepta uno de los dos mecanismos. |
+| Sistema externo propio con token dedicado (ej. RPA) | `BearerTokenRequiredMixin` | Requiere `Authorization: Bearer` (o `X-Bot-Token`) igual a `bearer_token` de la vista. |
 
 ## Uso con roles
 
@@ -37,6 +38,17 @@ navegación o visibilidad relacionadas con roles.
 interno. No reemplaza permisos de usuario, no se usa para navegador ni para
 webhooks de proveedores. La clave se compara en tiempo constante y su valor
 nunca se incluye en documentación, logs o respuestas.
+
+## Token dedicado por consumidor
+
+`BearerTokenRequiredMixin` es para un sistema externo propio que no es un
+usuario ni el servidor MCP, como el RPA de guías de Sodimac. Cada vista
+declara su propio secreto (`bearer_token = CONSTANTE` de
+`config/constants.py`), así cada consumidor tiene un token distinto y
+revocable sin afectar a los demás. El token se acepta en
+`Authorization: Bearer <token>` o en `X-Bot-Token: <token>` (así lo manda
+el RPA heredado de `pamo_web`). Sin token configurado nadie pasa. La vista
+no usa sesión ni CSRF.
 
 ## Verificación
 

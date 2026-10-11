@@ -187,6 +187,7 @@ class ProcessPendingOrdersTests(NoExistingShopifyOrderMixin, TestCase):
         self.assertEqual(kwargs["customer_id"], "999")
         self.assertEqual(kwargs["items"], [{"variant_id": "555", "quantity": 2, "price": "100.00"}])
         self.assertEqual(kwargs["tags"], ["falabella", "falabella-N-1"])
+        self.assertIs(kwargs["requires_shipping"], False)  # Envía no la importa por la tienda conectada
         self.mock_find_existing.assert_called_once_with(first=1, query='tag:"falabella-N-1"')
         self.assertEqual(kwargs["note"], "Falabella #N-1 — Ana Gomez CC 123")
 
@@ -1011,7 +1012,7 @@ class ProcessMadecentroOrderTests(NoExistingShopifyOrderMixin, TestCase):
         kwargs = create_order.call_args.kwargs
         self.assertEqual(kwargs["customer_id"], "666")
         self.assertEqual(kwargs["tags"], ["madecentro", "madecentro-1001114236"])
-        self.assertIs(kwargs["requires_shipping"], True)
+        self.assertIs(kwargs["requires_shipping"], False)
         self.assertEqual(kwargs["note"], "Madecentro #1001114236 — Ana Gómez")
 
     def test_created_order_is_not_read_again(self, get_order, variant, create_order):
@@ -1257,7 +1258,14 @@ class ImportMadecentroOrdersTests(TestCase):
 SODI = "orders.functions.sync_sodimac_orders"
 
 
-def _sodi_row(oc="9001", status="1-PENDIENTE", transmitted_at="2026-10-02", sku="54654", quantity=2, cost="1000.50"):
+SODI_DELIVERY = {
+    "name": "Ana María Gómez", "identification": "100", "email": "ana@example.com", "phone": "3001112233",
+    "address": "Calle 1 # 2-3", "city": "SANTA MARTA", "region": "MAGDALENA",
+}
+
+
+def _sodi_row(oc="9001", status="1-PENDIENTE", transmitted_at="2026-10-02", sku="54654", quantity=2, cost="1000.50",
+              delivery=None):
     return {
         "purchase_order": oc,
         "status": status,
@@ -1266,6 +1274,7 @@ def _sodi_row(oc="9001", status="1-PENDIENTE", transmitted_at="2026-10-02", sku=
         "quantity": quantity,
         "cost": Decimal(cost),
         "cost_with_vat": Decimal(cost) * Decimal("1.19"),
+        "delivery": SODI_DELIVERY if delivery is None else delivery,
     }
 
 
@@ -1290,6 +1299,33 @@ def _queue(type_1=None, type_4=None):
 @patch(f"{SODI}.reinject_order")
 @patch(f"{SODI}.get_orders")
 class SyncSodimacOrdersTests(NoExistingShopifyOrderMixin, TestCase):
+    def setUp(self):
+        super().setUp()
+        # Al final el sync pide las guías al RPA; aquí se prueba solo que lo llame.
+        patcher = patch(f"{SODI}.request_sodimac_labels", return_value=["9001"])
+        self.request_labels = patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_after_creating_the_orders_it_asks_the_rpa_for_their_labels(
+        self, get_orders, reinject, variant, create_order, pamo_web
+    ):
+        get_orders.side_effect = _queue(type_1=[_sodi_row()])
+
+        self._sync()
+
+        self.request_labels.assert_called_once()
+
+    def test_a_failing_rpa_is_reported_without_undoing_the_orders(
+        self, get_orders, reinject, variant, create_order, pamo_web
+    ):
+        get_orders.side_effect = _queue(type_1=[_sodi_row()])
+        self.request_labels.side_effect = ConnectionError("RPA caído")
+
+        with self.assertRaisesMessage(RuntimeError, "RPA de guías"):
+            self._sync()
+
+        self.assertEqual(MarketplaceOrder.objects.get().status, MarketplaceOrder.Status.CREATED)
+
     def _sync(self, params=None):
         from .functions.sync_sodimac_orders import sync_sodimac_orders
 
@@ -1308,6 +1344,30 @@ class SyncSodimacOrdersTests(NoExistingShopifyOrderMixin, TestCase):
         order = MarketplaceOrder.objects.create(**defaults)
         MarketplaceOrderItem.objects.create(order=order, marketplace_sku="54654", quantity=1, unit_price="10")
         return order
+
+    def test_new_oc_keeps_the_buyer_delivery_data_for_the_warehouse(
+        self, get_orders, reinject, variant, create_order, pamo_web
+    ):
+        get_orders.side_effect = _queue(type_1=[_sodi_row()])
+
+        self._sync()
+
+        order = MarketplaceOrder.objects.get()
+        self.assertEqual((order.customer_first_name, order.customer_last_name), ("Ana", "María Gómez"))
+        self.assertEqual(
+            (order.customer_address, order.customer_city, order.customer_region, order.customer_identification),
+            ("Calle 1 # 2-3", "SANTA MARTA", "MAGDALENA", "100"),
+        )
+
+    def test_a_known_oc_without_address_is_completed_on_reinjection(
+        self, get_orders, reinject, variant, create_order, pamo_web
+    ):
+        self._order()
+        get_orders.side_effect = _queue(type_1=[_sodi_row()])
+
+        self._sync()
+
+        self.assertEqual(MarketplaceOrder.objects.get().customer_address, "Calle 1 # 2-3")
 
     def test_new_oc_is_saved_and_created_in_shopify_as_pending_payment(
         self, get_orders, reinject, variant, create_order, pamo_web
@@ -1330,9 +1390,9 @@ class SyncSodimacOrdersTests(NoExistingShopifyOrderMixin, TestCase):
         _, kwargs = create_order.call_args
         self.assertEqual(kwargs["financial_status"], "PENDING")
         self.assertEqual(kwargs["customer_id"], "7247084421397")
-        self.assertEqual(kwargs["note"], "Sodimac #9001")
+        self.assertEqual(kwargs["note"], "Sodimac #9001 — Ana María Gómez CC 100")
         self.assertEqual(kwargs["tags"], ["sodimac", "sodimac-9001"])
-        self.assertIs(kwargs["requires_shipping"], True)
+        self.assertIs(kwargs["requires_shipping"], False)
         pamo_web.assert_called_once()
 
     def test_oc_is_saved_before_shopify_even_if_shopify_rejects_it(

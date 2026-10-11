@@ -42,9 +42,8 @@ def create_order(
     - `label_pdf` + `tracking_number`: la guía del canal. Sin ellos la orden
       va sin `shipments` y la bodega gestiona la guía.
 
-    Es una escritura: falla con `EnviaFulfillmentWritesDisabled` sin
-    `ENVIA_FULFILLMENT_WRITES_ENABLED`. Si falla la red, no se sabe si la
-    orden quedó creada: no reintentar sin volver a `find_order`.
+    Si falla la red, no se sabe si la orden quedó creada: no reintentar
+    sin volver a `find_order`.
 
     Devuelve {"order_id", "identifier", "warehouse_status"}.
     """

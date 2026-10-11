@@ -4,16 +4,15 @@ from datetime import date
 from django.db.models import Q
 from django.utils import timezone
 
-from config.constants import DISPATCH_NOTIFICATIONS_ENABLED, DISPATCH_START_DATE
-
 from ..models import Dispatch, DispatchNotification, ShopifyOrder
 from integrations.envia.functions.download_label import download_label
 
 from .assign_dispatch_location import assign_dispatch_location
 from .dispatch_details import dispatch_details
-from .fetch_dispatch_label import CHANNEL_LABELS, fetch_dispatch_label
+from .fetch_dispatch_label import fetch_dispatch_label
 from .notify_dispatch import notify
 from .order_listing_format import day_range
+from .shopify_order_marketplace import SHOPIFY_CHANNEL
 
 # Despachos que una corrida vuelve a intentar.
 OPEN_STATUSES = (Dispatch.Status.WAITING_LABEL, Dispatch.Status.READY, Dispatch.Status.ERROR)
@@ -22,19 +21,27 @@ RETRYABLE_NOTIFICATIONS = (DispatchNotification.Status.PENDING, DispatchNotifica
 
 def dispatch_orders(params=None, progress_callback=None, cancellation_token=None):
     """Proceso `orders.dispatch_orders`: lleva cada pedido de Shopify a su
-    bodega. Ver docs/implementations-plans/order-dispatch-to-warehouses.md.
+    bodega. Ver docs/apps/orders.md ("Despacho a bodegas"). No tiene
+    interruptores: se enciende o pausa con su programación en el
+    orquestador.
 
-    Por pedido (desde `DISPATCH_START_DATE`, sin despachar ni borrar):
+    Por pedido (sin despachar ni borrar):
     1. Crea el `Dispatch` con la bodega (`assign_dispatch_location`); sin
        bodega o sin canales de aviso → `manual`.
-    2. Si la bodega exige guía, la busca (`fetch_dispatch_label`); si aún
-       no hay → `esperando_guia`, se reintenta en la próxima corrida.
-    3. Con `DISPATCH_NOTIFICATIONS_ENABLED`, avisa por cada canal activo de
-       la bodega; sin él queda `listo`. Cada aviso se reclama antes de
-       enviarse y nunca sale dos veces.
+    2. Si hace falta guía, la busca (`fetch_dispatch_label`); si aún no hay
+       → `esperando_guia`, se reintenta en la próxima corrida.
+    3. Avisa por cada canal activo de la bodega. Cada aviso se reclama
+       antes de enviarse y nunca sale dos veces.
 
-    `params` opcional: `{"limit": N}` y `{"shopify_order_ids": [...]}` para
-    una corrida acotada (piloto). Devuelve un conteo por estado final.
+    `params`:
+    - `since` (obligatorio, "AAAA-MM-DD"): solo pedidos creados desde ese
+      día (hora de Colombia). Evita despachar históricos: sin fecha el
+      proceso falla en vez de tomar todo.
+    - `shopify_order_ids` (lista): corrida acotada a esos pedidos (piloto);
+      con ella `since` no hace falta.
+    - `limit` (N): máximo de pedidos por corrida.
+
+    Devuelve un conteo por estado final.
     """
     params = params or {}
     progress_callback = progress_callback or (lambda percent, step=None: None)
@@ -52,15 +59,9 @@ def dispatch_orders(params=None, progress_callback=None, cancellation_token=None
     return summary
 
 
-def process_order_dispatch(order, *, manual=False):
+def process_order_dispatch(order):
     """Avanza el despacho de un pedido lo que se pueda. Devuelve su estado.
-
-    `manual=True` es el botón "Notificar a proveedor" del panel: una persona
-    lo pide para un pedido, así que trae la guía y avisa aunque
-    `DISPATCH_FETCH_LABELS_ENABLED` / `DISPATCH_NOTIFICATIONS_ENABLED` estén
-    apagados (esos interruptores son de la automatización). Las escrituras
-    en Envía siguen sujetas a sus propios interruptores.
-    """
+    Lo usan el proceso y el botón "Notificar a proveedor" del panel."""
     dispatch = Dispatch.objects.filter(shopify_order=order).select_related("location").first()
 
     if order.cancelled_at:
@@ -85,19 +86,16 @@ def process_order_dispatch(order, *, manual=False):
     if dispatch.label_source == Dispatch.LabelSource.ENVIA and dispatch.label_url:
         # Guía generada en Envía: se vuelve a bajar, nunca se genera otra.
         label = {"pdf": download_label(dispatch.label_url), "tracking_number": dispatch.tracking_number}
-    elif location.creates_own_label and order.marketplace not in CHANNEL_LABELS:
-        pass  # la bodega genera la guía: se le avisa sin guía
+    elif location.creates_own_label and order.marketplace == SHOPIFY_CHANNEL:
+        pass  # tienda web: la bodega genera la guía (le llega por la tienda conectada); se avisa sin guía
     elif location.requires_label:
-        label, reason = fetch_dispatch_label(order, force=manual)
+        label, reason = fetch_dispatch_label(order)
         if label is None:
             return _save(dispatch, Dispatch.Status.WAITING_LABEL, reason)
         dispatch.tracking_number = label["tracking_number"]
         dispatch.label_source = Dispatch.LabelSource.CHANNEL
         dispatch.label_sha256 = hashlib.sha256(label["pdf"]).hexdigest()
         dispatch.label_fetched_at = timezone.now()
-
-    if not (DISPATCH_NOTIFICATIONS_ENABLED or manual):
-        return _save(dispatch, Dispatch.Status.READY, "Avisos apagados (DISPATCH_NOTIFICATIONS_ENABLED).")
 
     details = dispatch_details(order)
     results = [_notify_channel(dispatch, channel, details, label) for channel in location.channels()]
@@ -146,7 +144,7 @@ def _notify_channel(dispatch, channel, details, label):
         status=DispatchNotification.Status.SENT,
         recipient=result["recipient"][:255],
         external_id=result["external_id"][:128],
-        error_description="",
+        error_description=result.get("warning", "")[:2000],  # enviado, con algo a revisar a mano
         sent_at=timezone.now(),
         updated_at=timezone.now(),
     )
@@ -154,16 +152,21 @@ def _notify_channel(dispatch, channel, details, label):
 
 
 def _candidates(params):
-    if not DISPATCH_START_DATE:
-        return []
-    start, _ = day_range(date.fromisoformat(DISPATCH_START_DATE))
     orders = (
-        ShopifyOrder.objects.filter(deleted_at__isnull=True, shopify_created_at__gte=start)
+        ShopifyOrder.objects.filter(deleted_at__isnull=True)
         .exclude(fulfillment_status="FULFILLED")
         .filter(Q(dispatch__isnull=True) | Q(dispatch__status__in=OPEN_STATUSES))
         .prefetch_related("lines")
         .order_by("shopify_created_at", "id")
     )
+    if params.get("since"):
+        try:
+            start, _ = day_range(date.fromisoformat(str(params["since"])))
+        except ValueError as error:
+            raise ValueError(f"since inválido ({params['since']!r}): va como AAAA-MM-DD.") from error
+        orders = orders.filter(shopify_created_at__gte=start)
+    elif not params.get("shopify_order_ids"):
+        raise ValueError('Falta el parámetro "since" (AAAA-MM-DD): desde qué día entran pedidos al despacho.')
     if params.get("shopify_order_ids"):
         orders = orders.filter(shopify_id__in=[str(value) for value in params["shopify_order_ids"]])
     if params.get("limit"):

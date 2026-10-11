@@ -2,19 +2,12 @@ import re
 
 import requests
 
-from config.constants import ENVIA_ALLOWED_CARRIERS, ENVIA_WRITES_ENABLED
+from config.constants import ENVIA_ALLOWED_CARRIERS
 
 from ..client import EnviaAPIError, EnviaClient
 from .validate_shipping_payload import validate_shipping_payload
 
 REFERENCE_PATTERN = r"[A-Za-z0-9_-]{1,64}"
-
-
-class LabelWritesDisabled(EnviaAPIError):
-    """Generar una guía cobra: bloqueado sin `ENVIA_WRITES_ENABLED`."""
-
-    def __init__(self):
-        super().__init__("ENVIA_WRITES_DISABLED")
 
 
 class LabelUnknownResult(EnviaAPIError):
@@ -53,8 +46,6 @@ def create_label(payload, selected_option, *, order_reference):
         raise ValueError("La opción elegida no trae transportadora y servicio")
     if carrier.lower() not in {allowed.lower() for allowed in ENVIA_ALLOWED_CARRIERS}:
         raise ValueError(f"Transportadora no permitida: {carrier}")
-    if not ENVIA_WRITES_ENABLED:
-        raise LabelWritesDisabled()
 
     client = EnviaClient()
     request_payload = {

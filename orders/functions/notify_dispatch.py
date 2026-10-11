@@ -7,6 +7,7 @@ from config.constants import (
     DISPATCH_WHATSAPP_TEMPLATE_LANGUAGE,
 )
 from integrations.envia.functions.resolve_colombia_state import resolve_colombia_state
+from integrations.envia_fulfillment.functions.add_order_comment import add_order_comment
 from integrations.envia_fulfillment.functions.add_order_tracking import add_order_tracking
 from integrations.envia_fulfillment.functions.create_order import create_order
 from integrations.envia_fulfillment.functions.find_order import find_order
@@ -30,9 +31,10 @@ def notify(channel, *, dispatch, details, label):
     """Avisa a la bodega del despacho por `channel`. `label` es
     {"pdf", "tracking_number"} o None (bodega que no exige guía).
 
-    Devuelve {"recipient": str, "external_id": str}. Un error del
-    proveedor o `DispatchNotificationError` se propaga; quien llama lo
-    registra en el aviso.
+    Devuelve {"recipient": str, "external_id": str} y, si algo secundario
+    falló sin impedir el aviso, "warning". Un error del proveedor o
+    `DispatchNotificationError` se propaga; quien llama lo registra en el
+    aviso.
     """
     if channel == Channel.API:
         return _notify_envia(dispatch.location, details, label, dispatch.shopify_order)
@@ -60,6 +62,8 @@ def _notify_email(location, details, label):
     )
     if label:
         message.attach(f"guia-{details['order_name']}.pdf", label["pdf"], "application/pdf")
+        if label.get("relation_pdf"):
+            message.attach(f"relacion-{details['order_name']}.pdf", label["relation_pdf"], "application/pdf")
     message.send(fail_silently=False)
     return {"recipient": ", ".join(location.emails), "external_id": ""}
 
@@ -106,12 +110,15 @@ def _notify_envia(location, details, label, order):
     for identifier in dict.fromkeys([_envia_identifier(details), str(order.name).lstrip("#")]):
         existing = find_order(identifier, since=since)
         if existing:
-            if label and not existing["pretrackings"]:
-                add_order_tracking(existing["order_id"], tracking_number=label["tracking_number"], label_pdf=label["pdf"])
-            return {
+            result = {
                 "recipient": f"Envía bodega {location.envia_warehouse_id} (orden existente de {existing['shop_name'] or 'Envía'})",
                 "external_id": str(existing["order_id"]),
             }
+            if label and not existing["pretrackings"]:
+                add_order_tracking(existing["order_id"], tracking_number=label["tracking_number"], label_pdf=label["pdf"])
+                if label.get("relation_pdf"):
+                    result["warning"] = _add_relation(existing["order_id"], details, label)
+            return result
 
     products = _envia_products(details)  # primero: sin productos en Envía no hay orden
     address = _envia_address(details, order)
@@ -128,7 +135,31 @@ def _notify_envia(location, details, label, order):
         tracking_number=label["tracking_number"] if label else "",
         label_pdf=label["pdf"] if label else None,
     )
-    return {"recipient": f"Envía bodega {location.envia_warehouse_id}", "external_id": str(created["order_id"])}
+    result = {"recipient": f"Envía bodega {location.envia_warehouse_id}", "external_id": str(created["order_id"])}
+    if label and label.get("relation_pdf"):
+        result["warning"] = _add_relation(created["order_id"], details, label)
+    return result
+
+
+def _add_relation(order_id, details, label):
+    """Carga la relación (remesa), que va aparte del rótulo: la API solo la
+    acepta como comentario con archivo. Devuelve "" o una advertencia. Un
+    fallo no hace fallar el aviso: la orden ya quedó creada con su guía y
+    un reintento la vincularía sin volver a cargar la relación. La
+    advertencia queda en el aviso para cargarla a mano."""
+    try:
+        add_order_comment(
+            order_id,
+            comment=f"Relación de la guía {label['tracking_number']}",
+            pdf=label["relation_pdf"],
+            filename=f"relacion-{details['order_name']}.pdf",
+        )
+    except Exception as error:  # noqa: BLE001 -- queda como advertencia del aviso
+        return (
+            f"La relación no se cargó en Envía ({type(error).__name__}: {error}). "
+            "Cargarla a mano en la orden como comentario."
+        )
+    return ""
 
 
 def _envia_address(details, order):

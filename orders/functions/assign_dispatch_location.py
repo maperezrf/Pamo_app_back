@@ -1,14 +1,10 @@
 from config.constants import FULFILLMENT_PRIORITY_LOCATION_ID
 from integrations.shopify.functions.get_variant_inventory_by_sku import get_variant_inventory_by_sku
-from products.models import Marketplace
 
 from ..models import DispatchLocation, MarketplaceOrder
 from .select_fulfillment_location import select_fulfillment_location
 from .shopify_order_marketplace import SHOPIFY_CHANNEL
 
-# Canales cuyo despacho tiene otro flujo de guía, todavía sin definir
-# (docs/implementations-plans/order-dispatch-to-warehouses.md, sección 4).
-MANUAL_CHANNELS = {Marketplace.MADECENTRO: "Madecentro", Marketplace.SODIMAC: "Sodimac"}
 ASSIGNED_STATUSES = (MarketplaceOrder.FulfillmentStatus.ASSIGNED, MarketplaceOrder.FulfillmentStatus.RESOLVED)
 
 
@@ -23,11 +19,8 @@ def assign_dispatch_location(order):
 
     Devuelve (DispatchLocation o None, motivo). Sin bodega, el motivo dice
     por qué y el despacho queda para gestión manual: novedad de inventario,
-    canal con otro flujo, pedido sin registro local o bodega sin registrar.
+    pedido sin registro local o bodega sin registrar.
     """
-    if order.marketplace in MANUAL_CHANNELS:
-        return None, f"{MANUAL_CHANNELS[order.marketplace]}: su flujo de guía todavía no está definido."
-
     if order.marketplace and order.marketplace != SHOPIFY_CHANNEL:
         row = MarketplaceOrder.objects.filter(shopify_order_id=order.shopify_id).order_by("id").first()
         if row is None:

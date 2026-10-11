@@ -96,36 +96,23 @@ SIIGO_API_BASE_URL = config("SIIGO_API_BASE_URL")
 ENVIA_API_TOKEN = config("ENVIA_API_TOKEN")
 ENVIA_ENVIRONMENT = config("ENVIA_ENVIRONMENT", default="sandbox")
 ENVIA_ALLOWED_CARRIERS = config("ENVIA_ALLOWED_CARRIERS", default="", cast=Csv())
-# Generar una guía (`/ship/generate/`) COBRA el envío a la cuenta de Envía:
-# bloqueado sin este interruptor. Cotizar no lo necesita.
-ENVIA_WRITES_ENABLED = config("ENVIA_WRITES_ENABLED", default=False, cast=bool)
 
 # ENVÍA FULFILLMENT (integrations/envia_fulfillment/, en construcción) -- otra
 # API y otro token que la de Shipping de arriba. Ver
 # docs/implementations-plans/envia-fulfillment-dispatch.md.
 # BASE_URL: producción `https://apifulfillment.envia.com/`, sandbox
 # `https://fulfillment-api-test.envia.com/`. COMPANY_ID / SHOP_ID /
-# WAREHOUSE_ID se leen con el token en la fase 0. WRITES_ENABLED y CHANNELS
-# quedan apagados hasta el piloto.
+# WAREHOUSE_ID se leen con el token en la fase 0.
 ENVIA_FULFILLMENT_API_TOKEN = config("ENVIA_FULFILLMENT_API_TOKEN", default="")
 ENVIA_FULFILLMENT_BASE_URL = config("ENVIA_FULFILLMENT_BASE_URL", default="https://apifulfillment.envia.com/")
 ENVIA_FULFILLMENT_COMPANY_ID = config("ENVIA_FULFILLMENT_COMPANY_ID", default="")
 ENVIA_FULFILLMENT_SHOP_ID = config("ENVIA_FULFILLMENT_SHOP_ID", default="")
 ENVIA_FULFILLMENT_WAREHOUSE_ID = config("ENVIA_FULFILLMENT_WAREHOUSE_ID", default="")
-ENVIA_FULFILLMENT_WRITES_ENABLED = config("ENVIA_FULFILLMENT_WRITES_ENABLED", default=False, cast=bool)
-ENVIA_FULFILLMENT_CHANNELS = config("ENVIA_FULFILLMENT_CHANNELS", default="", cast=Csv())
 
-# DESPACHO A BODEGAS (orders, ver
-# docs/implementations-plans/order-dispatch-to-warehouses.md). Todo apagado
-# por defecto: sin estos interruptores el proceso solo asigna bodega.
-# - DISPATCH_START_DATE (YYYY-MM-DD): solo pedidos de Shopify creados desde
-#   esa fecha entran al flujo; vacío = ninguno (evita despachar históricos).
-# - DISPATCH_FETCH_LABELS_ENABLED: descargar guías de Mercado Libre y
-#   Falabella (en ML, descargar una guía sin imprimir la marca impresa).
-# - DISPATCH_NOTIFICATIONS_ENABLED: enviar avisos a las bodegas.
-DISPATCH_START_DATE = config("DISPATCH_START_DATE", default="")
-DISPATCH_FETCH_LABELS_ENABLED = config("DISPATCH_FETCH_LABELS_ENABLED", default=False, cast=bool)
-DISPATCH_NOTIFICATIONS_ENABLED = config("DISPATCH_NOTIFICATIONS_ENABLED", default=False, cast=bool)
+# DESPACHO A BODEGAS (orders, ver docs/apps/orders.md). No tiene
+# interruptores: lo enciende o pausa la programación de
+# `orders.dispatch_orders` en el orquestador, con la fecha de inicio como
+# parámetro (`{"since": "AAAA-MM-DD"}`).
 # Plantilla aprobada en Meta para avisar por WhatsApp (los mensajes que
 # inicia la empresa la exigen). Variables del cuerpo, en orden: pedido,
 # productos, ciudad. Sin plantilla, el aviso por WhatsApp queda en error.
@@ -134,6 +121,20 @@ DISPATCH_WHATSAPP_TEMPLATE_LANGUAGE = config("DISPATCH_WHATSAPP_TEMPLATE_LANGUAG
 # Correo que va en la orden de Envía cuando el canal no da el del
 # comprador (Envía lo exige sin customerId).
 DISPATCH_ENVIA_FALLBACK_EMAIL = config("DISPATCH_ENVIA_FALLBACK_EMAIL", default="")
+
+# RPA de guías de Sodimac (proyecto `rpa_homecenter`, servicio aparte en
+# Railway; integrations/sodimac_rpa/). Genera la guía de cada OC en el portal
+# de Homecenter y devuelve rótulo y relación por webhook.
+# - SODIMAC_RPA_URL: URL base del servicio (`/trigger`, `/status`...).
+# - SODIMAC_RPA_TOKEN: secreto compartido. El RPA lo manda al consultar la
+#   bodega (`X-Bot-Token`, su RPA_BOT_TOKEN) y en el webhook
+#   (`Authorization: Bearer`, su RPA_CALLBACK_AUTH_TOKEN): las dos variables
+#   del RPA llevan este mismo valor. Sin valor, esos endpoints rechazan todo.
+# - SODIMAC_RPA_ALERT_EMAILS: a quién avisar cuando el RPA queda esperando
+#   que una persona resuelva un CAPTCHA (correo con el enlace del visor).
+SODIMAC_RPA_URL = config("SODIMAC_RPA_URL", default="")
+SODIMAC_RPA_TOKEN = config("SODIMAC_RPA_TOKEN", default="")
+SODIMAC_RPA_ALERT_EMAILS = config("SODIMAC_RPA_ALERT_EMAILS", default="", cast=Csv())
 
 # CORREO (django.core.mail). settings.py los toma de aquí (import *).
 # Dos transportes: la API de Gmail por HTTPS (integrations/gmail/) si hay

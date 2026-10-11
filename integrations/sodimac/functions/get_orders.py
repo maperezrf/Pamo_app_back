@@ -26,8 +26,10 @@ def get_orders(tipo_orden):
     integrations/sodimac/constants.py cuando haga falta otro tipo.
 
     Devuelve una lista de {"purchase_order", "status", "transmitted_at",
-    "sku", "quantity", "cost", "cost_with_vat"}. Vacía si Sodimac no tiene
-    datos para esa consulta.
+    "sku", "quantity", "cost", "cost_with_vat", "delivery"}. `delivery`
+    son los datos de entrega de la OC (iguales en todas sus filas):
+    {"name", "identification", "email", "phone", "address", "city",
+    "region"}. Vacía si Sodimac no tiene datos para esa consulta.
 
     A diferencia del código anterior (que no manejaba un `Mensaje`
     distinto a los dos esperados), acá un mensaje inesperado levanta
@@ -50,6 +52,7 @@ def get_orders(tipo_orden):
 
     rows = []
     for order in response.get("Value") or []:
+        delivery = _delivery(order)
         for product in order.get("PRODUCTOS") or []:
             cost = Decimal(str(product.get("COSTO_SKU", 0)))
             rows.append({
@@ -60,5 +63,24 @@ def get_orders(tipo_orden):
                 "quantity": product.get("CANTIDAD_SKU"),
                 "cost": cost,
                 "cost_with_vat": cost * VAT_MULTIPLIER,
+                "delivery": delivery,
             })
     return rows
+
+
+def _delivery(order):
+    # El nombre viene en un solo campo (CLIENTE). Los datos de entrega
+    # (`*_ENTREGA`) son los del destino del despacho; los `*_FAC`, de la
+    # factura.
+    def text(key):
+        return str(order.get(key) or "").strip()
+
+    return {
+        "name": text("CLIENTE"),
+        "identification": text("CEDULA"),
+        "email": text("EMAIL_CLIENTE"),
+        "phone": text("TELEFONO_CLIENTE"),
+        "address": text("DIRECCION_ENTREGA"),
+        "city": text("CIUDAD_ENTREGA"),
+        "region": text("DEPARTAMENTO_ENTREGA"),
+    }

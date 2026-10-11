@@ -75,3 +75,28 @@ class RoleOrApiKeyRequiredMixin:
 
     permission_classes = [HasRoleOrApiKey]
     allowed_roles = []
+
+
+class HasValidBearerToken(BasePermission):
+    """Autoriza a un sistema externo propio (ej. el RPA de guías de Sodimac)
+    con `Authorization: Bearer <token>` o, para clientes que ya lo usan así,
+    `X-Bot-Token: <token>`. Cada vista declara su propio secreto en
+    `bearer_token` (leído de `config/constants.py`), así cada consumidor
+    tiene un token distinto y revocable. Sin token configurado, nadie pasa.
+    Compara en tiempo constante."""
+
+    def has_permission(self, request, view):
+        expected = getattr(view, "bearer_token", "") or ""
+        scheme, _, token = request.headers.get("Authorization", "").partition(" ")
+        provided = token.strip() if scheme == "Bearer" else request.headers.get("X-Bot-Token", "").strip()
+        return bool(expected) and bool(provided) and hmac.compare_digest(provided, expected)
+
+
+class BearerTokenRequiredMixin:
+    """Mixin para APIView consumidas por un sistema externo propio con token
+    dedicado. Declarar `bearer_token = CONSTANTE` en la vista. Sin sesión ni
+    CSRF: la única credencial es el token."""
+
+    authentication_classes = []
+    permission_classes = [HasValidBearerToken]
+    bearer_token = ""

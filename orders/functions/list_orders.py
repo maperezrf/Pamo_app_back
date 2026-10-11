@@ -105,7 +105,7 @@ def _fulfillment_from_dispatch(order):
 
 def format_dispatch(order):
     """Despacho a bodega (`Dispatch`), o None si el proceso aún no lo creó
-    (pedidos anteriores a `DISPATCH_START_DATE` nunca lo tienen)."""
+    (pedidos anteriores al `since` del proceso nunca lo tienen)."""
     try:
         dispatch = order.dispatch
     except Dispatch.DoesNotExist:

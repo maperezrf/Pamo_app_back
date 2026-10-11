@@ -2,6 +2,7 @@ import re
 import unicodedata
 
 from ..client import EnviaAPIError, EnviaClient
+from .resolve_colombia_state import resolve_colombia_state
 
 
 def _city_key(value):
@@ -15,6 +16,10 @@ def resolve_colombia_city(city, shopify_state):
     Envía exige para destinos en Colombia -- nunca envía calle, nombre ni
     teléfono, solo referencia geográfica.
 
+    `shopify_state` es el `provinceCode` de Shopify ("CUN") o, para pedidos
+    de marketplace, el nombre del departamento que trae el canal
+    ("CUNDINAMARCA", "Bogotá, D.C."), resuelto con `resolve_colombia_state`.
+
     Devuelve {"city": código DANE de 8 dígitos, "state": código de 2
     dígitos del departamento}.
     """
@@ -25,6 +30,11 @@ def resolve_colombia_city(city, shopify_state):
         for row in states
         if isinstance(row, dict) and row.get("country_code") == "CO" and row.get("code_shopify") == shopify_state
     }
+    if not codes:
+        try:
+            codes = {resolve_colombia_state(shopify_state)}
+        except EnviaAPIError:
+            pass
     if len(codes) != 1 or not next(iter(codes)):
         raise EnviaAPIError("ENVIA_SHOPIFY_STATE_UNRESOLVED")
     state_code = next(iter(codes))
