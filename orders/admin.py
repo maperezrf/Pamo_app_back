@@ -4,9 +4,12 @@ from django.shortcuts import redirect
 from django.template.response import TemplateResponse
 from django.urls import path
 
+from integrations.sodimac_rpa.client import SodimacRpaBusy, SodimacRpaError
+
 from .functions.send_test_notification import (
     TestNotificationError, email_settings_summary, send_test_email, send_test_whatsapp,
 )
+from .functions.sodimac_rpa import request_sodimac_labels
 from .functions.sync_dispatch_locations import sync_dispatch_locations
 from .models import (
     Dispatch, DispatchLocation, DispatchNotification, MarketplaceLabel, MarketplaceOrder, MarketplaceOrderItem,
@@ -38,6 +41,24 @@ class MarketplaceOrderAdmin(admin.ModelAdmin):
     list_filter = ("marketplace", "status", "marketplace_status", "fulfillment_status", "label_request_status")
     search_fields = ("marketplace_order_id", "marketplace_order_number", "customer_identification", "shopify_order_id")
     inlines = [MarketplaceOrderItemInline]
+    actions = ["request_rpa_label"]
+
+    @admin.action(description="Pedir la guía al RPA de Sodimac (genera guías reales en el portal)")
+    def request_rpa_label(self, request, queryset):
+        try:
+            sent = request_sodimac_labels(list(queryset.values_list("marketplace_order_id", flat=True)))
+        except SodimacRpaBusy:
+            self.message_user(request, "El RPA ya está corriendo; intenta cuando termine.", messages.WARNING)
+            return
+        except SodimacRpaError as error:
+            self.message_user(request, f"No se pudo llamar al RPA: {error}", messages.ERROR)
+            return
+        skipped = queryset.count() - len(sent)
+        text = f"Pedidas al RPA: {', '.join(sent) or 'ninguna'}."
+        if skipped:
+            text += f" {skipped} no aplican (no son de Sodimac, sin orden en Shopify, sin bodega o ya con guía)."
+        self.message_user(request, text, messages.SUCCESS if sent else messages.WARNING)
+
     # Una novedad se resuelve a mano: elegir fulfillment_location_id/_name,
     # pasar fulfillment_status a "resuelta_manual" y dejar la nota. El
     # proceso no vuelve a tocar un pedido resuelto manualmente.

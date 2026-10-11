@@ -246,7 +246,11 @@ antiguas (convivencia, abajo).
      manda al RPA (`POST {SODIMAC_RPA_URL}/trigger`) las OC con orden en
      Shopify, bodega asignada, sin guía y abiertas, cuya solicitud no
      exista, haya fallado o lleve más de 6 h sin respuesta. Si el RPA está
-     ocupado (409) no se marca nada y se piden en el siguiente sync.
+     ocupado (409) no se marca nada y se piden en el siguiente sync. Sin
+     `SODIMAC_RPA_URL` el paso se salta (RPA aún no conectado). A mano: en
+     el admin, *Pedidos de marketplace* → acción "Pedir la guía al RPA de
+     Sodimac" con las OC elegidas (sirve también para reintentar una en
+     revisión manual).
   2. Por cada OC, el RPA consulta la bodega
      (`GET /api/orders/sodimac/rpa/orders/<oc>/stock-dispatch/`): responde
      `fulfillment_location_name`, el nombre de la ubicación de Shopify. El

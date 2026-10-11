@@ -68,6 +68,7 @@ class ReadLabelTrackingTests(SimpleTestCase):
             self.assertEqual(read_label_tracking(b"%PDF-1.4 roto"), "")
 
 
+@patch(f"{R}.SODIMAC_RPA_URL", "https://rpa.example")
 @patch(f"{R}.trigger_labels", return_value={"started": True})
 class RequestSodimacLabelsTests(TestCase):
     def _request(self):
@@ -105,6 +106,43 @@ class RequestSodimacLabelsTests(TestCase):
     def test_nothing_pending_does_not_call_the_rpa(self, trigger):
         self.assertEqual(self._request(), [])
         trigger.assert_not_called()
+
+    def test_without_rpa_url_the_sync_skips_it(self, trigger):
+        _oc("1")
+        with patch(f"{R}.SODIMAC_RPA_URL", ""):
+            self.assertEqual(self._request(), [])
+        trigger.assert_not_called()
+
+    def test_chosen_ocs_go_even_in_manual_review_but_not_without_warehouse_or_with_label(self, trigger):
+        from .functions.sodimac_rpa import request_sodimac_labels
+
+        _oc("1", label_request_status=Request.MANUAL)
+        _oc("2", label_request_status=Request.REQUESTED, label_requested_at=timezone.now())
+        _oc("3", fulfillment_status=MarketplaceOrder.FulfillmentStatus.NOVEDAD)
+        MarketplaceLabel.objects.create(order=_oc("4"), tracking_number="1", label_pdf=ROTULO, relation_pdf=RELACION)
+        _oc("5")  # no elegida
+
+        self.assertEqual(sorted(request_sodimac_labels(["1", "2", "3", "4"])), ["1", "2"])
+        self.assertEqual(sorted(trigger.call_args.args[0]), ["1", "2"])
+
+
+@patch(f"{R}.trigger_labels", return_value={"started": True})
+class RequestLabelAdminActionTests(TestCase):
+    def test_a_staff_user_asks_the_rpa_for_the_selected_ocs(self, trigger):
+        _oc("1")
+        _oc("2")
+        user = User.objects.create_superuser("admin", password="x")
+        self.client.force_login(user)
+        ids = MarketplaceOrder.objects.filter(marketplace_order_id="1").values_list("pk", flat=True)
+
+        response = self.client.post(
+            "/admin/orders/marketplaceorder/",
+            {"action": "request_rpa_label", "_selected_action": list(ids)},
+            follow=True,
+        )
+
+        self.assertContains(response, "Pedidas al RPA: 1.")
+        self.assertEqual(trigger.call_args.args[0], ["1"])
 
 
 @patch("orders.apis.SodimacRpaStockDispatchAPI.bearer_token", TOKEN)

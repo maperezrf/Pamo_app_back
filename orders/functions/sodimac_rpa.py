@@ -8,7 +8,7 @@ from django.core.mail import EmailMessage
 from django.db.models import Q
 from django.utils import timezone
 
-from config.constants import SODIMAC_RPA_ALERT_EMAILS
+from config.constants import SODIMAC_RPA_ALERT_EMAILS, SODIMAC_RPA_URL
 from integrations.sodimac_rpa.client import SodimacRpaBusy
 from integrations.sodimac_rpa.functions.trigger_labels import trigger_labels
 
@@ -31,19 +31,23 @@ class RpaEventError(Exception):
     """El evento del RPA no se puede procesar (payload inválido)."""
 
 
-def request_sodimac_labels():
-    """Pide al RPA la guía de las OC de Sodimac que la necesitan. Lo llama
-    `orders.sync_sodimac` al terminar de crear las órdenes en Shopify.
+def request_sodimac_labels(purchase_orders=None):
+    """Pide al RPA la guía de las OC de Sodimac que la necesitan.
 
-    Entran las OC con orden en Shopify, bodega asignada, sin guía y abiertas
-    en Sodimac, cuya solicitud no exista, haya fallado o se haya perdido
-    (`STALE_REQUEST`). Las de revisión manual no.
+    - Sin `purchase_orders` (lo llama `orders.sync_sodimac` al terminar de
+      crear las órdenes en Shopify): las OC con orden en Shopify, bodega
+      asignada, sin guía y abiertas en Sodimac, cuya solicitud no exista,
+      haya fallado o se haya perdido (`STALE_REQUEST`). Las de revisión
+      manual no. Sin `SODIMAC_RPA_URL` no hace nada: el RPA todavía no está
+      conectado.
+    - Con `purchase_orders` (acción del admin, una persona las elige):
+      esas OC, si tienen orden en Shopify, bodega y no tienen guía, en
+      cualquier estado de solicitud.
 
     Devuelve las OC enviadas al RPA. Si el RPA ya está corriendo no se
     marca nada: se piden en la próxima corrida.
     """
-    stale = timezone.now() - STALE_REQUEST
-    pending = list(
+    candidates = (
         MarketplaceOrder.objects.filter(
             marketplace=SODIMAC,
             status=MarketplaceOrder.Status.CREATED,
@@ -51,19 +55,26 @@ def request_sodimac_labels():
             label__isnull=True,
         )
         .exclude(shopify_order_id="")
-        .exclude(marketplace_status=FINAL_STATUS)
-        .filter(
+        .order_by("created_at")
+    )
+    if purchase_orders is not None:
+        candidates = candidates.filter(marketplace_order_id__in=[str(oc) for oc in purchase_orders])
+    else:
+        if not SODIMAC_RPA_URL:
+            return []
+        stale = timezone.now() - STALE_REQUEST
+        candidates = candidates.exclude(marketplace_status=FINAL_STATUS).filter(
             Q(label_request_status__in=["", Request.ERROR])
             | Q(label_request_status=Request.REQUESTED, label_requested_at__lt=stale)
         )
-        .order_by("created_at")
-        .values_list("marketplace_order_id", flat=True)
-    )
+    pending = list(candidates.values_list("marketplace_order_id", flat=True))
     if not pending:
         return []
     try:
         trigger_labels(pending)
     except SodimacRpaBusy:
+        if purchase_orders is not None:
+            raise
         logger.info("RPA de Sodimac ocupado; %s OC quedan para la próxima corrida", len(pending))
         return []
     MarketplaceOrder.objects.filter(marketplace=SODIMAC, marketplace_order_id__in=pending).update(
