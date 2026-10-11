@@ -1,3 +1,4 @@
+from django.http import HttpResponse
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from rest_framework.pagination import PageNumberPagination
@@ -12,6 +13,7 @@ from integrations.envia.client import EnviaAPIError
 from integrations.envia.functions.create_label import LabelUnknownResult
 from integrations.envia_fulfillment.client import EnviaFulfillmentAPIError
 
+from .functions.channel_label_file import ChannelLabelFileNotFound, channel_label_file
 from .functions.dispatch_actions import (
     DispatchActionError,
     fetch_channel_label_now,
@@ -146,6 +148,24 @@ class DispatchGenerateLabelAPI(DispatchActionAPI):
             return Response({"detail": "Falta la opción elegida (carrier y service)."}, status=400)
         generate_dispatch_label(order, carrier=carrier, service=service)
         return self.dispatch_response(order)
+
+
+class OrderChannelLabelFileAPI(RoleRequiredMixin, APIView):
+    """GET /api/orders/<id>/channel-label/<rotulo|relacion>/: descarga el PDF
+    de la guía que generó un tercero (hoy el RPA de Sodimac). 404 si el
+    pedido no tiene guía o el documento no existe."""
+
+    allowed_roles = ORDERS_LIST_ROLES
+
+    def get(self, request, shopify_order_id, kind):
+        order = get_object_or_404(ShopifyOrder, shopify_id=str(shopify_order_id), deleted_at__isnull=True)
+        try:
+            filename, content = channel_label_file(order, kind)
+        except ChannelLabelFileNotFound as error:
+            return Response({"detail": str(error)}, status=404)
+        response = HttpResponse(content, content_type="application/pdf")
+        response["Content-Disposition"] = f'attachment; filename="{filename}"'
+        return response
 
 
 class SodimacRpaStockDispatchAPI(BearerTokenRequiredMixin, APIView):

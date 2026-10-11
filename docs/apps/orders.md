@@ -277,6 +277,9 @@ antiguas (convivencia, abajo).
     RPA: `RPA_ORDERS_API_URL_TEMPLATE` =
     `<backend>/api/orders/sodimac/rpa/orders/{numero_orden}/stock-dispatch/`
     y `RPA_CALLBACK_URL` = `<backend>/api/orders/sodimac/rpa/callback/`.
+  - Panel: el listado trae `channel_label` (estado, número, motivo) y los
+    PDF se descargan por `GET /api/orders/<id>/channel-label/<rotulo|relacion>/`
+    (`channel_label_file`).
   - El `/trigger` del RPA no pide credenciales (riesgo conocido del RPA:
     cualquiera con su URL puede lanzarlo).
 - **Convivencia con `pamo_web`** (sin migrar datos: cada sistema factura

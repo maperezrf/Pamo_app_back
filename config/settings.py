@@ -147,6 +147,8 @@ REST_FRAMEWORK = {
 # ALLOWED_HOSTS / CORS_ALLOWED_ORIGINS / CSRF_TRUSTED_ORIGINS vienen de
 # config.constants (env var, comma-separated) -- ver arriba.
 CORS_ALLOW_CREDENTIALS = True
+# El frontend lee el nombre del archivo en las descargas (guías en PDF).
+CORS_EXPOSE_HEADERS = ["Content-Disposition"]
 
 # En producción, backend y frontend quedan en subdominios distintos
 # (*.up.railway.app) -- dominios distintos exigen SameSite=None + Secure

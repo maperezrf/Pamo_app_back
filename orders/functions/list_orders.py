@@ -3,7 +3,7 @@ from collections import defaultdict
 from django.db.models import Q
 from django.utils import timezone
 
-from ..models import Dispatch, MarketplaceOrder, ShopifyOrder
+from ..models import Dispatch, MarketplaceLabel, MarketplaceOrder, ShopifyOrder
 from .order_listing_format import buyer_from_row, day_range, fulfillment_from_row, money_str
 
 
@@ -48,10 +48,17 @@ def format_orders(orders):
     ids = [order.shopify_id for order in orders]
     for row in MarketplaceOrder.objects.filter(shopify_order_id__in=ids).order_by("id"):
         rows_by_order[row.shopify_order_id].append(row)
-    return [_format_order(order, rows_by_order.get(order.shopify_id, [])) for order in orders]
+    # Guías cargadas, sin traer los PDF (`only` los deja diferidos).
+    labels = {
+        label.order_id: label
+        for label in MarketplaceLabel.objects.filter(
+            order__shopify_order_id__in=ids
+        ).only("order_id", "tracking_number", "uploaded_at")
+    }
+    return [_format_order(order, rows_by_order.get(order.shopify_id, []), labels) for order in orders]
 
 
-def _format_order(order, rows):
+def _format_order(order, rows, labels):
     return {
         "shopify_order_id": order.shopify_id,
         "shopify_order_name": order.name,
@@ -80,6 +87,24 @@ def _format_order(order, rows):
         "total": money_str(order.total),
         "currency": order.currency,
         "dispatch": format_dispatch(order),
+        "channel_label": _channel_label(rows[0], labels.get(rows[0].pk)) if rows else None,
+    }
+
+
+def _channel_label(row, label):
+    """Guía que genera un tercero (hoy el RPA de Sodimac), o None en los
+    canales que no la usan. `status`: `pendiente` (no se ha pedido),
+    `solicitada`, `recibida`, `error` (se pide otra vez) o `manual`
+    (revisión manual, el motivo en `note`). Los PDF se bajan por
+    `GET /api/orders/<id>/channel-label/<rotulo|relacion>/`."""
+    if row.marketplace != MarketplaceOrder.Marketplace.SODIMAC:
+        return None
+    return {
+        "status": MarketplaceOrder.LabelRequestStatus.RECEIVED if label else (row.label_request_status or "pendiente"),
+        "note": "" if label else row.label_request_note,
+        "tracking_number": label.tracking_number if label else "",
+        "received_at": _iso(label.uploaded_at) if label else None,
+        "requested_at": _iso(row.label_requested_at),
     }
 
 

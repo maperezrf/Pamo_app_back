@@ -257,3 +257,56 @@ class RpaCallbackAPITests(TestCase):
         self.assertEqual(self._post({"evento": "otro"}).status_code, 400)
         self.assertEqual(self._processed(numero_orden="999").status_code, 400)
         self.assertFalse(MarketplaceLabel.objects.exists())
+
+
+class ChannelLabelInPanelTests(TestCase):
+    """El panel muestra qué OC de Sodimac tienen guía y deja bajar los PDF."""
+
+    def setUp(self):
+        from .models import ShopifyOrder
+
+        user = User.objects.create_user("ops", password="x")
+        user.groups.add(Group.objects.get_or_create(name="Operaciones")[0])
+        self.client.force_login(user)
+        self.with_label = _oc("1")
+        MarketplaceLabel.objects.create(order=self.with_label, tracking_number="474272966", label_pdf=ROTULO, relation_pdf=RELACION)
+        _oc("2", label_request_status=Request.MANUAL, label_request_note="Ya generada en el portal")
+        for oc, name in (("1", "20482"), ("2", "20483")):
+            ShopifyOrder.objects.create(shopify_id=f"s{oc}", name=name, marketplace="sodimac")
+        ShopifyOrder.objects.create(shopify_id="w1", name="20484", marketplace="shopify")
+
+    def test_the_listing_says_which_have_a_label(self):
+        rows = {row["shopify_order_name"]: row for row in self.client.get("/api/orders/").json()["orders"]}
+
+        self.assertEqual(
+            {k: rows["20482"]["channel_label"][k] for k in ("status", "tracking_number")},
+            {"status": "recibida", "tracking_number": "474272966"},
+        )
+        self.assertEqual(
+            {k: rows["20483"]["channel_label"][k] for k in ("status", "note")},
+            {"status": "manual", "note": "Ya generada en el portal"},
+        )
+        self.assertIsNone(rows["20484"]["channel_label"])  # tienda web: no aplica
+
+    def test_downloads_the_label_and_the_relation(self):
+        response = self.client.get("/api/orders/s1/channel-label/rotulo/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response["Content-Type"], "application/pdf")
+        self.assertIn('filename="sodimac-1-rotulo.pdf"', response["Content-Disposition"])
+        self.assertEqual(response.content, ROTULO)
+        self.assertEqual(self.client.get("/api/orders/s1/channel-label/relacion/").content, RELACION)
+
+    @override_settings(CORS_ALLOWED_ORIGINS=["https://front.example"])
+    def test_the_frontend_can_read_the_file_name_across_domains(self):
+        response = self.client.get("/api/orders/s1/channel-label/rotulo/", HTTP_ORIGIN="https://front.example")
+
+        self.assertIn("content-disposition", response["Access-Control-Expose-Headers"].lower())
+
+    def test_without_label_or_unknown_document_is_404(self):
+        self.assertEqual(self.client.get("/api/orders/s2/channel-label/rotulo/").status_code, 404)
+        self.assertEqual(self.client.get("/api/orders/s1/channel-label/otro/").status_code, 404)
+
+    def test_users_without_the_role_cannot_download(self):
+        self.client.force_login(User.objects.create_user("otro", password="x"))
+        self.assertEqual(self.client.get("/api/orders/s1/channel-label/rotulo/").status_code, 403)
