@@ -249,8 +249,9 @@ antiguas (convivencia, abajo).
      ocupado (409) no se marca nada y se piden en el siguiente sync. Sin
      `SODIMAC_RPA_URL` el paso se salta (RPA aún no conectado). A mano: en
      el admin, *Pedidos de marketplace* → acción "Pedir la guía al RPA de
-     Sodimac" con las OC elegidas (sirve también para reintentar una en
-     revisión manual).
+     Sodimac" con las OC elegidas, o en el panel el botón "Generar guía
+     (RPA)" de cada pedido (`request_label_for_order`; sirven también para
+     reintentar una en revisión manual).
   2. Por cada OC, el RPA consulta la bodega
      (`GET /api/orders/sodimac/rpa/orders/<oc>/stock-dispatch/`): responde
      `fulfillment_location_name`, el nombre de la ubicación de Shopify. El

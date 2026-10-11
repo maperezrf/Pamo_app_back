@@ -91,6 +91,15 @@ def _format_order(order, rows, labels):
     }
 
 
+def channel_label_for_order(order):
+    """`channel_label` de un pedido suelto (respuesta de los botones)."""
+    row = MarketplaceOrder.objects.filter(shopify_order_id=order.shopify_id).order_by("id").first()
+    if row is None:
+        return None
+    label = MarketplaceLabel.objects.filter(order=row).only("order_id", "tracking_number", "uploaded_at").first()
+    return _channel_label(row, label)
+
+
 def _channel_label(row, label):
     """Guía que genera un tercero (hoy el RPA de Sodimac), o None en los
     canales que no la usan. `status`: `pendiente` (no se ha pedido),

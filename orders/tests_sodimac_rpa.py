@@ -310,3 +310,50 @@ class ChannelLabelInPanelTests(TestCase):
     def test_users_without_the_role_cannot_download(self):
         self.client.force_login(User.objects.create_user("otro", password="x"))
         self.assertEqual(self.client.get("/api/orders/s1/channel-label/rotulo/").status_code, 403)
+
+
+@patch(f"{R}.trigger_labels", return_value={"started": True})
+class RequestLabelButtonTests(TestCase):
+    """Botón "Generar guía (RPA)" en los pedidos de Sodimac."""
+
+    URL = "/api/orders/{}/channel-label/request/"
+
+    def setUp(self):
+        from .models import ShopifyOrder
+
+        user = User.objects.create_user("ops", password="x")
+        user.groups.add(Group.objects.get_or_create(name="Operaciones")[0])
+        self.client.force_login(user)
+        self.row = _oc("16206245", label_request_status=Request.MANUAL, label_request_note="falló antes")
+        ShopifyOrder.objects.create(shopify_id="s16206245", name="20482", marketplace="sodimac")
+
+    def test_sends_the_oc_to_the_rpa_even_after_a_manual_review(self, trigger):
+        response = self.client.post(self.URL.format("s16206245"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(trigger.call_args.args[0], ["16206245"])
+        self.assertEqual(response.json()["channel_label"]["status"], "solicitada")
+
+    def test_with_a_label_already_it_is_refused(self, trigger):
+        MarketplaceLabel.objects.create(order=self.row, tracking_number="1", label_pdf=ROTULO, relation_pdf=RELACION)
+
+        response = self.client.post(self.URL.format("s16206245"))
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("ya tiene guía", response.json()["detail"])
+        trigger.assert_not_called()
+
+    def test_busy_or_unreachable_rpa(self, trigger):
+        from integrations.sodimac_rpa.client import SodimacRpaBusy, SodimacRpaError
+
+        trigger.side_effect = SodimacRpaBusy("ocupado")
+        self.assertEqual(self.client.post(self.URL.format("s16206245")).status_code, 409)
+        trigger.side_effect = SodimacRpaError("SODIMAC_RPA_URL no está configurada.")
+        response = self.client.post(self.URL.format("s16206245"))
+        self.assertEqual(response.status_code, 502)
+        self.assertIn("SODIMAC_RPA_URL", response.json()["detail"])
+
+    def test_users_without_the_role_are_refused(self, trigger):
+        self.client.force_login(User.objects.create_user("otro", password="x"))
+        self.assertEqual(self.client.post(self.URL.format("s16206245")).status_code, 403)
+        trigger.assert_not_called()

@@ -12,6 +12,7 @@ from config.constants import SODIMAC_RPA_TOKEN
 from integrations.envia.client import EnviaAPIError
 from integrations.envia.functions.create_label import LabelUnknownResult
 from integrations.envia_fulfillment.client import EnviaFulfillmentAPIError
+from integrations.sodimac_rpa.client import SodimacRpaBusy, SodimacRpaError
 
 from .functions.channel_label_file import ChannelLabelFileNotFound, channel_label_file
 from .functions.dispatch_actions import (
@@ -21,9 +22,15 @@ from .functions.dispatch_actions import (
     notify_dispatch_now,
     quote_dispatch_label,
 )
-from .functions.list_orders import filter_orders, format_dispatch, format_orders
+from .functions.list_orders import channel_label_for_order, filter_orders, format_dispatch, format_orders
 from .functions.list_orders_not_created import list_orders_not_created
-from .functions.sodimac_rpa import RpaEventError, process_rpa_event, stock_dispatch
+from .functions.sodimac_rpa import (
+    LabelRequestError,
+    RpaEventError,
+    process_rpa_event,
+    request_label_for_order,
+    stock_dispatch,
+)
 from .models import ShopifyOrder, ShopifyOrderSyncState
 from .serializers import OrderListQuerySerializer
 
@@ -148,6 +155,28 @@ class DispatchGenerateLabelAPI(DispatchActionAPI):
             return Response({"detail": "Falta la opción elegida (carrier y service)."}, status=400)
         generate_dispatch_label(order, carrier=carrier, service=service)
         return self.dispatch_response(order)
+
+
+class OrderChannelLabelRequestAPI(RoleRequiredMixin, APIView):
+    """POST /api/orders/<id>/channel-label/request/: botón "Generar guía
+    (RPA)" de los pedidos de Sodimac. Manda la OC al RPA, que genera la guía
+    en el portal (real) y la devuelve por webhook. 200 `{"channel_label"}`;
+    400 no aplica (ya tiene guía, sin bodega, no es Sodimac); 409 el RPA ya
+    está corriendo; 502 el RPA no responde o no está configurado."""
+
+    allowed_roles = ORDERS_LIST_ROLES
+
+    def post(self, request, shopify_order_id):
+        order = get_object_or_404(ShopifyOrder, shopify_id=str(shopify_order_id), deleted_at__isnull=True)
+        try:
+            request_label_for_order(order)
+        except LabelRequestError as error:
+            return Response({"detail": str(error)}, status=400)
+        except SodimacRpaBusy:
+            return Response({"detail": "El RPA ya está generando guías; intenta cuando termine."}, status=409)
+        except SodimacRpaError as error:
+            return Response({"detail": f"No se pudo llamar al RPA: {error}"}, status=502)
+        return Response({"channel_label": channel_label_for_order(order)})
 
 
 class OrderChannelLabelFileAPI(RoleRequiredMixin, APIView):

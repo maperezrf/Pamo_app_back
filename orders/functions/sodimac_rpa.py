@@ -86,6 +86,33 @@ def request_sodimac_labels(purchase_orders=None):
     return pending
 
 
+class LabelRequestError(Exception):
+    """La guía no se puede pedir al RPA para este pedido; el texto es para
+    el equipo (se muestra en el panel)."""
+
+
+def request_label_for_order(order):
+    """Botón "Generar guía (RPA)" del panel: pide al RPA la guía de la OC de
+    Sodimac del pedido de Shopify `order`, sin esperar al sync. Una persona
+    lo pide, así que se manda aunque la solicitud anterior esté en error o
+    en revisión manual. `SodimacRpaBusy` / `SodimacRpaError` se propagan."""
+    row = (
+        MarketplaceOrder.objects.filter(marketplace=SODIMAC, shopify_order_id=order.shopify_id)
+        .order_by("id")
+        .first()
+    )
+    if row is None:
+        raise LabelRequestError("El pedido no es una OC de Sodimac creada por este sistema.")
+    if MarketplaceLabel.objects.filter(order=row).exists():
+        raise LabelRequestError("La OC ya tiene guía: descargarla en el recuadro de la guía.")
+    if row.fulfillment_status not in ASSIGNED_STATUSES or not row.fulfillment_location_name:
+        raise LabelRequestError(f"La OC no tiene bodega: {row.fulfillment_note or 'sin asignar'}.")
+    if not request_sodimac_labels([row.marketplace_order_id]):
+        raise LabelRequestError("La OC no se pudo pedir al RPA (revisar que tenga orden en Shopify).")
+    row.refresh_from_db()
+    return row
+
+
 def stock_dispatch(purchase_order):
     """Bodega desde la que sale la OC, para que el RPA elija la dirección de
     despacho en el portal. Es la que eligió la importación por stock
