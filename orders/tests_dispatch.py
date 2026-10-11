@@ -409,6 +409,33 @@ class DispatchActionAPITests(TestCase):
         self.assertEqual(response.json()["dispatch"]["status"], "notificado")
         self.assertEqual(len(mail.outbox), 1)
 
+    @override_settings(**EMAIL_SETTINGS)
+    def test_notify_reopens_a_manual_dispatch_once_the_cause_is_fixed(self):
+        # Se le dio al botón antes de sincronizar bodegas: quedó manual.
+        order = _order(shopify_id="9101", name="20482")
+        _marketplace_row(order, location_id=BOCCHERINI)
+        Dispatch.objects.create(
+            shopify_order=order, channel="mercadolibre", status=Dispatch.Status.MANUAL,
+            note="La bodega 99576545557 no está en el registro: sincronizar bodegas.",
+        )
+
+        response = self._post(order, "notify/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["dispatch"]["status"], "notificado")
+        self.assertEqual(Dispatch.objects.get(shopify_order=order).location, self.location)
+        self.assertEqual(len(mail.outbox), 1)
+
+    def test_a_manual_dispatch_whose_cause_remains_stays_manual_with_the_current_reason(self):
+        order = _order(shopify_id="9102", name="20483")
+        _marketplace_row(order, location_id="000", fulfillment_status=MarketplaceOrder.FulfillmentStatus.NOVEDAD,
+                         fulfillment_note="sin stock")
+        Dispatch.objects.create(shopify_order=order, channel="mercadolibre", status=Dispatch.Status.MANUAL, note="viejo")
+
+        self.assertEqual(self._post(order, "notify/").json()["dispatch"]["status"], "manual")
+        self.assertIn("sin stock", Dispatch.objects.get(shopify_order=order).note)
+        self.assertEqual(len(mail.outbox), 0)
+
     def test_buttons_reject_users_without_the_role(self):
         order = self._web_order()
         self.client.force_login(User.objects.create_user("otro", password="x"))

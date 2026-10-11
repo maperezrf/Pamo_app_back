@@ -109,6 +109,26 @@ def ensure_dispatch(order):
     return Dispatch.objects.filter(shopify_order=order).select_related("location").first() or _create(order)
 
 
+def reopen_manual_dispatch(order):
+    """Para los botones del panel (una persona lo pide): un despacho en
+    `manual` se vuelve a evaluar, porque lo que lo dejó así pudo haberse
+    corregido (bodegas sin sincronizar, canales sin configurar, stock que
+    llegó). Recalcula la bodega si no tiene y lo deja `esperando_guia`; si
+    el motivo sigue, vuelve a `manual` con el motivo actual. El proceso
+    automático no reabre despachos manuales. Devuelve el despacho."""
+    dispatch = ensure_dispatch(order)
+    if dispatch.status != Dispatch.Status.MANUAL:
+        return dispatch
+    if dispatch.location is None:
+        location, reason = assign_dispatch_location(order)
+        if location is None:
+            _save(dispatch, Dispatch.Status.MANUAL, reason)
+            return dispatch
+        dispatch.location = location
+    _save(dispatch, Dispatch.Status.WAITING_LABEL, "")
+    return dispatch
+
+
 def _create(order):
     location, reason = assign_dispatch_location(order)
     return Dispatch.objects.create(

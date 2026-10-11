@@ -9,7 +9,7 @@ from integrations.envia.functions.resolve_colombia_city import resolve_colombia_
 from integrations.shopify.functions.get_order_shipping_address import get_order_shipping_address
 
 from ..models import Dispatch, MarketplaceOrder
-from .dispatch_orders import ensure_dispatch, process_order_dispatch
+from .dispatch_orders import process_order_dispatch, reopen_manual_dispatch
 from .fetch_dispatch_label import CHANNEL_LABELS, fetch_dispatch_label
 from .shopify_order_marketplace import SHOPIFY_CHANNEL
 
@@ -26,8 +26,9 @@ class DispatchActionError(Exception):
 
 def notify_dispatch_now(order):
     """Botón "Notificar a proveedor": avanza el despacho ya (trae la guía y
-    avisa por los canales de la bodega), sin esperar al proceso."""
-    ensure_dispatch(order)
+    avisa por los canales de la bodega), sin esperar al proceso. Un
+    despacho en gestión manual se vuelve a evaluar."""
+    reopen_manual_dispatch(order)
     process_order_dispatch(order)
     return Dispatch.objects.select_related("location").get(shopify_order=order)
 
@@ -87,7 +88,7 @@ def generate_dispatch_label(order, *, carrier, service):
 
 
 def _dispatch_with_location(order):
-    dispatch = ensure_dispatch(order)
+    dispatch = reopen_manual_dispatch(order)
     if dispatch.location is None:
         raise DispatchActionError(dispatch.note or "El pedido no tiene bodega asignada.")
     return dispatch

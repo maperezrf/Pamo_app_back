@@ -514,6 +514,10 @@ guía del canal.
   probar el flujo de forma controlada mientras no se automatiza:
   - "Notificar a proveedor": `process_order_dispatch(order)`, lo mismo que
     hace el proceso, para un pedido y sin esperar a la próxima corrida.
+  - Los botones reabren un despacho en `manual` (`reopen_manual_dispatch`):
+    recalculan la bodega si falta y siguen; si el motivo sigue vigente,
+    vuelve a `manual` con el motivo actual. El proceso automático no los
+    reabre.
   - "Traer guía" (Mercado Libre, Falabella): guía del canal. Sodimac no
     lleva botón: el aviso toma la guía cargada por el RPA.
   - "Generar guía" (tienda web, Addi, cotizaciones y Madecentro): cotiza y
