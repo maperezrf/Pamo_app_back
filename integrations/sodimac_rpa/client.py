@@ -24,11 +24,19 @@ class SodimacRpaClient:
         self.base_url = SODIMAC_RPA_URL.rstrip("/")
 
     def post(self, path, payload=None):
-        response = requests.post(f"{self.base_url}{path}", json=payload, timeout=TIMEOUT, allow_redirects=False)
-        return self._parse(response)
+        return self._send("POST", path, payload)
 
     def get(self, path):
-        response = requests.get(f"{self.base_url}{path}", timeout=TIMEOUT, allow_redirects=False)
+        return self._send("GET", path)
+
+    def _send(self, method, path, payload=None):
+        try:
+            response = requests.request(
+                method, f"{self.base_url}{path}", json=payload, timeout=TIMEOUT, allow_redirects=False
+            )
+        except requests.RequestException as error:
+            # Apagado, URL mal escrita, sin red: se informa legible a quien llama.
+            raise SodimacRpaError(f"No se pudo conectar con el RPA en {self.base_url} ({type(error).__name__}).") from error
         return self._parse(response)
 
     @staticmethod
