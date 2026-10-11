@@ -181,22 +181,62 @@ def _order_processed(data):
             order, Request.MANUAL,
             f"El RPA no devolvió los dos PDF ({message or 'sin detalle'}). Descargarlos del portal y cargarlos a mano.",
         )
-    if Dispatch.objects.filter(shopify_order__shopify_id=order.shopify_order_id, status=Dispatch.Status.NOTIFIED).exists():
-        return _mark(order, Request.MANUAL, "Llegó otra guía, pero la bodega ya había sido avisada con la anterior.")
+    try:
+        store_label(order, label_pdf, relation_pdf, tracking=data.get("numero_guia"))
+    except LabelStoreError as error:
+        return _mark(order, Request.MANUAL, str(error))
+    return f"{order.marketplace_order_id}: {Request.RECEIVED}"
 
-    tracking = str(data.get("numero_guia") or "").strip() or read_label_tracking(label_pdf)
-    relation_tracking = read_label_tracking(relation_pdf)
+
+class LabelStoreError(Exception):
+    """La guía no se puede guardar; el texto es para el equipo."""
+
+
+def store_label(order, label_pdf, relation_pdf, *, tracking=""):
+    """Guarda la guía (rótulo + relación) de la OC `order`. La usan el
+    webhook del RPA y la carga manual del panel ("Cargar guía"), así que las
+    dos vías validan igual:
+
+    - Los dos PDF son PDF y pesan hasta 5 MB.
+    - El número es `tracking` o, si viene vacío, "REMESA <n>" del rótulo, y
+      debe coincidir con el de la relación cuando esta lo trae.
+    - No se reemplaza una guía con la que la bodega ya fue avisada.
+
+    Reemplaza la guía anterior si la hay. Deja la solicitud en `recibida`.
+    """
+    for content, name in ((label_pdf, "rótulo"), (relation_pdf, "relación")):
+        if not content or len(content) > MAX_PDF_BYTES or not bytes(content[:5]) == b"%PDF-":
+            raise LabelStoreError(f"El archivo del {name} no es un PDF válido (o pesa más de 5 MB).")
+    if Dispatch.objects.filter(shopify_order__shopify_id=order.shopify_order_id, status=Dispatch.Status.NOTIFIED).exists():
+        raise LabelStoreError("La bodega ya fue avisada con la guía anterior; no se reemplaza.")
+    tracking = str(tracking or "").strip() or read_label_tracking(label_pdf)
     if not tracking:
-        return _mark(order, Request.MANUAL, "No se encontró el número de guía (REMESA) en el rótulo.")
+        raise LabelStoreError("No se encontró el número de guía (REMESA) en el rótulo: escribirlo a mano.")
+    if len(tracking) > 64:
+        raise LabelStoreError("El número de guía tiene más de 64 caracteres.")
+    relation_tracking = read_label_tracking(relation_pdf)
     if relation_tracking and relation_tracking != tracking:
-        return _mark(
-            order, Request.MANUAL,
-            f"El rótulo ({tracking}) y la relación ({relation_tracking}) traen números distintos.",
-        )
+        raise LabelStoreError(f"El rótulo ({tracking}) y la relación ({relation_tracking}) traen números distintos.")
     MarketplaceLabel.objects.update_or_create(
         order=order, defaults={"tracking_number": tracking, "label_pdf": label_pdf, "relation_pdf": relation_pdf}
     )
-    return _mark(order, Request.RECEIVED, "")
+    _mark(order, Request.RECEIVED, "")
+    return tracking
+
+
+def upload_label_for_order(order, label_pdf, relation_pdf, *, tracking=""):
+    """Botón "Cargar guía" del panel: una persona sube rótulo y relación de
+    la OC de Sodimac del pedido de Shopify `order` (p. ej. la guía ya estaba
+    generada en el portal o el RPA está caído). `LabelStoreError` si no
+    aplica."""
+    row = (
+        MarketplaceOrder.objects.filter(marketplace=SODIMAC, shopify_order_id=order.shopify_id)
+        .order_by("id")
+        .first()
+    )
+    if row is None:
+        raise LabelStoreError("El pedido no es una OC de Sodimac creada por este sistema.")
+    return store_label(row, label_pdf, relation_pdf, tracking=tracking)
 
 
 def _human_validation(data):

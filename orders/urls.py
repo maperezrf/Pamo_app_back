@@ -6,6 +6,7 @@ from .apis import (
     DispatchQuoteLabelAPI,
     OrderChannelLabelFileAPI,
     OrderChannelLabelRequestAPI,
+    OrderChannelLabelUploadAPI,
     OrderListAPI,
     SodimacRpaCallbackAPI,
     SodimacRpaStockDispatchAPI,
@@ -24,6 +25,11 @@ urlpatterns = [
         "<str:shopify_order_id>/channel-label/request/",
         OrderChannelLabelRequestAPI.as_view(),
         name="orders-channel-label-request",
+    ),
+    path(
+        "<str:shopify_order_id>/channel-label/upload/",
+        OrderChannelLabelUploadAPI.as_view(),
+        name="orders-channel-label-upload",
     ),
     path(
         "<str:shopify_order_id>/channel-label/<str:kind>/",

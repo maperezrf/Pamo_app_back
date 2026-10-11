@@ -2,7 +2,7 @@ from django.http import HttpResponse
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from rest_framework.pagination import PageNumberPagination
-from rest_framework.parsers import JSONParser
+from rest_framework.parsers import JSONParser, MultiPartParser
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
@@ -26,10 +26,12 @@ from .functions.list_orders import channel_label_for_order, filter_orders, forma
 from .functions.list_orders_not_created import list_orders_not_created
 from .functions.sodimac_rpa import (
     LabelRequestError,
+    LabelStoreError,
     RpaEventError,
     process_rpa_event,
     request_label_for_order,
     stock_dispatch,
+    upload_label_for_order,
 )
 from .models import ShopifyOrder, ShopifyOrderSyncState
 from .serializers import OrderListQuerySerializer
@@ -176,6 +178,31 @@ class OrderChannelLabelRequestAPI(RoleRequiredMixin, APIView):
             return Response({"detail": "El RPA ya está generando guías; intenta cuando termine."}, status=409)
         except SodimacRpaError as error:
             return Response({"detail": f"No se pudo llamar al RPA: {error}"}, status=502)
+        return Response({"channel_label": channel_label_for_order(order)})
+
+
+class OrderChannelLabelUploadAPI(RoleRequiredMixin, APIView):
+    """POST /api/orders/<id>/channel-label/upload/ (multipart): botón "Cargar
+    guía" de los pedidos de Sodimac. Campos `label` (PDF del rótulo),
+    `relation` (PDF de la relación) y `tracking_number` opcional (si falta,
+    se lee "REMESA <n>" del rótulo). Reemplaza la guía anterior mientras la
+    bodega no haya sido avisada. 200 `{"channel_label"}`; 400 con el motivo."""
+
+    allowed_roles = ORDERS_LIST_ROLES
+    parser_classes = [MultiPartParser]
+
+    def post(self, request, shopify_order_id):
+        order = get_object_or_404(ShopifyOrder, shopify_id=str(shopify_order_id), deleted_at__isnull=True)
+        label, relation = request.FILES.get("label"), request.FILES.get("relation")
+        try:
+            upload_label_for_order(
+                order,
+                label.read() if label else b"",
+                relation.read() if relation else b"",
+                tracking=request.data.get("tracking_number"),
+            )
+        except LabelStoreError as error:
+            return Response({"detail": str(error)}, status=400)
         return Response({"channel_label": channel_label_for_order(order)})
 
 

@@ -357,3 +357,60 @@ class RequestLabelButtonTests(TestCase):
         self.client.force_login(User.objects.create_user("otro", password="x"))
         self.assertEqual(self.client.post(self.URL.format("s16206245")).status_code, 403)
         trigger.assert_not_called()
+
+
+class UploadLabelButtonTests(TestCase):
+    """Botón "Cargar guía": una persona sube rótulo y relación."""
+
+    URL = "/api/orders/s16206245/channel-label/upload/"
+
+    def setUp(self):
+        from .models import ShopifyOrder
+
+        user = User.objects.create_user("ops", password="x")
+        user.groups.add(Group.objects.get_or_create(name="Operaciones")[0])
+        self.client.force_login(user)
+        self.row = _oc("16206245", label_request_status=Request.MANUAL, label_request_note="ya generada en el portal")
+        self.shopify = ShopifyOrder.objects.create(shopify_id="s16206245", name="20482", marketplace="sodimac")
+
+    def _upload(self, label=ROTULO, relation=RELACION, **data):
+        from django.core.files.uploadedfile import SimpleUploadedFile
+
+        files = {"label": SimpleUploadedFile("rotulo.pdf", label, "application/pdf"),
+                 "relation": SimpleUploadedFile("relacion.pdf", relation, "application/pdf")}
+        return self.client.post(self.URL, {**files, **data})
+
+    def test_uploads_both_pdfs_and_reads_the_number_from_the_label(self):
+        response = self._upload()
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["channel_label"]["tracking_number"], "473402021")
+        label = MarketplaceLabel.objects.get(order=self.row)
+        self.assertEqual((bytes(label.label_pdf), bytes(label.relation_pdf)), (ROTULO, RELACION))
+        self.row.refresh_from_db()
+        self.assertEqual((self.row.label_request_status, self.row.label_request_note), (Request.RECEIVED, ""))
+
+    def test_a_typed_number_is_used_when_the_label_has_none(self):
+        response = self._upload(label=_pdf("sin numero"), relation=_pdf("sin numero"), tracking_number="474000001")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(MarketplaceLabel.objects.get().tracking_number, "474000001")
+
+    def test_invalid_files_mismatched_numbers_or_no_number_are_400(self):
+        self.assertIn("no es un PDF", self._upload(label=b"hola").json()["detail"])
+        self.assertIn("distintos", self._upload(relation=_pdf("Remesa: 473400000")).json()["detail"])
+        self.assertIn("escribirlo a mano", self._upload(label=_pdf("x"), relation=_pdf("y")).json()["detail"])
+        self.assertFalse(MarketplaceLabel.objects.exists())
+
+    def test_once_the_warehouse_was_notified_it_is_not_replaced(self):
+        Dispatch.objects.create(shopify_order=self.shopify, channel="sodimac", status=Dispatch.Status.NOTIFIED)
+
+        response = self._upload()
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("ya fue avisada", response.json()["detail"])
+
+    def test_users_without_the_role_are_refused(self):
+        self.client.force_login(User.objects.create_user("otro", password="x"))
+        self.assertEqual(self._upload().status_code, 403)
+        self.assertFalse(MarketplaceLabel.objects.exists())
