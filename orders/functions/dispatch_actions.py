@@ -53,9 +53,23 @@ def fetch_channel_label_now(order):
 
 def quote_dispatch_label(order):
     """Botón "Generar guía", paso 1 (no cobra): opciones de Envía Shipping
-    desde la bodega del despacho hasta la dirección de envío del pedido."""
+    desde la bodega del despacho hasta la dirección de envío del pedido.
+    Devuelve (opciones, ruta): la ruta es lo que se muestra para revisar
+    antes de pagar, `{"origin": {name, city}, "destination": {name,
+    address, city, region, phone}}`."""
     dispatch = _dispatch_for_generation(order)
-    return quote(_shipping_payload(order, dispatch.location))
+    shipping = _destination(order)
+    route = {
+        "origin": {"name": dispatch.location.name, "city": dispatch.location.city},
+        "destination": {
+            "name": " ".join(part for part in (shipping["first_name"], shipping["last_name"]) if part),
+            "address": " ".join(part for part in (shipping["address1"], shipping["address2"]) if part),
+            "city": shipping["city"],
+            "region": shipping.get("province") or shipping["province_code"],
+            "phone": shipping["phone"] or order.phone,
+        },
+    }
+    return quote(_shipping_payload(order, dispatch.location, shipping)), route
 
 
 def generate_dispatch_label(order, *, carrier, service):
@@ -105,10 +119,10 @@ def _dispatch_for_generation(order):
     return dispatch
 
 
-def _shipping_payload(order, location):
+def _shipping_payload(order, location, shipping=None):
     if not location.origin_address or not location.origin_phone:
         raise DispatchActionError(f"A {location.name} le falta dirección o teléfono en Shopify (sincronizar bodegas).")
-    shipping = _destination(order)
+    shipping = shipping or _destination(order)
     origin_city = resolve_colombia_city(location.city, location.origin_province_code)
     destination_city = resolve_colombia_city(shipping["city"], shipping["province_code"])
     names = ", ".join(line.name for line in order.lines.all() if line.name)

@@ -454,6 +454,11 @@ class DispatchActionAPITests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["options"][0]["carrier"], "tcc")
         self.assertNotIn("providerPayload", response.json()["options"][0])
+        self.assertEqual(response.json()["route"], {
+            "origin": {"name": "Boccherini", "city": "Bogotá"},
+            "destination": {"name": "Ana Gómez", "address": "Calle 9", "city": "Bogotá", "region": "Bogotá",
+                            "phone": "3001112233"},
+        })
         payload = quote.call_args.args[0]
         self.assertEqual(payload["origin"]["street"], "Calle 1")
         self.assertEqual(payload["destination"]["street"], "Calle 9")
@@ -759,6 +764,8 @@ class SodimacAndMadecentroDispatchTests(TestCase):
         shipping.assert_not_called()  # en Shopify va al cliente fijo, sin dirección
         destination = quote.call_args.args[0]["destination"]
         self.assertEqual((destination["street"], destination["email"]), ("Cra 50 # 10-20", "ana@example.com"))
+        route = response.json()["route"]["destination"]
+        self.assertEqual((route["address"], route["city"], route["region"]), ("Cra 50 # 10-20", "Medellín", "Antioquia"))
         city.assert_called_with("Medellín", "Antioquia")
 
 

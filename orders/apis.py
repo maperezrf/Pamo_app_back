@@ -142,12 +142,14 @@ class DispatchFetchLabelAPI(DispatchActionAPI):
 class DispatchQuoteLabelAPI(DispatchActionAPI):
     """POST /api/orders/<id>/dispatch/label/quote/: opciones de guía de Envía
     (no cobra). Responde {"options": [{"carrier", "carrierLabel",
-    "service", "price", "currency", "etaMinDays", "etaMaxDays"}]}."""
+    "service", "price", "currency", "etaMinDays", "etaMaxDays"}], "route":
+    {"origin": {"name", "city"}, "destination": {"name", "address", "city",
+    "region", "phone"}}}."""
 
     def run(self, order, request):
         keys = ("carrier", "carrierLabel", "service", "price", "currency", "etaMinDays", "etaMaxDays")
-        options = [{key: option.get(key) for key in keys} for option in quote_dispatch_label(order)]
-        return Response({"options": options})
+        options, route = quote_dispatch_label(order)
+        return Response({"options": [{key: option.get(key) for key in keys} for option in options], "route": route})
 
 
 class DispatchGenerateLabelAPI(DispatchActionAPI):
