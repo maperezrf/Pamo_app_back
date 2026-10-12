@@ -281,6 +281,11 @@ antiguas (convivencia, abajo).
   - Panel: el listado trae `channel_label` (estado, número, motivo) y los
     PDF se descargan por `GET /api/orders/<id>/channel-label/<rotulo|relacion>/`
     (`channel_label_file`).
+  - Recuadro "RPA de guías" en el panel (`rpa_panel_status`, `rpa_continue`,
+    `rpa_kill` sobre `/status`, `/continue` y `/kill` del RPA): estado,
+    "Ver en vivo" (visor noVNC del RPA; en Railway hoy solo se enciende al
+    aparecer un CAPTCHA; en un PC la corrida se ve en la ventana de Chrome),
+    "Continuar" y "Detener".
   - Carga manual ("Cargar guía" en el panel,
     `POST /api/orders/<id>/channel-label/upload/`): cuando el RPA no puede
     (guía ya generada en el portal, RPA caído). Usa `store_label`, el mismo

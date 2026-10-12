@@ -9,13 +9,23 @@ from .apis import (
     OrderChannelLabelUploadAPI,
     OrderListAPI,
     SodimacRpaCallbackAPI,
+    SodimacRpaControlAPI,
+    SodimacRpaStatusAPI,
     SodimacRpaStockDispatchAPI,
 )
+from .functions.sodimac_rpa import rpa_continue, rpa_kill
 from .webhooks import MadecentroOrderWebhookView, MercadoLibreOrderWebhookView, ShopifyOrderWebhookView
 
 urlpatterns = [
     path("", OrderListAPI.as_view(), name="orders-list"),
     path("sodimac/rpa/callback/", SodimacRpaCallbackAPI.as_view(), name="orders-sodimac-rpa-callback"),
+    path("sodimac/rpa/status/", SodimacRpaStatusAPI.as_view(), name="orders-sodimac-rpa-status"),
+    path(
+        "sodimac/rpa/continue/",
+        SodimacRpaControlAPI.as_view(action=rpa_continue),
+        name="orders-sodimac-rpa-continue",
+    ),
+    path("sodimac/rpa/kill/", SodimacRpaControlAPI.as_view(action=rpa_kill), name="orders-sodimac-rpa-kill"),
     path(
         "sodimac/rpa/orders/<str:purchase_order>/stock-dispatch/",
         SodimacRpaStockDispatchAPI.as_view(),

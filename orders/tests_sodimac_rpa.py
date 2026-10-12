@@ -414,3 +414,59 @@ class UploadLabelButtonTests(TestCase):
         self.client.force_login(User.objects.create_user("otro", password="x"))
         self.assertEqual(self._upload().status_code, 403)
         self.assertFalse(MarketplaceLabel.objects.exists())
+
+
+@patch(f"{R}.SODIMAC_RPA_URL", "https://rpa.example/")
+class RpaPanelTests(TestCase):
+    """Recuadro "RPA de guías": estado, visor en vivo, Continuar y Detener."""
+
+    def setUp(self):
+        user = User.objects.create_user("ops", password="x")
+        user.groups.add(Group.objects.get_or_create(name="Operaciones")[0])
+        self.client.force_login(user)
+
+    @patch(f"{R}.get_status", return_value={
+        "state": "VALIDACION_HUMANA", "message": "Resolver CAPTCHA", "running": True,
+        "pending_intervention": {"reason": "captcha detectado"},
+    })
+    def test_status_with_the_live_viewer_link(self, get_status):
+        data = self.client.get("/api/orders/sodimac/rpa/status/").json()
+
+        self.assertEqual(data["viewer_url"], "https://rpa.example/vnc/vnc.html?autoconnect=true&resize=scale")
+        self.assertEqual((data["running"], data["state"], data["waiting_human"]), (True, "VALIDACION_HUMANA", True))
+        self.assertEqual(data["waiting_reason"], "captcha detectado")
+
+    @patch(f"{R}.get_status")
+    def test_an_unreachable_or_unconfigured_rpa_is_reported_not_raised(self, get_status):
+        from integrations.sodimac_rpa.client import SodimacRpaError
+
+        get_status.side_effect = SodimacRpaError("No se pudo conectar con el RPA")
+        data = self.client.get("/api/orders/sodimac/rpa/status/").json()
+        self.assertEqual((data["reachable"], data["error"]), (False, "No se pudo conectar con el RPA"))
+        with patch(f"{R}.SODIMAC_RPA_URL", ""):
+            self.assertFalse(self.client.get("/api/orders/sodimac/rpa/status/").json()["configured"])
+
+    @patch(f"{R}.get_status", return_value={"state": "AUTENTICADO", "running": True})
+    @patch(f"{R}.kill_run", return_value={"killed": True})
+    @patch(f"{R}.continue_run", return_value={"resumed": True})
+    def test_continue_and_kill(self, continue_run, kill_run, get_status):
+        self.assertEqual(self.client.post("/api/orders/sodimac/rpa/continue/").status_code, 200)
+        self.assertEqual(self.client.post("/api/orders/sodimac/rpa/kill/").status_code, 200)
+        continue_run.assert_called_once()
+        kill_run.assert_called_once()
+
+    @patch(f"{R}.kill_run")
+    def test_kill_without_a_run_is_409(self, kill_run):
+        from integrations.sodimac_rpa.client import SodimacRpaBusy
+
+        kill_run.side_effect = SodimacRpaBusy("No hay ninguna ejecución en curso")
+        response = self.client.post("/api/orders/sodimac/rpa/kill/")
+        self.assertEqual(response.status_code, 409)
+        self.assertIn("ninguna corrida", response.json()["detail"])
+
+    @patch(f"{R}.kill_run")
+    def test_users_without_the_role_are_refused(self, kill_run):
+        self.client.force_login(User.objects.create_user("otro", password="x"))
+        self.assertEqual(self.client.get("/api/orders/sodimac/rpa/status/").status_code, 403)
+        self.assertEqual(self.client.post("/api/orders/sodimac/rpa/kill/").status_code, 403)
+        kill_run.assert_not_called()

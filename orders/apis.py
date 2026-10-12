@@ -27,9 +27,13 @@ from .functions.list_orders_not_created import list_orders_not_created
 from .functions.sodimac_rpa import (
     LabelRequestError,
     LabelStoreError,
+    RpaControlError,
     RpaEventError,
     process_rpa_event,
     request_label_for_order,
+    rpa_continue,
+    rpa_kill,
+    rpa_panel_status,
     stock_dispatch,
     upload_label_for_order,
 )
@@ -222,6 +226,35 @@ class OrderChannelLabelFileAPI(RoleRequiredMixin, APIView):
         response = HttpResponse(content, content_type="application/pdf")
         response["Content-Disposition"] = f'attachment; filename="{filename}"'
         return response
+
+
+class SodimacRpaStatusAPI(RoleRequiredMixin, APIView):
+    """GET /api/orders/sodimac/rpa/status/: recuadro "RPA de guías" del
+    panel (estado y enlace del visor). Siempre 200: un RPA caído o sin
+    configurar se informa en el cuerpo."""
+
+    allowed_roles = ORDERS_LIST_ROLES
+
+    def get(self, request):
+        return Response(rpa_panel_status())
+
+
+class SodimacRpaControlAPI(RoleRequiredMixin, APIView):
+    """POST /api/orders/sodimac/rpa/<continue|kill>/: botones "Continuar"
+    (tras resolver el CAPTCHA) y "Detener" del recuadro del RPA. 200 con el
+    estado nuevo; 409 si no aplica; 502 si el RPA no responde."""
+
+    allowed_roles = ORDERS_LIST_ROLES
+    action = None
+
+    def post(self, request):
+        try:
+            self.action()
+        except RpaControlError as error:
+            return Response({"detail": str(error)}, status=409)
+        except SodimacRpaError as error:
+            return Response({"detail": f"No se pudo llamar al RPA: {error}"}, status=502)
+        return Response(rpa_panel_status())
 
 
 class SodimacRpaStockDispatchAPI(BearerTokenRequiredMixin, APIView):

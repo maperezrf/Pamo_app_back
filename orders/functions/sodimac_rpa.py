@@ -9,7 +9,8 @@ from django.db.models import Q
 from django.utils import timezone
 
 from config.constants import SODIMAC_RPA_ALERT_EMAILS, SODIMAC_RPA_URL
-from integrations.sodimac_rpa.client import SodimacRpaBusy
+from integrations.sodimac_rpa.client import SodimacRpaBusy, SodimacRpaError
+from integrations.sodimac_rpa.functions.run_control import continue_run, get_status, kill_run, viewer_url
 from integrations.sodimac_rpa.functions.trigger_labels import trigger_labels
 
 from ..models import Dispatch, MarketplaceLabel, MarketplaceOrder
@@ -111,6 +112,52 @@ def request_label_for_order(order):
         raise LabelRequestError("La OC no se pudo pedir al RPA (revisar que tenga orden en Shopify).")
     row.refresh_from_db()
     return row
+
+
+def rpa_panel_status():
+    """Recuadro "RPA de guías" del panel: si el RPA está configurado y
+    responde, en qué va, y el enlace del visor para verlo en vivo. Nunca
+    falla: un RPA caído se informa en `error`."""
+    if not SODIMAC_RPA_URL:
+        return {"configured": False, "reachable": False, "viewer_url": "", "error": "SODIMAC_RPA_URL no está configurada."}
+    status = {"configured": True, "reachable": True, "viewer_url": viewer_url(SODIMAC_RPA_URL), "error": ""}
+    try:
+        data = get_status()
+    except SodimacRpaError as error:
+        return {**status, "reachable": False, "error": str(error)}
+    pending = data.get("pending_intervention") or None
+    return {
+        **status,
+        "running": bool(data.get("running")),
+        "state": data.get("state") or "SIN_INICIAR",
+        "message": data.get("message") or "",
+        "updated_at": data.get("updated_at") or None,
+        "waiting_human": bool(pending),
+        "waiting_reason": (pending or {}).get("reason") or "",
+    }
+
+
+class RpaControlError(Exception):
+    """El RPA no aceptó la orden (no hay corrida, no hay pausa); el texto es
+    para el equipo."""
+
+
+def rpa_continue():
+    """Botón "Continuar": después de resolver el CAPTCHA en el visor."""
+    try:
+        continue_run()
+    except SodimacRpaBusy as error:
+        raise RpaControlError("El RPA no está esperando ninguna validación.") from error
+
+
+def rpa_kill():
+    """Botón "Detener": corta la corrida del RPA. Las OC que no alcanzó a
+    procesar pasan a `error` cuando el RPA avisa el fin del lote, y se piden
+    otra vez en el siguiente sync."""
+    try:
+        kill_run()
+    except SodimacRpaBusy as error:
+        raise RpaControlError("El RPA no tiene ninguna corrida en curso.") from error
 
 
 def stock_dispatch(purchase_order):
