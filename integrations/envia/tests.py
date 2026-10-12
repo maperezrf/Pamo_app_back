@@ -265,3 +265,18 @@ class DownloadLabelTests(SimpleTestCase):
         mock_get.return_value = _pdf_response(content=b"<html>login</html>" * 3)
         with self.assertRaises(EnviaAPIError):
             download_label("https://api.envia.com/labels/abc.pdf")
+
+
+class ResolveColombiaStateAliasTests(SimpleTestCase):
+    @patch("integrations.envia.client.requests.get")
+    def test_short_names_sent_by_sodimac(self, mock_get):
+        from .functions.resolve_colombia_state import resolve_colombia_state
+
+        mock_get.return_value.is_redirect = False
+        mock_get.return_value.status_code = 200
+        mock_get.return_value.content = (
+            b'{"data": [{"country_code": "CO", "name": "Valle del Cauca", "code_2_digits": "VC"},'
+            b' {"country_code": "CO", "name": "La Guajira", "code_2_digits": "LG"}]}'
+        )
+        self.assertEqual(resolve_colombia_state("VALLE"), "VC")
+        self.assertEqual(resolve_colombia_state("GUAJIRA"), "LG")

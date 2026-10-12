@@ -63,6 +63,8 @@ class ReadLabelTrackingTests(SimpleTestCase):
         from .functions.read_label_tracking import read_label_tracking
 
         self.assertEqual(read_label_tracking(ROTULO), "473402021")
+        # Rótulo de Sodimac "Home Delivery": la guía es el número de la OC.
+        self.assertEqual(read_label_tracking(_pdf("Entrega: Home Delivery Guia: 16207229 Servicio")), "16207229")
         self.assertEqual(read_label_tracking(_pdf("sin numero")), "")
         with self.assertLogs("pypdf", level="WARNING"):
             self.assertEqual(read_label_tracking(b"%PDF-1.4 roto"), "")

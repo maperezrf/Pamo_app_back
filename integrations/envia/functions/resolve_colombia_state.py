@@ -3,7 +3,11 @@ import unicodedata
 from ..client import EnviaAPIError, EnviaClient
 
 # Alias que no coinciden con el nombre de Envía (`queries.envia.com/state`).
-ALIASES = {"BOGOTA D C": "BOGOTA DC", "BOGOTA D.C.": "BOGOTA DC", "BOGOTA, D.C.": "BOGOTA DC", "DISTRITO CAPITAL": "BOGOTA DC"}
+ALIASES = {
+    "BOGOTA D C": "BOGOTA DC", "BOGOTA D.C.": "BOGOTA DC", "BOGOTA, D.C.": "BOGOTA DC", "DISTRITO CAPITAL": "BOGOTA DC",
+    # Nombres cortos que manda Sodimac (`DEPARTAMENTO_ENTREGA`; "VALLE" visto el 2026-10-11).
+    "VALLE": "VALLE DEL CAUCA", "GUAJIRA": "LA GUAJIRA", "SAN ANDRES": "SAN ANDRES Y PROVIDENCIA",
+}
 
 
 def _key(value):
