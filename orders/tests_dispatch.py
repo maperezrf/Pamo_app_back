@@ -479,8 +479,35 @@ class DispatchActionAPITests(TestCase):
             (dispatch.label_source, dispatch.tracking_number, dispatch.label_carrier), ("envia", "474231399", "tcc")
         )
         self.assertEqual(create_label.call_args.kwargs["order_reference"], "pamo-20412")
+        self.assertEqual(bytes(dispatch.label_pdf), PDF)
         self.assertEqual(self._post(order, "label/", body).status_code, 400)
         self.assertEqual(create_label.call_count, 1)
+
+        file = self.client.get(f"/api/orders/{order.shopify_id}/dispatch/label/file/")
+        self.assertEqual(file.status_code, 200)
+        self.assertEqual(file.content, PDF)
+        self.assertIn('filename="pamo-20412-guia-474231399.pdf"', file["Content-Disposition"])
+        self.assertEqual(download.call_count, 1)
+
+    @patch(f"{F}.dispatch_orders.download_label", return_value=PDF)
+    def test_a_label_generated_before_storing_pdfs_is_downloaded_once_and_kept(self, download):
+        order = self._web_order()
+        Dispatch.objects.filter(shopify_order=order).update(
+            label_source="envia", tracking_number="2298971660", label_url="https://api.envia.com/l.pdf"
+        )
+        url = f"/api/orders/{order.shopify_id}/dispatch/label/file/"
+
+        self.assertEqual(self.client.get(url).content, PDF)
+        self.assertEqual(self.client.get(url).content, PDF)
+        download.assert_called_once_with("https://api.envia.com/l.pdf")
+        self.assertEqual(bytes(Dispatch.objects.get(shopify_order=order).label_pdf), PDF)
+
+    def test_label_file_is_404_without_a_generated_label_and_403_without_the_role(self):
+        order = self._web_order()
+        url = f"/api/orders/{order.shopify_id}/dispatch/label/file/"
+        self.assertEqual(self.client.get(url).status_code, 404)
+        self.client.force_login(User.objects.create_user("otro2", password="x"))
+        self.assertEqual(self.client.get(url).status_code, 403)
 
     @patch(f"{A}._shipping_payload", return_value={})
     def test_generate_with_an_unknown_result_is_502_and_noted(self, payload):

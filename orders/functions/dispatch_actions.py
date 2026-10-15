@@ -9,7 +9,7 @@ from integrations.envia.functions.resolve_colombia_city import resolve_colombia_
 from integrations.shopify.functions.get_order_shipping_address import get_order_shipping_address
 
 from ..models import Dispatch, MarketplaceOrder
-from .dispatch_orders import process_order_dispatch, reopen_manual_dispatch
+from .dispatch_orders import process_order_dispatch, reopen_manual_dispatch, stored_envia_label
 from .fetch_dispatch_label import CHANNEL_LABELS, fetch_dispatch_label
 from .shopify_order_marketplace import SHOPIFY_CHANNEL
 
@@ -95,10 +95,21 @@ def generate_dispatch_label(order, *, carrier, service):
     dispatch.label_carrier = result["carrier"]
     dispatch.label_service = result["service"]
     dispatch.label_sha256 = hashlib.sha256(pdf).hexdigest()
+    dispatch.label_pdf = pdf
     dispatch.label_fetched_at = timezone.now()
     dispatch.note = ""
     dispatch.save()
     return dispatch
+
+
+def envia_label_file(order):
+    """PDF de la guía generada en Envía del pedido: (nombre de archivo,
+    bytes). Una guía generada antes de guardar el PDF se baja de su URL y
+    queda guardada."""
+    dispatch = Dispatch.objects.filter(shopify_order=order, label_source=Dispatch.LabelSource.ENVIA).first()
+    if dispatch is None:
+        raise DispatchActionError("El pedido no tiene guía generada en Envía.")
+    return f"pamo-{str(order.name).lstrip('#')}-guia-{dispatch.tracking_number}.pdf", stored_envia_label(dispatch)
 
 
 def _dispatch_with_location(order):

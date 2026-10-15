@@ -238,6 +238,49 @@ class ShopifyOrderLine(models.Model):
         return f"{self.sku} x{self.quantity}"
 
 
+class ShopifyFulfillmentOrder(models.Model):
+    """Una bodega desde donde sale un `ShopifyOrder`, según Shopify (su
+    *fulfillment order*), con sus productos y la guía si ya se cumplió. Es
+    una foto para mostrar: se reemplazan todos en cada actualización del
+    pedido (`upsert_shopify_order`) y aquí no se decide nada."""
+
+    order = models.ForeignKey(ShopifyOrder, related_name="fulfillment_orders", on_delete=models.CASCADE)
+    position = models.PositiveIntegerField()
+    shopify_id = models.CharField(max_length=32)
+    status = models.CharField(max_length=20, blank=True)
+    location_id = models.CharField(max_length=32, blank=True)
+    location_name = models.CharField(max_length=255, blank=True)
+    tracking_number = models.CharField(max_length=128, blank=True)
+    tracking_company = models.CharField(max_length=128, blank=True)
+    tracking_url = models.URLField(max_length=500, blank=True)
+
+    class Meta:
+        ordering = ["position"]
+        verbose_name = "Bodega del pedido en Shopify"
+        verbose_name_plural = "Bodegas del pedido en Shopify"
+
+    def __str__(self):
+        return f"{self.order} · {self.location_name}"
+
+
+class ShopifyFulfillmentOrderLine(models.Model):
+    """Un producto de un `ShopifyFulfillmentOrder`."""
+
+    fulfillment_order = models.ForeignKey(ShopifyFulfillmentOrder, related_name="lines", on_delete=models.CASCADE)
+    position = models.PositiveIntegerField()
+    sku = models.CharField(max_length=64, blank=True)
+    name = models.CharField(max_length=255, blank=True)
+    quantity = models.PositiveIntegerField()
+
+    class Meta:
+        ordering = ["position"]
+        verbose_name = "Producto de la bodega del pedido"
+        verbose_name_plural = "Productos de la bodega del pedido"
+
+    def __str__(self):
+        return f"{self.sku} x{self.quantity}"
+
+
 class ShopifyOrderSyncState(models.Model):
     """Una sola fila (`pk=1`): checkpoint de la reconciliación de pedidos de
     Shopify. `last_reconciled_at` es la hora en que EMPEZÓ la última
@@ -344,7 +387,9 @@ class Dispatch(models.Model):
     """Despacho de un pedido de Shopify (todos los pedidos, de marketplace o
     de la tienda web, terminan en `ShopifyOrder`): qué bodega lo despacha,
     con qué guía y si ya se le avisó. Lo crea y avanza `dispatch_orders`.
-    El PDF de la guía no se guarda; solo su hash.
+    Las guías del canal no se guardan (solo su hash; se vuelven a pedir al
+    canal). Las generadas en Envía sí (`label_pdf`), como las del RPA de
+    Sodimac, para descargarlas desde el panel.
     """
 
     class Status(models.TextChoices):
@@ -376,6 +421,9 @@ class Dispatch(models.Model):
     label_carrier = models.CharField(max_length=40, blank=True)
     label_service = models.CharField(max_length=60, blank=True)
     label_sha256 = models.CharField(max_length=64, blank=True)
+    # PDF de la guía generada en Envía. Las anteriores a este campo se bajan
+    # de `label_url` la primera vez que se piden y quedan guardadas.
+    label_pdf = models.BinaryField("Guía (PDF)", null=True, blank=True)
     label_fetched_at = models.DateTimeField(null=True, blank=True)
 
     created_at = models.DateTimeField(auto_now_add=True)

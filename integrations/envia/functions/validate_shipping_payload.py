@@ -37,6 +37,9 @@ def _address(value, prefix):
     city = _clean_text(value.get("city"), 80, f"ENVIA_{prefix}_CITY_INVALID")
     if country == "CO" and not re.fullmatch(r"\d{8}", city):
         raise ShippingPayloadError(f"ENVIA_{prefix}_CITY_DANE_REQUIRED")
+    street, number = _street_and_number(
+        _clean_text(value.get("street"), 240, f"ENVIA_{prefix}_STREET_INVALID"), value.get("number")
+    )
     phone = re.sub(r"[^+\d]", "", str(value.get("phone") or ""))
     if not re.fullmatch(r"\+?\d{8,15}", phone):
         raise ShippingPayloadError(f"ENVIA_{prefix}_PHONE_INVALID")
@@ -45,7 +48,8 @@ def _address(value, prefix):
         "company": " ".join(str(value.get("company") or "").strip().split())[:120],
         "phone": phone,
         "email": " ".join(str(value.get("email") or "").strip().split())[:160],
-        "street": _clean_text(value.get("street"), 240, f"ENVIA_{prefix}_STREET_INVALID"),
+        "street": street,
+        "number": number,
         "city": city,
         "state": _clean_text(value.get("state"), 80, f"ENVIA_{prefix}_STATE_INVALID"),
         "country": country,
@@ -57,6 +61,22 @@ def _address(value, prefix):
             else _clean_text(value.get("postalCode"), 16, f"ENVIA_{prefix}_POSTAL_INVALID")
         ),
     }
+
+
+def _street_and_number(street, number):
+    """`/ship/generate/` exige `number` aparte de `street` ("Required
+    property missing: number"); `/ship/rate/` no. Una dirección colombiana
+    ("Carrera 68d #39f Sur-10") se parte en el primer `#`: calle "Carrera
+    68d", número "39f Sur-10". Sin `#`, va entera en `street` y el número
+    como "S/N"."""
+    number = " ".join(str(number or "").split())
+    if number:
+        return street, number[:60]
+    head, separator, tail = street.partition("#")
+    head, tail = head.strip(" ,-"), tail.strip(" ,-")
+    if separator and head and tail:
+        return head, tail[:60]
+    return street, "S/N"
 
 
 def validate_shipping_payload(payload):

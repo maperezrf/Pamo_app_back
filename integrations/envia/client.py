@@ -15,10 +15,13 @@ class EnviaAPIError(Exception):
     negocio (Envía a veces mete un código 4xx/5xx *dentro* del cuerpo con
     HTTP 200, en vez de usar el código de estado real)."""
 
-    def __init__(self, code, *, provider_error_code=""):
+    def __init__(self, code, *, provider_error_code="", provider_message=""):
         self.code = code
         self.provider_error_code = provider_error_code
-        super().__init__(code)
+        # Texto con que Envía explica el rechazo (ej. saldo insuficiente,
+        # dirección inválida); se muestra al equipo en el panel.
+        self.provider_message = provider_message
+        super().__init__(f"{code}: {provider_message}" if provider_message else code)
 
 
 class EnviaClient:
@@ -56,13 +59,18 @@ class EnviaClient:
             raise EnviaAPIError(
                 f"ENVIA_HTTP_{response.status_code}",
                 provider_error_code=str(payload.get("code") or payload.get("error") or ""),
+                provider_message=_provider_message(payload),
             )
         # Envía a veces devuelve HTTP 200 con un código de error de negocio
         # metido en el cuerpo -- verificado en pamo-one-engineering.
         if re.fullmatch(r"[45]\d{2}", str(payload.get("code") or "")):
-            raise EnviaAPIError("ENVIA_PROVIDER_ERROR", provider_error_code=str(payload["code"]))
+            raise EnviaAPIError(
+                "ENVIA_PROVIDER_ERROR",
+                provider_error_code=str(payload["code"]),
+                provider_message=_provider_message(payload),
+            )
         if str(payload.get("meta") or "").lower() == "error":
-            raise EnviaAPIError("ENVIA_PROVIDER_ERROR")
+            raise EnviaAPIError("ENVIA_PROVIDER_ERROR", provider_message=_provider_message(payload))
         return payload
 
     def get(self, base_url, path, params=None, timeout=(3, 8)):
@@ -91,3 +99,21 @@ class EnviaClient:
         if response.is_redirect:
             raise EnviaAPIError("ENVIA_REDIRECT_BLOCKED")
         return self._parse(response)
+
+
+def _provider_message(payload):
+    # Envía explica el error en `error.message` / `error.description` o en
+    # `message`; se recorta para no volcar respuestas enteras.
+    error = payload.get("error")
+    parts = []
+    if isinstance(error, dict):
+        parts = [error.get("message"), error.get("description")]
+    elif isinstance(error, str):
+        parts = [error]
+    parts.append(payload.get("message"))
+    texts = []
+    for part in parts:
+        text = " ".join(str(part).split()) if isinstance(part, (str, int)) and not isinstance(part, bool) else ""
+        if text and text not in texts:
+            texts.append(text)
+    return " - ".join(texts)[:300]

@@ -5,6 +5,7 @@ import requests
 from django.test import SimpleTestCase
 
 from .client import EnviaAPIError
+from .functions.validate_shipping_payload import validate_shipping_payload
 from .functions.create_label import LabelUnknownResult, create_label
 from .functions.download_label import download_label
 from .functions.quote import QuoteError, quote
@@ -218,6 +219,28 @@ class CreateLabelTests(SimpleTestCase):
                 mock_post.side_effect, mock_post.return_value = None, case
             with self.assertRaises(LabelUnknownResult):
                 create_label(_valid_payload(), OPTION, order_reference="shopify-20412")
+
+
+    @patch("integrations.envia.client.requests.post")
+    def test_unknown_result_keeps_envia_message(self, mock_post):
+        mock_post.return_value = _generate_response(
+            b'{"meta": "error", "error": {"code": 1129, "message": "Saldo insuficiente"}}'
+        )
+        with self.assertRaises(LabelUnknownResult) as raised:
+            create_label(_valid_payload(), OPTION, order_reference="shopify-20412")
+        self.assertIn("ENVIA_PROVIDER_ERROR", str(raised.exception))
+        self.assertIn("Saldo insuficiente", str(raised.exception))
+
+
+
+class StreetNumberTests(SimpleTestCase):
+    def test_colombian_address_is_split_at_the_hash(self):
+        payload = _valid_payload()
+        payload["origin"]["street"] = "Carrera 68d #39f Sur-10"
+        payload["destination"]["street"] = "Calle 2"
+        validated = validate_shipping_payload(payload)
+        self.assertEqual((validated["origin"]["street"], validated["origin"]["number"]), ("Carrera 68d", "39f Sur-10"))
+        self.assertEqual((validated["destination"]["street"], validated["destination"]["number"]), ("Calle 2", "S/N"))
 
 
 DOWNLOAD = "integrations.envia.functions.download_label"

@@ -12,7 +12,7 @@ from .functions.fetch_falabella_orders import fetch_falabella_orders
 from .functions.import_falabella_orders import import_falabella_orders
 from .functions.process_pending_orders import process_pending_orders
 from .functions.select_fulfillment_location import select_fulfillment_location
-from .models import MarketplaceOrder, MarketplaceOrderItem, ShopifyOrder, ShopifyOrderSyncState
+from .models import MarketplaceOrder, MarketplaceOrderItem, ShopifyFulfillmentOrder, ShopifyOrder, ShopifyOrderSyncState
 
 
 def _raw_falabella_order(order_id="1", order_number="N-1", **overrides):
@@ -1585,9 +1585,20 @@ def _shopify_data(order_id, **overrides):
                      "city": "Medellín", "region": "Antioquia", "address": "Calle 1"},
         "line_items": [{"sku": "A1", "name": "Silla", "quantity": 2, "unit_price": "100.0"}],
         "line_items_truncated": False,
+        "fulfillment_orders": [_fulfillment_order()],
     }
     data.update(overrides)
     return data
+
+
+def _fulfillment_order(fo_id="700", location="Bodega Envia", items=None, tracking_number=""):
+    """Bodega del pedido según Shopify (forma de `normalize_order`)."""
+    return {
+        "id": fo_id, "status": "CLOSED" if tracking_number else "OPEN", "location_id": "97", "location_name": location,
+        "items": items or [{"sku": "A1", "name": "Silla", "quantity": 2}],
+        "tracking": {"number": tracking_number, "company": "Other" if tracking_number else "",
+                     "url": f"https://envia.com/rastreo?label={tracking_number}" if tracking_number else ""},
+    }
 
 
 def _page(*orders, has_next=False, cursor="cur"):
@@ -1647,6 +1658,30 @@ class UpsertShopifyOrderTests(TestCase):
         order = ShopifyOrder.objects.get(shopify_id="10")
         self.assertIsNotNone(order.deleted_at)
         self.assertFalse(order.lines.exists())
+
+    def test_saves_and_replaces_fulfillment_orders(self):
+        self._upsert(_shopify_data("10"))
+        split = [
+            _fulfillment_order("701", "Bodega Envia", [{"sku": "A1", "name": "Silla", "quantity": 1}], tracking_number="616973194"),
+            _fulfillment_order("702", "Boccherini", [{"sku": "B2", "name": "Mesa", "quantity": 3}]),
+        ]
+
+        self._upsert(_shopify_data("10", updated_at="2026-10-04T15:00:00Z", fulfillment_orders=split))
+
+        order = ShopifyOrder.objects.get(shopify_id="10")
+        self.assertEqual(
+            [(fo.shopify_id, fo.location_name, fo.tracking_number) for fo in order.fulfillment_orders.all()],
+            [("701", "Bodega Envia", "616973194"), ("702", "Boccherini", "")],
+        )
+        self.assertEqual([(line.sku, line.quantity) for line in order.fulfillment_orders.get(shopify_id="702").lines.all()], [("B2", 3)])
+        self.assertEqual(ShopifyFulfillmentOrder.objects.count(), 2)
+
+    def test_older_data_keeps_fulfillment_orders(self):
+        self._upsert(_shopify_data("10", updated_at="2026-10-04T15:00:00Z"))
+
+        self._upsert(_shopify_data("10", updated_at="2026-10-03T15:00:00Z", fulfillment_orders=[]))
+
+        self.assertEqual(ShopifyOrder.objects.get(shopify_id="10").fulfillment_orders.count(), 1)
 
     @patch("orders.functions.upsert_shopify_order.get_order")
     def test_truncated_order_is_read_again(self, get_order):
@@ -1992,6 +2027,24 @@ class OrderListAPITests(TestCase):
         self.assertIsNone(order["cancelled_at"])
         self.assertEqual(body["orders_not_created"][0]["error"], "SKU no encontrado en Shopify: X")
         self.assertIsNone(body["last_synced_at"])
+
+    def test_fulfillment_orders_from_shopify(self, shopify):
+        _local_order("10", fulfillment_orders=[
+            _fulfillment_order("701", "Bodega Envia", tracking_number="616973194"),
+            _fulfillment_order("702", "Boccherini", [{"sku": "B2", "name": "Mesa", "quantity": 3}]),
+        ])
+        _local_order("11", fulfillment_orders=[])
+
+        orders = {order["shopify_order_id"]: order for order in self._get()["orders"]}
+
+        self.assertEqual(
+            orders["10"]["fulfillment_orders"][0],
+            {"id": "701", "status": "CLOSED", "location_id": "97", "location_name": "Bodega Envia",
+             "items": [{"sku": "A1", "name": "Silla", "quantity": 2}],
+             "tracking": {"number": "616973194", "company": "Other", "url": "https://envia.com/rastreo?label=616973194"}},
+        )
+        self.assertEqual(orders["10"]["fulfillment_orders"][1]["location_name"], "Boccherini")
+        self.assertEqual(orders["11"]["fulfillment_orders"], [])
 
     def test_web_order_uses_shopify_customer_and_pack_numbers(self, shopify):
         _local_order("20", tags=["Addi-Marketplace"])

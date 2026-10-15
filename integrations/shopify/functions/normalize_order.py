@@ -7,7 +7,11 @@ def normalize_order(raw, line_nodes, line_items_truncated=False):
     """Pedido normalizado: {"id", "name", "created_at", "updated_at",
     "cancelled_at", "financial_status", "fulfillment_status", "tags",
     "email", "phone", "total", "currency", "customer", "line_items",
-    "line_items_truncated"}.
+    "line_items_truncated", "fulfillment_orders"}.
+
+    Cada fulfillment order: {"id", "status", "location_id",
+    "location_name", "items": [{"sku", "name", "quantity"}], "tracking":
+    {"number", "company", "url"}} (ver `_normalize_fulfillment_orders`).
 
     `customer` es `None` si el pedido no tiene cliente; si no, {"id",
     "first_name", "last_name", "identification", "city", "region",
@@ -33,7 +37,46 @@ def normalize_order(raw, line_nodes, line_items_truncated=False):
         "customer": _normalize_customer(raw.get("customer")),
         "line_items": [_normalize_line_item(node) for node in line_nodes],
         "line_items_truncated": line_items_truncated,
+        "fulfillment_orders": _normalize_fulfillment_orders(raw.get("fulfillmentOrders")),
     }
+
+
+def _normalize_fulfillment_orders(raw):
+    """Bodegas desde donde sale el pedido, según Shopify. Se descartan los
+    `CANCELLED` y los que no tienen productos (un movimiento de bodega deja
+    uno `CLOSED` vacío, visto en el pedido 20463 el 2026-10-15). `tracking`
+    es la guía del último fulfillment de ese fulfillment order que tenga
+    número."""
+    result = []
+    for node in (raw or {}).get("nodes") or []:
+        items = [
+            {
+                "sku": (item.get("lineItem") or {}).get("sku") or "",
+                "name": (item.get("lineItem") or {}).get("name") or "",
+                "quantity": int(item.get("totalQuantity") or 0),
+            }
+            for item in (node.get("lineItems") or {}).get("nodes") or []
+        ]
+        if node.get("status") == "CANCELLED" or not any(item["quantity"] for item in items):
+            continue
+        assigned = node.get("assignedLocation") or {}
+        result.append({
+            "id": node["id"].removeprefix("gid://shopify/FulfillmentOrder/"),
+            "status": node.get("status") or "",
+            "location_id": ((assigned.get("location") or {}).get("id") or "").removeprefix("gid://shopify/Location/"),
+            "location_name": assigned.get("name") or "",
+            "items": items,
+            "tracking": _last_tracking((node.get("fulfillments") or {}).get("nodes") or []),
+        })
+    return result
+
+
+def _last_tracking(fulfillments):
+    for fulfillment in reversed(fulfillments):
+        for info in fulfillment.get("trackingInfo") or []:
+            if info.get("number"):
+                return {"number": info["number"], "company": info.get("company") or "", "url": info.get("url") or ""}
+    return {"number": "", "company": "", "url": ""}
 
 
 def _normalize_customer(raw):

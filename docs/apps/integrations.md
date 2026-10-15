@@ -42,6 +42,14 @@ seller id; es estado de conexión, no información de clientes o facturas.
   - Las dos normalizan con `normalize_order` (fragmento `ORDER_FIELDS`),
     así que devuelven la misma forma. Las consume la copia local de
     pedidos de `orders`.
+  - `fulfillment_orders` del pedido normalizado: las bodegas desde donde
+    sale según Shopify (`{id, status, location_id, location_name, items:
+    [{sku, name, quantity}], tracking: {number, company, url}}`). Se
+    descartan los `CANCELLED` y los que vienen sin productos (un
+    movimiento de bodega deja uno `CLOSED` vacío). `tracking` es la guía
+    del último fulfillment de ese fulfillment order con número. Costo
+    medido de `LIST_ORDERS_PAGE` con esto: 835 puntos con `first: 50`
+    (2026-10-15).
   - Los webhooks de Shopify se suscriben desde el admin, no por API (ver
     [`orders.md`](orders.md)).
 - `falabella/`: cliente REST firmado y funciones de pedidos.

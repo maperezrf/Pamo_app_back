@@ -3,7 +3,7 @@ from django.utils.dateparse import parse_datetime
 
 from integrations.shopify.functions.get_order import get_order
 
-from ..models import ShopifyOrder, ShopifyOrderLine
+from ..models import ShopifyFulfillmentOrder, ShopifyFulfillmentOrderLine, ShopifyOrder, ShopifyOrderLine
 from .mark_shopify_order_deleted import mark_shopify_order_deleted
 from .order_listing_format import CENTS, to_money
 from .shopify_order_marketplace import marketplace_from_tags
@@ -25,7 +25,8 @@ def upsert_shopify_order(data):
     - Un pedido borrado localmente no se toca: un aviso tardío no lo revive.
     - Un dato con `updated_at` anterior al guardado no pisa al más nuevo
       (avisos desordenados).
-    - Si no, actualiza la cabecera y reemplaza todas las líneas, en una
+    - Si no, actualiza la cabecera y reemplaza todas las líneas y las
+      bodegas según Shopify (`ShopifyFulfillmentOrder`), en una
       transacción con la fila bloqueada. Dos avisos simultáneos del mismo
       pedido nuevo chocan en el `unique` de `shopify_id`: se reintenta una
       vez y el segundo ya encuentra la fila.
@@ -68,7 +69,40 @@ def _upsert(data):
         ShopifyOrderLine.objects.bulk_create(
             [_line(order, position, item) for position, item in enumerate(data["line_items"])]
         )
+        _replace_fulfillment_orders(order, data.get("fulfillment_orders") or [])
         return result
+
+
+def _replace_fulfillment_orders(order, fulfillment_orders):
+    """Bodegas del pedido según Shopify: se borran y se vuelven a crear,
+    igual que las líneas (foto, no se editan aquí)."""
+    order.fulfillment_orders.all().delete()
+    created = ShopifyFulfillmentOrder.objects.bulk_create(
+        [
+            ShopifyFulfillmentOrder(
+                order=order,
+                position=position,
+                shopify_id=item["id"][:32],
+                status=item["status"][:20],
+                location_id=item["location_id"][:32],
+                location_name=item["location_name"][:255],
+                tracking_number=item["tracking"]["number"][:128],
+                tracking_company=item["tracking"]["company"][:128],
+                tracking_url=item["tracking"]["url"][:500],
+            )
+            for position, item in enumerate(fulfillment_orders)
+        ]
+    )
+    ShopifyFulfillmentOrderLine.objects.bulk_create(
+        [
+            ShopifyFulfillmentOrderLine(
+                fulfillment_order=parent, position=position, sku=line["sku"][:64], name=line["name"][:255],
+                quantity=line["quantity"],
+            )
+            for parent, item in zip(created, fulfillment_orders)
+            for position, line in enumerate(item["items"])
+        ]
+    )
 
 
 def _order_fields(data, updated_at):

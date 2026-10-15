@@ -56,7 +56,12 @@ def create_label(payload, selected_option, *, order_reference):
         response = client.post(client.shipping_base, "/ship/generate/", request_payload)
     except (requests.RequestException, EnviaAPIError) as error:
         code = getattr(error, "code", type(error).__name__)
-        raise LabelUnknownResult(f"ENVIA_LABEL_UNKNOWN_RESULT ({code})") from error
+        message = getattr(error, "provider_message", "")
+        raise LabelUnknownResult(
+            f"ENVIA_LABEL_UNKNOWN_RESULT ({code})",
+            provider_error_code=getattr(error, "provider_error_code", ""),
+            provider_message=message,
+        ) from error
 
     data = response.get("data")
     if isinstance(data, list):

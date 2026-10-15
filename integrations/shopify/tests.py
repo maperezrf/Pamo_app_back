@@ -542,6 +542,47 @@ class ListOrdersPageTests(SimpleTestCase):
         )
         self.assertEqual(order["line_items"], [{"sku": "A1", "name": "Silla", "quantity": 2, "unit_price": "100.0"}])
         self.assertFalse(order["line_items_truncated"])
+        self.assertEqual(order["fulfillment_orders"], [])
+
+    @patch("integrations.shopify.client.requests.post")
+    def test_normalizes_fulfillment_orders(self, mock_post):
+        def fulfillment_order(fo_id, status, location, items, fulfillments=()):
+            return {
+                "id": f"gid://shopify/FulfillmentOrder/{fo_id}",
+                "status": status,
+                "assignedLocation": {"name": location, "location": {"id": f"gid://shopify/Location/{fo_id}0"}},
+                "lineItems": {"nodes": [
+                    {"totalQuantity": quantity, "lineItem": {"sku": sku, "name": None}} for sku, quantity in items
+                ]},
+                "fulfillments": {"nodes": list(fulfillments)},
+            }
+
+        tracked = [
+            {"trackingInfo": [{"number": "111", "company": "Other", "url": "https://x/111"}]},
+            {"trackingInfo": [{"number": "616973194", "company": "Other", "url": None}]},
+            {"trackingInfo": []},
+        ]
+        nodes = [
+            fulfillment_order(1, "OPEN", "Proveedores", [("A", 1)]),
+            fulfillment_order(2, "CLOSED", "Bodega Envia", []),  # resto vacío de un movimiento
+            fulfillment_order(3, "CLOSED", "Bodega Envia", [("B", 2)], tracked),
+            fulfillment_order(4, "CANCELLED", "Baru", [("C", 1)]),
+        ]
+        self._respond(mock_post, [self._order(fulfillmentOrders={"nodes": nodes})])
+
+        result = list_orders_page(first=20)["orders"][0]["fulfillment_orders"]
+
+        self.assertEqual(
+            result,
+            [
+                {"id": "1", "status": "OPEN", "location_id": "10", "location_name": "Proveedores",
+                 "items": [{"sku": "A", "name": "", "quantity": 1}],
+                 "tracking": {"number": "", "company": "", "url": ""}},
+                {"id": "3", "status": "CLOSED", "location_id": "30", "location_name": "Bodega Envia",
+                 "items": [{"sku": "B", "name": "", "quantity": 2}],
+                 "tracking": {"number": "616973194", "company": "Other", "url": ""}},
+            ],
+        )
 
     @patch("integrations.shopify.client.requests.post")
     def test_order_without_customer_and_truncated_lines(self, mock_post):

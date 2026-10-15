@@ -34,7 +34,8 @@ def filter_orders(*, marketplace=None, date_from=None, date_to=None, search=""):
         orders = orders.filter(Q(name=search) | Q(shopify_id__in=marketplace_ids))
     return (
         orders.select_related("dispatch__location")
-        .prefetch_related("lines", "dispatch__notifications")
+        .defer("dispatch__label_pdf")
+        .prefetch_related("lines", "dispatch__notifications", "fulfillment_orders__lines")
         .order_by("-shopify_created_at", "-id")
     )
 
@@ -87,6 +88,7 @@ def _format_order(order, rows, labels):
         "total": money_str(order.total),
         "currency": order.currency,
         "dispatch": format_dispatch(order),
+        "fulfillment_orders": [_format_fulfillment_order(item) for item in order.fulfillment_orders.all()],
         "channel_label": _channel_label(rows[0], labels.get(rows[0].pk)) if rows else None,
     }
 
@@ -114,6 +116,19 @@ def _channel_label(row, label):
         "tracking_number": label.tracking_number if label else "",
         "received_at": _iso(label.uploaded_at) if label else None,
         "requested_at": _iso(row.label_requested_at),
+    }
+
+
+def _format_fulfillment_order(item):
+    """Una bodega desde donde sale el pedido según Shopify
+    (`ShopifyFulfillmentOrder`), con la forma de `normalize_order`."""
+    return {
+        "id": item.shopify_id,
+        "status": item.status,
+        "location_id": item.location_id,
+        "location_name": item.location_name,
+        "items": [{"sku": line.sku, "name": line.name, "quantity": line.quantity} for line in item.lines.all()],
+        "tracking": {"number": item.tracking_number, "company": item.tracking_company, "url": item.tracking_url},
     }
 
 

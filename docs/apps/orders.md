@@ -346,6 +346,17 @@ reconciliación, con una sola función de guardado.
   - `marketplace` se calcula desde las etiquetas, sin distinguir
     mayúsculas (`marketplace_from_tags`); sin etiqueta de marketplace →
     `shopify`.
+- **Bodegas según Shopify**: `ShopifyFulfillmentOrder` (y sus
+  `ShopifyFulfillmentOrderLine`) guardan los *fulfillment orders* del
+  pedido: desde qué bodega sale, con qué productos y la guía si ya se
+  cumplió. Se reemplazan junto con las líneas en cada guardado; es una foto
+  para mostrar, este backend no decide nada con ella (la bodega que
+  decide este sistema es `Dispatch`, ver "Despacho a bodegas"). Shopify
+  divide pedidos web con su propio enrutamiento, por eso un pedido puede
+  tener varias. Para llenarlas en pedidos viejos: `backfill_shopify_orders`.
+  **Sin verificar**: si mover un fulfillment order de bodega dispara
+  `orders/updated` o cambia el `updatedAt` del pedido; si no, la foto queda
+  vieja hasta el próximo cambio del pedido.
 - **Borrado lógico**: `mark_shopify_order_deleted` pone `deleted_at` (o
   crea una marca borrada si no existía). El listado excluye los borrados.
 - **Webhook**: `POST /api/orders/webhooks/shopify/`
@@ -413,6 +424,9 @@ Contrato: `GET /api/orders/` en
     `fulfillment_note` de la fila local, tal cual. Con `novedad` la bodega
     va vacía y `note` trae el motivo. Sin fila local (tienda web), todo
     vacío: este sistema no evaluó la bodega.
+  - **Bodegas según Shopify** (`fulfillment_orders`): las filas de
+    `ShopifyFulfillmentOrder` tal cual (prefetch, sin consultas por
+    pedido).
 - `list_orders_not_created` (`orders/functions/list_orders_not_created.py`):
   solo base de datos. Regla en `NOT_CREATED`: sin `shopify_order_id` y en
   `error_creando_orden`, `error_creando_cliente`, `procesando`, o
@@ -485,7 +499,9 @@ guía del canal.
 
      Sin guía todavía → `esperando_guia` con el motivo, y se reintenta en la
      próxima corrida. De las guías de canal se guarda el número y el hash
-     del PDF; las generadas en Envía se vuelven a bajar de su URL. La
+     del PDF; las generadas en Envía se guardan en el despacho (`label_pdf`,
+     como las del RPA de Sodimac; las anteriores al 2026-10-15 se bajan de su
+     URL la primera vez y quedan guardadas). La
      generación es manual por ahora (cobra); automatizarla queda pendiente
      de definir reglas (transportadora, peso y medidas).
   3. Un aviso por canal activo (`notify_dispatch.notify`). Cada aviso se
@@ -537,7 +553,10 @@ guía del canal.
     `MarketplaceOrder`, porque en Shopify va al cliente fijo), paquete por
     defecto 1 kg 10×10×10. Deshabilitado en la tienda web cuando la bodega
     crea su guía. La guía generada queda en
-    el despacho (`label_source="envia"`, `label_url`) y no se repite.
+    el despacho (`label_source="envia"`, `label_url` y el PDF en
+    `label_pdf`) y no se repite; se descarga con "Descargar guía"
+    (`GET .../dispatch/label/file/`). Generarla no avisa a la bodega: eso lo
+    hace "Notificar a proveedor" o el proceso.
   - Aviso por **API de Envía**: busca primero la orden en Envía (nuestro
     identificador o número de Shopify, recorriendo el listado por fecha con
     `find_order`) y la vincula si existe (le carga la guía si no tiene); si

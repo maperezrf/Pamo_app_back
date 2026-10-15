@@ -84,8 +84,8 @@ def process_order_dispatch(order):
 
     label = None
     if dispatch.label_source == Dispatch.LabelSource.ENVIA and dispatch.label_url:
-        # Guía generada en Envía: se vuelve a bajar, nunca se genera otra.
-        label = {"pdf": download_label(dispatch.label_url), "tracking_number": dispatch.tracking_number}
+        # Guía generada en Envía: la guardada (o se baja), nunca se genera otra.
+        label = {"pdf": stored_envia_label(dispatch), "tracking_number": dispatch.tracking_number}
     elif location.creates_own_label and order.marketplace == SHOPIFY_CHANNEL:
         pass  # tienda web: la bodega genera la guía (le llega por la tienda conectada); se avisa sin guía
     elif location.requires_label:
@@ -102,6 +102,18 @@ def process_order_dispatch(order):
     if all(status == DispatchNotification.Status.SENT for status in results):
         return _save(dispatch, Dispatch.Status.NOTIFIED, "")
     return _save(dispatch, Dispatch.Status.ERROR, "Algún aviso no se pudo enviar; ver los avisos del despacho.")
+
+
+def stored_envia_label(dispatch):
+    """El PDF guardado de una guía de Envía; si falta, lo baja de
+    `label_url` y lo guarda."""
+    if dispatch.label_pdf:
+        return bytes(dispatch.label_pdf)
+    pdf = download_label(dispatch.label_url)
+    dispatch.label_pdf = pdf
+    dispatch.label_sha256 = hashlib.sha256(pdf).hexdigest()
+    dispatch.save(update_fields=["label_pdf", "label_sha256", "updated_at"])
+    return pdf
 
 
 def ensure_dispatch(order):

@@ -174,6 +174,8 @@ query GetVariantsBySkus($query: String!, $cursor: String) {
 # en `Customer` están deprecados. Costo medido de `LIST_ORDERS_PAGE`: 72
 # puntos con `first: 50` (límite 1000). `ORDER_FIELDS` lo comparten
 # `LIST_ORDERS_PAGE` y `GET_ORDER` para que las dos se normalicen igual.
+# Con `fulfillmentOrders` (bodegas desde donde sale el pedido, con su guía),
+# medido el 2026-10-15: `requestedQueryCost` 835 con `first: 50`.
 ORDER_FIELDS = """
 fragment OrderFields on Order {
   id
@@ -201,6 +203,36 @@ fragment OrderFields on Order {
       city
       province
       address1
+    }
+  }
+  fulfillmentOrders(first: 10) {
+    nodes {
+      id
+      status
+      assignedLocation {
+        name
+        location {
+          id
+        }
+      }
+      lineItems(first: 50) {
+        nodes {
+          totalQuantity
+          lineItem {
+            sku
+            name
+          }
+        }
+      }
+      fulfillments(first: 5) {
+        nodes {
+          trackingInfo(first: 1) {
+            number
+            company
+            url
+          }
+        }
+      }
     }
   }
 }

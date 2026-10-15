@@ -17,6 +17,7 @@ from integrations.sodimac_rpa.client import SodimacRpaBusy, SodimacRpaError
 from .functions.channel_label_file import ChannelLabelFileNotFound, channel_label_file
 from .functions.dispatch_actions import (
     DispatchActionError,
+    envia_label_file,
     fetch_channel_label_now,
     generate_dispatch_label,
     notify_dispatch_now,
@@ -163,6 +164,25 @@ class DispatchGenerateLabelAPI(DispatchActionAPI):
             return Response({"detail": "Falta la opción elegida (carrier y service)."}, status=400)
         generate_dispatch_label(order, carrier=carrier, service=service)
         return self.dispatch_response(order)
+
+
+class DispatchLabelFileAPI(RoleRequiredMixin, APIView):
+    """GET /api/orders/<id>/dispatch/label/file/: descarga el PDF de la guía
+    generada en Envía (guardada en el despacho). 404 si no tiene."""
+
+    allowed_roles = ORDERS_LIST_ROLES
+
+    def get(self, request, shopify_order_id):
+        order = get_object_or_404(ShopifyOrder, shopify_id=str(shopify_order_id), deleted_at__isnull=True)
+        try:
+            filename, content = envia_label_file(order)
+        except DispatchActionError as error:
+            return Response({"detail": str(error)}, status=404)
+        except EnviaAPIError as error:
+            return Response({"detail": f"No se pudo bajar la guía de Envía: {error}"}, status=502)
+        response = HttpResponse(content, content_type="application/pdf")
+        response["Content-Disposition"] = f'attachment; filename="{filename}"'
+        return response
 
 
 class OrderChannelLabelRequestAPI(RoleRequiredMixin, APIView):
