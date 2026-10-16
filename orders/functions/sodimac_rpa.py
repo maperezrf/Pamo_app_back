@@ -22,6 +22,7 @@ logger = logging.getLogger(__name__)
 SODIMAC = MarketplaceOrder.Marketplace.SODIMAC
 FINAL_STATUS = "4-ESTADO FINAL"
 Request = MarketplaceOrder.LabelRequestStatus
+Result = MarketplaceOrder.LabelRequestResult
 # Una solicitud sin respuesta después de esto se da por perdida (el RPA se
 # reinició, falló el webhook...) y se vuelve a pedir.
 STALE_REQUEST = timedelta(hours=6)
@@ -81,6 +82,7 @@ def request_sodimac_labels(purchase_orders=None):
     MarketplaceOrder.objects.filter(marketplace=SODIMAC, marketplace_order_id__in=pending).update(
         label_request_status=Request.REQUESTED,
         label_request_note="",
+        label_request_result="",
         label_requested_at=timezone.now(),
         updated_at=timezone.now(),
     )
@@ -189,7 +191,9 @@ def process_rpa_event(data):
     """Webhook del RPA (`evento`):
 
     - `orden_procesada`: resultado de UNA OC, con rótulo y relación en
-      base64. Se guarda la guía (`MarketplaceLabel`) con el número leído del
+      base64 (la guía Home Delivery trae solo el rótulo) y el código
+      `resultado` de lo que pasó (`MarketplaceOrder.LabelRequestResult`).
+      Se guarda la guía (`MarketplaceLabel`) con el número leído del
       rótulo; el despacho la toma solo y avisa a la bodega.
     - `validacion_humana`: el RPA espera que una persona resuelva un CAPTCHA;
       se avisa por correo con el enlace del visor.
@@ -216,42 +220,59 @@ def _order_processed(data):
     if order is None:
         raise RpaEventError(f"No existe la OC {purchase_order!r}.")
     message = str(data.get("mensaje") or "").strip()
+    result = _result(data.get("resultado"), purchase_order)
 
     if not data.get("guia_generada"):
-        return _mark(order, Request.ERROR, f"El RPA no generó la guía: {message or 'sin detalle'}.")
+        return _mark(order, Request.ERROR, f"El RPA no generó la guía: {message or 'sin detalle'}.", result)
     label_pdf = _pdf(data.get("rotulo_pdf_base64"))
     relation_pdf = _pdf(data.get("relacion_pdf_base64"))
-    if label_pdf is None or relation_pdf is None:
+    if label_pdf is None:
         # Pasa cuando la guía ya estaba generada en el portal (el RPA no la
         # vuelve a descargar): hay que bajarla a mano.
         return _mark(
             order, Request.MANUAL,
-            f"El RPA no devolvió los dos PDF ({message or 'sin detalle'}). Descargarlos del portal y cargarlos a mano.",
+            f"El RPA no devolvió el rótulo ({message or 'sin detalle'}). Descargarlo del portal y cargarlo a mano.",
+            result,
         )
     try:
-        store_label(order, label_pdf, relation_pdf, tracking=data.get("numero_guia"))
+        store_label(order, label_pdf, relation_pdf or b"", tracking=data.get("numero_guia"), result=result)
     except LabelStoreError as error:
-        return _mark(order, Request.MANUAL, str(error))
+        return _mark(order, Request.MANUAL, str(error), result)
     return f"{order.marketplace_order_id}: {Request.RECEIVED}"
+
+
+def _result(value, purchase_order):
+    """Código `resultado` del RPA, o "" si no viene o no se conoce (RPA
+    anterior al campo, o un código nuevo que el backend aún no tiene)."""
+    value = str(value or "").strip()
+    if value in Result.values:
+        return value
+    if value:
+        logger.warning("RPA de Sodimac: resultado desconocido %r para la OC %s", value, purchase_order)
+    return ""
 
 
 class LabelStoreError(Exception):
     """La guía no se puede guardar; el texto es para el equipo."""
 
 
-def store_label(order, label_pdf, relation_pdf, *, tracking=""):
+def store_label(order, label_pdf, relation_pdf, *, tracking="", result=""):
     """Guarda la guía (rótulo + relación) de la OC `order`. La usan el
     webhook del RPA y la carga manual del panel ("Cargar guía"), así que las
     dos vías validan igual:
 
-    - Los dos PDF son PDF y pesan hasta 5 MB.
-    - El número es `tracking` o, si viene vacío, "REMESA <n>" del rótulo, y
+    - Los PDF son PDF y pesan hasta 5 MB.
+    - El número es `tracking` o, si viene vacío, el que se lee del rótulo, y
       debe coincidir con el de la relación cuando esta lo trae.
+    - Sin relación (`relation_pdf` vacío) solo se acepta la guía Home
+      Delivery, cuyo número es el de la OC.
     - No se reemplaza una guía con la que la bodega ya fue avisada.
 
-    Reemplaza la guía anterior si la hay. Deja la solicitud en `recibida`.
+    Reemplaza la guía anterior si la hay. Deja la solicitud en `recibida`
+    con el `result` del RPA ("" en la carga manual).
     """
-    for content, name in ((label_pdf, "rótulo"), (relation_pdf, "relación")):
+    documents = [(label_pdf, "rótulo")] + ([(relation_pdf, "relación")] if relation_pdf else [])
+    for content, name in documents:
         if not content or len(content) > MAX_PDF_BYTES or not bytes(content[:5]) == b"%PDF-":
             raise LabelStoreError(f"El archivo del {name} no es un PDF válido (o pesa más de 5 MB).")
     if Dispatch.objects.filter(shopify_order__shopify_id=order.shopify_order_id, status=Dispatch.Status.NOTIFIED).exists():
@@ -261,13 +282,20 @@ def store_label(order, label_pdf, relation_pdf, *, tracking=""):
         raise LabelStoreError("No se encontró el número de guía (REMESA) en el rótulo: escribirlo a mano.")
     if len(tracking) > 64:
         raise LabelStoreError("El número de guía tiene más de 64 caracteres.")
-    relation_tracking = read_label_tracking(relation_pdf)
-    if relation_tracking and relation_tracking != tracking:
-        raise LabelStoreError(f"El rótulo ({tracking}) y la relación ({relation_tracking}) traen números distintos.")
+    if relation_pdf:
+        relation_tracking = read_label_tracking(relation_pdf)
+        if relation_tracking and relation_tracking != tracking:
+            raise LabelStoreError(f"El rótulo ({tracking}) y la relación ({relation_tracking}) traen números distintos.")
+    elif tracking != order.marketplace_order_id:
+        raise LabelStoreError(
+            f"Falta la relación: solo se acepta sin relación la guía Home Delivery, cuyo número es el de la OC "
+            f"(el rótulo trae {tracking})."
+        )
     MarketplaceLabel.objects.update_or_create(
-        order=order, defaults={"tracking_number": tracking, "label_pdf": label_pdf, "relation_pdf": relation_pdf}
+        order=order,
+        defaults={"tracking_number": tracking, "label_pdf": label_pdf, "relation_pdf": bytes(relation_pdf or b"")},
     )
-    _mark(order, Request.RECEIVED, "")
+    _mark(order, Request.RECEIVED, "", result)
     return tracking
 
 
@@ -306,21 +334,25 @@ def _human_validation(data):
 
 def _batch_finished(data):
     processed = [str(oc) for oc in data.get("ordenes_procesadas") or []]
-    note = (
-        "El RPA terminó sin responder por esta OC." if data.get("proceso_exitoso")
-        else "El RPA no pudo iniciar sesión en el portal."
-    )
+    if data.get("proceso_exitoso"):
+        note, result = "El RPA terminó sin responder por esta OC.", Result.NO_RESPONSE
+    else:
+        note, result = "El RPA no pudo iniciar sesión en el portal.", Result.LOGIN_FAILED
     lost = MarketplaceOrder.objects.filter(marketplace=SODIMAC, label_request_status=Request.REQUESTED).exclude(
         marketplace_order_id__in=processed
     )
-    count = lost.update(label_request_status=Request.ERROR, label_request_note=note, updated_at=timezone.now())
+    count = lost.update(
+        label_request_status=Request.ERROR, label_request_note=note, label_request_result=result,
+        updated_at=timezone.now(),
+    )
     return f"lote terminado: {count} OC sin respuesta pasan a error"
 
 
-def _mark(order, status, note):
-    MarketplaceOrder.objects.filter(pk=order.pk).update(
-        label_request_status=status, label_request_note=note, updated_at=timezone.now()
-    )
+def _mark(order, status, note, result=None):
+    fields = {"label_request_status": status, "label_request_note": note, "updated_at": timezone.now()}
+    if result is not None:
+        fields["label_request_result"] = result
+    MarketplaceOrder.objects.filter(pk=order.pk).update(**fields)
     return f"{order.marketplace_order_id}: {status}"
 
 

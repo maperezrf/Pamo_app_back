@@ -103,6 +103,22 @@ class MarketplaceOrder(models.Model):
     # `manual` no (el motivo queda en la nota).
     label_request_status = models.CharField(max_length=12, choices=LabelRequestStatus.choices, blank=True)
     label_request_note = models.TextField(blank=True)
+
+    class LabelRequestResult(models.TextChoices):
+        GENERATED = "guia_generada", "Guía generada (rótulo y relación)"
+        SINGLE_PDF = "guia_un_pdf", "Guía generada (solo rótulo)"
+        NO_PDF = "sin_pdf", "Guía generada sin PDF"
+        ALREADY_GENERATED = "guia_ya_generada", "La guía ya estaba generada en el portal"
+        UNKNOWN_WAREHOUSE = "bodega_desconocida", "Bodega desconocida para el RPA"
+        WAREHOUSE_LOOKUP_FAILED = "consulta_bodega_fallida", "Falló la consulta de bodega"
+        TIMEOUT = "tiempo_agotado", "Tiempo agotado en el portal"
+        NO_RESPONSE = "sin_respuesta", "El RPA no respondió por la OC"
+        LOGIN_FAILED = "login_fallido", "El RPA no pudo iniciar sesión"
+
+    # Qué pasó en la última corrida del RPA con esta OC (lo manda el RPA en
+    # `resultado`; `sin_respuesta` y `login_fallido` los pone el backend al
+    # cerrar el lote). Solo el último; vacío = sin corrida o carga manual.
+    label_request_result = models.CharField(max_length=32, choices=LabelRequestResult.choices, blank=True)
     label_requested_at = models.DateTimeField(null=True, blank=True)
 
     created_at = models.DateTimeField(auto_now_add=True)
@@ -150,14 +166,15 @@ class MarketplaceLabel(models.Model):
     """Guía de un pedido de marketplace que genera un tercero porque el canal
     no la entrega por API. Hoy Sodimac: el RPA la genera en el portal de
     Homecenter y la devuelve por webhook con dos PDF, el rótulo (la guía) y
-    la relación de la transportadora; el número se lee del rótulo. A
+    la relación de la transportadora; el número se lee del rótulo. La guía
+    Home Delivery llega sin relación (`relation_pdf` vacío). A
     diferencia de las guías de Mercado Libre y Falabella, aquí sí se guardan
     los PDF: no hay de dónde volver a pedirlos."""
 
     order = models.OneToOneField(MarketplaceOrder, related_name="label", on_delete=models.CASCADE)
     tracking_number = models.CharField("Número de guía", max_length=64)
     label_pdf = models.BinaryField("Rótulo (PDF)")
-    relation_pdf = models.BinaryField("Relación / remesa (PDF)")
+    relation_pdf = models.BinaryField("Relación / remesa (PDF)", blank=True, default=b"")
     uploaded_at = models.DateTimeField(auto_now=True)
 
     class Meta:
@@ -425,6 +442,11 @@ class Dispatch(models.Model):
     # de `label_url` la primera vez que se piden y quedan guardadas.
     label_pdf = models.BinaryField("Guía (PDF)", null=True, blank=True)
     label_fetched_at = models.DateTimeField(null=True, blank=True)
+    # La guía quedó en Shopify (pedido cumplido con ella), después de avisar a
+    # la bodega (`fulfill_in_shopify`). Si falló, el motivo; se reintenta con
+    # "Notificar a proveedor".
+    shopify_fulfilled_at = models.DateTimeField(null=True, blank=True)
+    shopify_fulfillment_error = models.TextField(blank=True)
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

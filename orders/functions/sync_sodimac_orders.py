@@ -82,6 +82,9 @@ def sync_sodimac_orders(params=None, progress_callback=None, cancellation_token=
     created = _create_shopify_orders(customer_id, params.get("limit"), failures, progress_callback, cancellation_token)
 
     progress_callback(85, "Pidiendo guías al RPA")
+    # Pausado mientras se prueba el RPA: las guías se piden solo desde el
+    # panel ("Generar guía (RPA)").
+    labels_requested = "pausado (solo desde el panel)"
     # try:
     #     labels_requested = len(request_sodimac_labels())
     # except Exception as error:  # un RPA caído no deshace lo creado

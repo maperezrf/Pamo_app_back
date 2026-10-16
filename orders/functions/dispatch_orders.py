@@ -12,6 +12,7 @@ from .dispatch_details import dispatch_details
 from .fetch_dispatch_label import fetch_dispatch_label
 from .notify_dispatch import notify
 from .order_listing_format import day_range
+from .shopify_fulfillment import fulfill_in_shopify
 from .shopify_order_marketplace import SHOPIFY_CHANNEL
 
 # Despachos que una corrida vuelve a intentar.
@@ -32,6 +33,7 @@ def dispatch_orders(params=None, progress_callback=None, cancellation_token=None
        → `esperando_guia`, se reintenta en la próxima corrida.
     3. Avisa por cada canal activo de la bodega. Cada aviso se reclama
        antes de enviarse y nunca sale dos veces.
+    4. Ya avisado, deja la guía en Shopify (`fulfill_in_shopify`).
 
     `params`:
     - `since` (obligatorio, "AAAA-MM-DD"): solo pedidos creados desde ese
@@ -76,6 +78,8 @@ def process_order_dispatch(order):
     if dispatch is None:
         dispatch = _create(order)
     if dispatch.status not in OPEN_STATUSES:
+        if dispatch.status == Dispatch.Status.NOTIFIED:
+            fulfill_in_shopify(dispatch)  # reintento si la guía no quedó en Shopify
         return dispatch.status
 
     location = dispatch.location
@@ -100,7 +104,11 @@ def process_order_dispatch(order):
     details = dispatch_details(order)
     results = [_notify_channel(dispatch, channel, details, label) for channel in location.channels()]
     if all(status == DispatchNotification.Status.SENT for status in results):
-        return _save(dispatch, Dispatch.Status.NOTIFIED, "")
+        _save(dispatch, Dispatch.Status.NOTIFIED, "")
+        # Después del aviso, no antes: el proceso salta los pedidos ya
+        # cumplidos en Shopify y la bodega se quedaría sin aviso.
+        fulfill_in_shopify(dispatch)
+        return dispatch.status
     return _save(dispatch, Dispatch.Status.ERROR, "Algún aviso no se pudo enviar; ver los avisos del despacho.")
 
 

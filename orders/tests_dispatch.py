@@ -7,9 +7,12 @@ from django.core.exceptions import ValidationError
 from django.test import TestCase, override_settings
 
 from .functions.assign_dispatch_location import assign_dispatch_location
-from .functions.dispatch_orders import dispatch_orders
+from .functions.dispatch_orders import dispatch_orders, process_order_dispatch
+from .functions.shopify_fulfillment import tracking_company
 from .functions.sync_dispatch_locations import sync_dispatch_locations
-from .models import Dispatch, DispatchLocation, DispatchNotification, MarketplaceOrder, ShopifyOrder, ShopifyOrderLine
+from .models import (
+    Dispatch, DispatchLocation, DispatchNotification, MarketplaceLabel, MarketplaceOrder, ShopifyOrder, ShopifyOrderLine,
+)
 
 F = "orders.functions"
 PDF = b"%PDF-1.4 " + b"x" * 64 + b" %%EOF"
@@ -290,6 +293,8 @@ class OrderListDispatchTests(TestCase):
 
         self.assertEqual(orders["20400"]["dispatch"]["location_name"], "Boccherini")
         self.assertEqual(orders["20400"]["dispatch"]["notifications"][0]["channel"], "email")
+        self.assertIsNone(orders["20400"]["dispatch"]["shopify_fulfilled_at"])
+        self.assertEqual(orders["20400"]["dispatch"]["shopify_fulfillment_error"], "")
         self.assertIsNone(orders["20401"]["dispatch"])
 
 
@@ -763,6 +768,16 @@ class SodimacAndMadecentroDispatchTests(TestCase):
         attachments = {name: content for name, content, _ in mail.outbox[0].attachments}
         self.assertEqual(attachments, {"guia-20400.pdf": PDF, "relacion-20400.pdf": RELATION})
 
+    def test_a_sodimac_home_delivery_label_goes_without_relation(self):
+        from .models import MarketplaceLabel
+
+        self._location()
+        row = _marketplace_row(_order(marketplace="sodimac"), **SODIMAC_ROW)
+        MarketplaceLabel.objects.create(order=row, tracking_number="16200704", label_pdf=PDF)
+
+        self.assertEqual(dispatch_orders(SINCE), {"notificado": 1})
+        self.assertEqual([name for name, _, _ in mail.outbox[0].attachments], ["guia-20400.pdf"])
+
     def test_madecentro_waits_for_a_generated_label_even_where_the_warehouse_creates_web_labels(self):
         self._location()
         order = _order(marketplace="madecentro")
@@ -841,3 +856,121 @@ class EnviaRelationTests(TestCase):
         notification = DispatchNotification.objects.get()
         self.assertEqual(notification.status, "enviado")
         self.assertIn("relación no se cargó", notification.error_description)
+
+
+S = "orders.functions.shopify_fulfillment"
+
+
+def _fulfillment_order(location_id=BOCCHERINI, status="OPEN", tracking_numbers=(), gid="gid://shopify/FulfillmentOrder/1"):
+    return {
+        "id": gid, "status": status, "location_id": location_id, "location_name": "Bodega",
+        "actions": {"CREATE_FULFILLMENT", "MOVE"}, "tracking_numbers": list(tracking_numbers),
+    }
+
+
+@override_settings(**EMAIL_SETTINGS)
+@patch(f"{F}.fetch_dispatch_label.get_shipment_label", return_value=PDF)
+@patch(f"{F}.fetch_dispatch_label.get_shipment", return_value=ML_SHIPMENT)
+@patch(f"{S}.create_fulfillment", return_value="900")
+@patch(f"{S}.move_fulfillment_order", return_value="gid://shopify/FulfillmentOrder/2")
+@patch(f"{S}.get_fulfillment_orders")
+class ShopifyFulfillmentTests(TestCase):
+    """La guía queda en Shopify después de avisar a la bodega."""
+
+    def setUp(self):
+        self.location = _location(notify_email=True, emails=["bodega@boccherini.com"])
+        self.order = _order()
+        _marketplace_row(self.order)
+
+    def _dispatch(self):
+        return Dispatch.objects.get(shopify_order=self.order)
+
+    def test_after_notifying_fulfills_with_the_guide_and_carrier(self, get_fos, move, create, *_):
+        get_fos.return_value = [_fulfillment_order()]
+
+        self.assertEqual(dispatch_orders(SINCE), {"notificado": 1})
+
+        self.assertEqual(len(mail.outbox), 1)  # el aviso salió antes
+        move.assert_not_called()
+        create.assert_called_once_with(
+            "gid://shopify/FulfillmentOrder/1", tracking_number="MEL48195006881", tracking_company="Mercado Envíos"
+        )
+        dispatch = self._dispatch()
+        self.assertIsNotNone(dispatch.shopify_fulfilled_at)
+        self.assertEqual(dispatch.shopify_fulfillment_error, "")
+
+    def test_moves_to_the_dispatch_location_before_fulfilling(self, get_fos, move, create, *_):
+        get_fos.return_value = [_fulfillment_order(location_id="94018535701")]  # "Proveedores"
+
+        dispatch_orders(SINCE)
+
+        move.assert_called_once_with("gid://shopify/FulfillmentOrder/1", BOCCHERINI)
+        self.assertEqual(create.call_args.args[0], "gid://shopify/FulfillmentOrder/2")
+
+    def test_a_shopify_error_keeps_the_notice_and_the_button_retries(self, get_fos, move, create, *_):
+        get_fos.return_value = [_fulfillment_order()]
+        create.side_effect = RuntimeError("Shopify caído")
+
+        self.assertEqual(dispatch_orders(SINCE), {"notificado": 1})
+        dispatch = self._dispatch()
+        self.assertIsNone(dispatch.shopify_fulfilled_at)
+        self.assertIn("Shopify caído", dispatch.shopify_fulfillment_error)
+
+        create.side_effect = None
+        self.assertEqual(process_order_dispatch(self.order), "notificado")  # botón "Notificar a proveedor"
+        self.assertEqual(len(mail.outbox), 1)  # no vuelve a avisar
+        self.assertIsNotNone(self._dispatch().shopify_fulfilled_at)
+
+        process_order_dispatch(self.order)  # ya cumplido: no se repite
+        self.assertEqual(create.call_count, 2)
+
+    def test_already_fulfilled_by_hand_with_the_same_guide_is_marked_done(self, get_fos, move, create, *_):
+        get_fos.return_value = [_fulfillment_order(status="CLOSED", tracking_numbers=["MEL48195006881"])]
+
+        dispatch_orders(SINCE)
+
+        create.assert_not_called()
+        self.assertIsNotNone(self._dispatch().shopify_fulfilled_at)
+
+    def test_fulfilled_with_another_guide_or_split_order_is_left_for_a_person(self, get_fos, move, create, *_):
+        get_fos.return_value = [_fulfillment_order(status="CLOSED", tracking_numbers=["OTRA"])]
+        dispatch_orders(SINCE)
+        self.assertIn("OTRA", self._dispatch().shopify_fulfillment_error)
+
+        get_fos.return_value = [_fulfillment_order(), _fulfillment_order(location_id=ENVIA_LOCATION, gid="gid://2")]
+        process_order_dispatch(self.order)
+        self.assertIn("varias bodegas", self._dispatch().shopify_fulfillment_error)
+        create.assert_not_called()
+        move.assert_not_called()
+
+    def test_without_a_guide_nothing_is_sent_to_shopify(self, get_fos, move, create, *_):
+        self.location.requires_label = False
+        self.location.save()
+
+        self.assertEqual(dispatch_orders(SINCE), {"notificado": 1})
+
+        get_fos.assert_not_called()
+        self.assertIsNone(self._dispatch().shopify_fulfilled_at)
+
+
+class TrackingCompanyTests(TestCase):
+    def setUp(self):
+        self.location = _location()
+
+    def _dispatch(self, order, **fields):
+        return Dispatch.objects.create(shopify_order=order, location=self.location, channel=order.marketplace, status="notificado", **fields)
+
+    def test_sodimac_is_tcc_except_home_delivery(self):
+        tcc = _order(shopify_id="1", marketplace="sodimac")
+        row = _marketplace_row(tcc, marketplace="sodimac")
+        MarketplaceLabel.objects.create(order=row, tracking_number="474313505", label_pdf=PDF, relation_pdf=PDF)
+        self.assertEqual(tracking_company(self._dispatch(tcc)), "TCC")
+
+        home = _order(shopify_id="2", marketplace="sodimac")
+        row = _marketplace_row(home, marketplace="sodimac", marketplace_order_id="16227888")
+        MarketplaceLabel.objects.create(order=row, tracking_number="16227888", label_pdf=PDF)
+        self.assertEqual(tracking_company(self._dispatch(home)), "Sodimac Home Delivery")
+
+    def test_generated_in_envia_uses_its_carrier(self):
+        dispatch = self._dispatch(_order(marketplace="madecentro"), label_source="envia", label_carrier="coordinadora")
+        self.assertEqual(tracking_company(dispatch), "coordinadora")

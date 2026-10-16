@@ -344,3 +344,56 @@ query GetOrderShippingAddress($id: ID!) {
   }
 }
 """
+
+
+# Fulfillment orders de UN pedido, en vivo, para cumplirlo con la guía (la
+# copia local de `ORDER_FIELDS` puede estar vieja). `supportedActions` dice
+# si se puede cumplir (`CREATE_FULFILLMENT`) o mover (`MOVE`). Verificado
+# por introspección contra la API 2024-07 el 2026-10-15.
+GET_ORDER_FULFILLMENT_ORDERS = """
+query GetOrderFulfillmentOrders($id: ID!) {
+  order(id: $id) {
+    id
+    fulfillmentOrders(first: 10) {
+      nodes {
+        id
+        status
+        assignedLocation { location { id } name }
+        supportedActions { action }
+        fulfillments(first: 5) {
+          nodes {
+            id
+            trackingInfo(first: 1) { number company }
+          }
+        }
+      }
+    }
+  }
+}
+"""
+
+
+# Mueve un fulfillment order completo a otra bodega (`fulfillmentOrderMove`,
+# sin `fulfillmentOrderLineItems` = todas las líneas). Shopify puede
+# devolver el movido con otro id: se usa `movedFulfillmentOrder`.
+MOVE_FULFILLMENT_ORDER = """
+mutation MoveFulfillmentOrder($id: ID!, $newLocationId: ID!) {
+  fulfillmentOrderMove(id: $id, newLocationId: $newLocationId) {
+    movedFulfillmentOrder { id assignedLocation { location { id } } }
+    userErrors { field message }
+  }
+}
+"""
+
+
+# Cumple un fulfillment order con la guía (`fulfillmentCreate`; en la API
+# 2024-07 no existe `fulfillmentCreateV2`). Sin `fulfillmentOrderLineItems`
+# cumple todas las líneas pendientes.
+CREATE_FULFILLMENT = """
+mutation CreateFulfillment($fulfillment: FulfillmentInput!) {
+  fulfillmentCreate(fulfillment: $fulfillment) {
+    fulfillment { id status trackingInfo(first: 1) { number company } }
+    userErrors { field message }
+  }
+}
+"""

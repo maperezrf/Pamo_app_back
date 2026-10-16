@@ -1,6 +1,6 @@
 from collections import defaultdict
 
-from django.db.models import Q
+from django.db.models import BooleanField, ExpressionWrapper, Q
 from django.utils import timezone
 
 from ..models import Dispatch, MarketplaceLabel, MarketplaceOrder, ShopifyOrder
@@ -49,13 +49,7 @@ def format_orders(orders):
     ids = [order.shopify_id for order in orders]
     for row in MarketplaceOrder.objects.filter(shopify_order_id__in=ids).order_by("id"):
         rows_by_order[row.shopify_order_id].append(row)
-    # Guías cargadas, sin traer los PDF (`only` los deja diferidos).
-    labels = {
-        label.order_id: label
-        for label in MarketplaceLabel.objects.filter(
-            order__shopify_order_id__in=ids
-        ).only("order_id", "tracking_number", "uploaded_at")
-    }
+    labels = {label.order_id: label for label in _labels(order__shopify_order_id__in=ids)}
     return [_format_order(order, rows_by_order.get(order.shopify_id, []), labels) for order in orders]
 
 
@@ -98,22 +92,37 @@ def channel_label_for_order(order):
     row = MarketplaceOrder.objects.filter(shopify_order_id=order.shopify_id).order_by("id").first()
     if row is None:
         return None
-    label = MarketplaceLabel.objects.filter(order=row).only("order_id", "tracking_number", "uploaded_at").first()
-    return _channel_label(row, label)
+    return _channel_label(row, _labels(order=row).first())
+
+
+def _labels(**filters):
+    """Guías cargadas, sin traer los PDF (`only` los deja diferidos), con
+    `has_relation` (la guía Home Delivery no trae relación)."""
+    return (
+        MarketplaceLabel.objects.filter(**filters)
+        .only("order_id", "tracking_number", "uploaded_at")
+        .annotate(has_relation=ExpressionWrapper(~Q(relation_pdf=b""), output_field=BooleanField()))
+    )
 
 
 def _channel_label(row, label):
     """Guía que genera un tercero (hoy el RPA de Sodimac), o None en los
     canales que no la usan. `status`: `pendiente` (no se ha pedido),
     `solicitada`, `recibida`, `error` (se pide otra vez) o `manual`
-    (revisión manual, el motivo en `note`). Los PDF se bajan por
-    `GET /api/orders/<id>/channel-label/<rotulo|relacion>/`."""
+    (revisión manual, el motivo en `note`). `result`: qué pasó en la última
+    corrida del RPA (`MarketplaceOrder.LabelRequestResult`, "" si no hubo o
+    la guía se cargó a mano). Los PDF se bajan por
+    `GET /api/orders/<id>/channel-label/<rotulo|relacion>/`; `has_relation`
+    es falso en la guía Home Delivery."""
     if row.marketplace != MarketplaceOrder.Marketplace.SODIMAC:
         return None
     return {
         "status": MarketplaceOrder.LabelRequestStatus.RECEIVED if label else (row.label_request_status or "pendiente"),
         "note": "" if label else row.label_request_note,
+        "result": row.label_request_result,
+        "result_label": row.get_label_request_result_display() if row.label_request_result else "",
         "tracking_number": label.tracking_number if label else "",
+        "has_relation": bool(label and label.has_relation),
         "received_at": _iso(label.uploaded_at) if label else None,
         "requested_at": _iso(row.label_requested_at),
     }
@@ -168,6 +177,8 @@ def format_dispatch(order):
         "label_source": dispatch.label_source,
         "label_carrier": dispatch.label_carrier,
         "label_service": dispatch.label_service,
+        "shopify_fulfilled_at": _iso(dispatch.shopify_fulfilled_at),
+        "shopify_fulfillment_error": dispatch.shopify_fulfillment_error,
         "notifications": [
             {
                 "channel": notification.channel,

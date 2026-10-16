@@ -242,7 +242,12 @@ antiguas (convivencia, abajo).
   Railway; Selenium sobre el portal `hub.homecenter.co`). Desde el
   2026-10-11 lo usa este backend en vez de `pamo_web`
   (`orders/functions/sodimac_rpa.py`, `integrations/sodimac_rpa/`):
-  1. Al final de `orders.sync_sodimac` (paso 3b), `request_sodimac_labels`
+  1. **Pausado desde 2026-10-15 mientras se prueba el RPA**: el sync no
+     pide guías (llamada comentada en `sync_sodimac_orders.py`, resumen
+     "pausado"; las dos pruebas del sync con el RPA están en `skip`). Hoy
+     solo se piden desde el panel o el admin. Al reactivar: descomentar y
+     quitar los `skip`.
+     Al final de `orders.sync_sodimac` (paso 3b), `request_sodimac_labels`
      manda al RPA (`POST {SODIMAC_RPA_URL}/trigger`) las OC con orden en
      Shopify, bodega asignada, sin guía y abiertas, cuya solicitud no
      exista, haya fallado o lleve más de 6 h sin respuesta. Si el RPA está
@@ -270,15 +275,42 @@ antiguas (convivencia, abajo).
   - Estado por OC en `MarketplaceOrder.label_request_status`: `solicitada`,
     `recibida`, `error` (se reintenta) o `manual` (no se reintenta; el
     motivo en `label_request_note`): guía ya generada en el portal sin PDF,
-    números distintos en rótulo y relación, número no encontrado, o guía
-    nueva cuando la bodega ya había sido avisada.
+    números distintos en rótulo y relación, número no encontrado, rótulo
+    TCC sin relación, o guía nueva cuando la bodega ya había sido avisada.
+  - Qué pasó en la **última** corrida (desde 2026-10-15), en
+    `label_request_result` (`LabelRequestResult`; solo el último, sin
+    historial). Lo manda el RPA en `resultado`, salvo los dos últimos, que
+    pone el backend al cerrar el lote. Se limpia al pedir la guía otra vez y
+    queda vacío en la carga manual. No cambia el estado: es información.
+
+    | Código | Cuándo |
+    | --- | --- |
+    | `guia_generada` | Rótulo y relación descargados. |
+    | `guia_un_pdf` | Solo el rótulo (guía Home Delivery). |
+    | `sin_pdf` | Clic final sin descargas. |
+    | `guia_ya_generada` | Botón deshabilitado en el portal. |
+    | `bodega_desconocida` | El RPA no conoce la bodega respondida. |
+    | `consulta_bodega_fallida` | Falló la consulta de bodega al backend. |
+    | `tiempo_agotado` | `TimeoutException` en el portal. |
+    | `sin_respuesta` | Lote exitoso sin `orden_procesada` de la OC. |
+    | `login_fallido` | El RPA no inició sesión. |
+
+    Un código ausente o desconocido se guarda vacío (warning en el log): un
+    código nuevo del RPA hay que agregarlo también aquí.
+  - **Guía Home Delivery** (rótulo Sodimac "Paquetería - Home Delivery"):
+    el portal descarga **un solo PDF** y el número ("Guía: <n>") es el de
+    la OC. El RPA manda como rótulo el único PDF que no sea `RELACIONTCC_*`;
+    `store_label` acepta una guía sin relación **solo si** su número es
+    `marketplace_order_id` (`relation_pdf` queda vacío). El aviso a la
+    bodega sale sin ese adjunto y la descarga de `relacion` da 404.
   - Token: `SODIMAC_RPA_TOKEN`, el mismo valor en las variables del RPA
     `RPA_BOT_TOKEN` (lo manda como `X-Bot-Token` al consultar la bodega) y
     `RPA_CALLBACK_AUTH_TOKEN` (`Authorization: Bearer` en el webhook). En el
     RPA: `RPA_ORDERS_API_URL_TEMPLATE` =
     `<backend>/api/orders/sodimac/rpa/orders/{numero_orden}/stock-dispatch/`
     y `RPA_CALLBACK_URL` = `<backend>/api/orders/sodimac/rpa/callback/`.
-  - Panel: el listado trae `channel_label` (estado, número, motivo) y los
+  - Panel: el listado trae `channel_label` (estado, resultado, número,
+    motivo, si tiene relación) y los
     PDF se descargan por `GET /api/orders/<id>/channel-label/<rotulo|relacion>/`
     (`channel_label_file`).
   - Recuadro "RPA de guías" en el panel (`rpa_panel_status`, `rpa_continue`,
@@ -509,7 +541,29 @@ guía del canal.
      `error` se reintenta en la próxima corrida; uno que se quedó en
      `procesando` no se reintenta (revisión manual). Todos enviados → `notificado`;
      alguno en error → `error`.
-  4. Pedido cancelado → `cancelado` (salvo si ya se notificó).
+  4. **Guía en Shopify** (`orders/functions/shopify_fulfillment.py`,
+     desde 2026-10-15): apenas el despacho queda `notificado`,
+     `fulfill_in_shopify` cumple el pedido en Shopify con el número y la
+     transportadora de la guía, como se hacía a mano (pedido #20543). Va
+     **después** del aviso porque este proceso salta los pedidos ya
+     cumplidos en Shopify: cumplir antes dejaría a la bodega sin aviso.
+     - Lee los fulfillment orders en vivo. Con uno abierto en otra bodega,
+       primero lo mueve a la del despacho (`fulfillmentOrderMove`); luego lo
+       cumple (`fulfillmentCreate`) con `notifyCustomer: false` (a mano,
+       Shopify le mandó el correo de envío al cliente fijo de Sodimac).
+     - Ya cumplido con la misma guía (a mano) → se marca hecho. Cumplido con
+       otra guía, repartido en varias bodegas o rechazado por Shopify → el
+       motivo queda en `shopify_fulfillment_error` y el despacho sigue
+       `notificado`; se reintenta con "Notificar a proveedor". Sin guía en el
+       despacho (bodega sin `requires_label`, tienda web con
+       `creates_own_label`) no se toca Shopify.
+     - Transportadora: Sodimac `TCC` (Home Delivery: `Sodimac Home
+       Delivery`), Mercado Libre `Mercado Envíos`, Falabella `Falabella`,
+       generada en Envía la de `label_carrier`.
+     - Hecho → `shopify_fulfilled_at`. Hoy el despacho se maneja desde el
+       panel; si se programa el proceso, un despacho con error aquí no se
+       reintenta solo (el proceso no vuelve a tomar los `notificado`).
+  5. Pedido cancelado → `cancelado` (salvo si ya se notificó).
 - **Canales** (`orders/functions/notify_dispatch.py`):
   - `email`: `django.core.mail` (API de Gmail o SMTP, ver
     `architecture/INTEGRATIONS.md`), con la guía adjunta y, en Sodimac, la

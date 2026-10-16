@@ -1,5 +1,6 @@
 from datetime import date, timedelta
 from decimal import Decimal
+from unittest import skip
 from unittest.mock import Mock, patch
 
 from django.contrib.auth.models import Group, User
@@ -1289,6 +1290,9 @@ def _queue(type_1=None, type_4=None):
     return get_orders
 
 
+SYNC_RPA_PAUSED = "Sync pausado: las guías se piden al RPA solo desde el panel. Quitar al reactivar."
+
+
 @patch(PRIORITY_LOCATION_PATCH, "97615380757")
 @patch(f"{SODI}.SODIMAC_SHOPIFY_CUSTOMER_ID", "7247084421397")
 @patch(f"{SODI}.SODIMAC_CUTOVER_DATE", "2026-10-02")
@@ -1306,6 +1310,7 @@ class SyncSodimacOrdersTests(NoExistingShopifyOrderMixin, TestCase):
         self.request_labels = patcher.start()
         self.addCleanup(patcher.stop)
 
+    @skip(SYNC_RPA_PAUSED)
     def test_after_creating_the_orders_it_asks_the_rpa_for_their_labels(
         self, get_orders, reinject, variant, create_order, pamo_web
     ):
@@ -1315,6 +1320,7 @@ class SyncSodimacOrdersTests(NoExistingShopifyOrderMixin, TestCase):
 
         self.request_labels.assert_called_once()
 
+    @skip(SYNC_RPA_PAUSED)
     def test_a_failing_rpa_is_reported_without_undoing_the_orders(
         self, get_orders, reinject, variant, create_order, pamo_web
     ):

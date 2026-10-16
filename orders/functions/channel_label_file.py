@@ -22,5 +22,9 @@ def channel_label_file(order, kind):
     )
     if label is None:
         raise ChannelLabelFileNotFound("El pedido no tiene guía cargada.")
+    content = bytes(getattr(label, field))
+    if not content:
+        # La guía Home Delivery de Sodimac no trae relación.
+        raise ChannelLabelFileNotFound("La guía no tiene relación.")
     number = label.order.marketplace_order_number or label.order.marketplace_order_id
-    return f"{label.order.marketplace}-{number}-{kind}.pdf", bytes(getattr(label, field))
+    return f"{label.order.marketplace}-{number}-{kind}.pdf", content

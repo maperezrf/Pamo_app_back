@@ -36,9 +36,13 @@ class MarketplaceOrderAdmin(admin.ModelAdmin):
         "fulfillment_status",
         "fulfillment_location_name",
         "label_request_status",
+        "label_request_result",
         "updated_at",
     )
-    list_filter = ("marketplace", "status", "marketplace_status", "fulfillment_status", "label_request_status")
+    list_filter = (
+        "marketplace", "status", "marketplace_status", "fulfillment_status", "label_request_status",
+        "label_request_result",
+    )
     search_fields = ("marketplace_order_id", "marketplace_order_number", "customer_identification", "shopify_order_id")
     inlines = [MarketplaceOrderItemInline]
     actions = ["request_rpa_label"]
@@ -149,7 +153,9 @@ class DispatchNotificationInline(admin.TabularInline):
 
 @admin.register(Dispatch)
 class DispatchAdmin(admin.ModelAdmin):
-    list_display = ("shopify_order", "channel", "location", "status", "tracking_number", "updated_at")
+    list_display = (
+        "shopify_order", "channel", "location", "status", "tracking_number", "shopify_fulfilled_at", "updated_at"
+    )
     list_filter = ("status", "channel", "location")
     search_fields = ("shopify_order__name", "shopify_order__shopify_id", "tracking_number")
     readonly_fields = (
@@ -158,6 +164,8 @@ class DispatchAdmin(admin.ModelAdmin):
         "tracking_number",
         "label_sha256",
         "label_fetched_at",
+        "shopify_fulfilled_at",
+        "shopify_fulfillment_error",
         "created_at",
         "updated_at",
     )

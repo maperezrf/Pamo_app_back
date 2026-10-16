@@ -39,6 +39,9 @@ def _pdf(text):
 
 ROTULO = _pdf("REMESA 473402021 Pieza 1 de 1")
 RELACION = _pdf("Remesa: 473402021 Relacion de despacho")
+# Rótulo Home Delivery: llega sin relación y la guía es el número de la OC.
+HOME_DELIVERY = _pdf("Entrega: Home Delivery Guia: 16200704 Servicio")
+Result = MarketplaceOrder.LabelRequestResult
 
 
 def _b64(content):
@@ -95,6 +98,14 @@ class RequestSodimacLabelsTests(TestCase):
         self.assertEqual(sorted(trigger.call_args.args[0]), ["1", "2", "3"])
         requested = MarketplaceOrder.objects.filter(label_request_status=Request.REQUESTED)
         self.assertEqual(sorted(requested.values_list("marketplace_order_id", flat=True)), ["1", "2", "3", "4"])
+
+    def test_a_new_request_clears_the_last_result(self, trigger):
+        _oc("1", label_request_status=Request.ERROR, label_request_note="x", label_request_result=Result.TIMEOUT)
+
+        self._request()
+
+        row = MarketplaceOrder.objects.get()
+        self.assertEqual((row.label_request_status, row.label_request_result), (Request.REQUESTED, ""))
 
     def test_a_busy_rpa_marks_nothing_so_they_go_next_time(self, trigger):
         from integrations.sodimac_rpa.client import SodimacRpaBusy
@@ -198,24 +209,50 @@ class RpaCallbackAPITests(TestCase):
         return self.order
 
     def test_a_processed_order_saves_both_pdfs_with_the_number_read_from_the_label(self):
-        self.assertEqual(self._processed().status_code, 200)
+        self.assertEqual(self._processed(resultado="guia_generada").status_code, 200)
 
         label = MarketplaceLabel.objects.get(order=self.order)
         self.assertEqual((label.tracking_number, bytes(label.label_pdf), bytes(label.relation_pdf)), ("473402021", ROTULO, RELACION))
-        self.assertEqual(self._refresh().label_request_status, Request.RECEIVED)
+        self.assertEqual(
+            (self._refresh().label_request_status, self.order.label_request_result), (Request.RECEIVED, Result.GENERATED)
+        )
 
     def test_a_failed_order_is_asked_again_later(self):
-        self._processed(guia_generada=False, mensaje="Timeout buscando la orden")
+        self._processed(guia_generada=False, mensaje="Timeout buscando la orden", resultado="tiempo_agotado")
 
         self.assertFalse(MarketplaceLabel.objects.exists())
-        self.assertEqual(self._refresh().label_request_status, Request.ERROR)
+        self.assertEqual((self._refresh().label_request_status, self.order.label_request_result), (Request.ERROR, Result.TIMEOUT))
         self.assertIn("Timeout", self.order.label_request_note)
 
     def test_already_generated_without_pdfs_goes_to_manual_review(self):
-        self._processed(rotulo_pdf_base64=None, relacion_pdf_base64=None, mensaje="botón deshabilitado")
+        self._processed(rotulo_pdf_base64=None, relacion_pdf_base64=None, mensaje="botón deshabilitado",
+                        resultado="guia_ya_generada")
 
         self.assertEqual(self._refresh().label_request_status, Request.MANUAL)
+        self.assertEqual(self.order.label_request_result, Result.ALREADY_GENERATED)
         self.assertIn("a mano", self.order.label_request_note)
+
+    def test_a_home_delivery_label_is_saved_without_relation(self):
+        self._processed(rotulo_pdf_base64=_b64(HOME_DELIVERY), relacion_pdf_base64=None, resultado="guia_un_pdf")
+
+        label = MarketplaceLabel.objects.get(order=self.order)
+        self.assertEqual((label.tracking_number, bytes(label.relation_pdf)), ("16200704", b""))
+        self.assertEqual(
+            (self._refresh().label_request_status, self.order.label_request_result), (Request.RECEIVED, Result.SINGLE_PDF)
+        )
+
+    def test_a_tcc_label_without_relation_goes_to_manual_review(self):
+        self._processed(relacion_pdf_base64=None, resultado="guia_un_pdf")
+
+        self.assertFalse(MarketplaceLabel.objects.exists())
+        self.assertEqual(self._refresh().label_request_status, Request.MANUAL)
+        self.assertIn("Falta la relación", self.order.label_request_note)
+        self.assertEqual(self.order.label_request_result, Result.SINGLE_PDF)
+
+    def test_an_unknown_or_missing_result_is_stored_empty(self):
+        with self.assertLogs(R, level="WARNING"):
+            self.assertEqual(self._processed(resultado="algo_nuevo").status_code, 200)
+        self.assertEqual((self._refresh().label_request_status, self.order.label_request_result), (Request.RECEIVED, ""))
 
     def test_label_and_relation_with_different_numbers_go_to_manual_review(self):
         self._processed(relacion_pdf_base64=_b64(_pdf("Remesa: 473400000")))
@@ -249,9 +286,14 @@ class RpaCallbackAPITests(TestCase):
 
         self._post({"evento": "proceso_finalizado", "proceso_exitoso": False, "ordenes_procesadas": ["1"]})
 
-        self.assertEqual(self._refresh().label_request_status, Request.ERROR)
+        self.assertEqual((self._refresh().label_request_status, self.order.label_request_result), (Request.ERROR, Result.LOGIN_FAILED))
         answered.refresh_from_db()
-        self.assertEqual(answered.label_request_status, Request.REQUESTED)
+        self.assertEqual((answered.label_request_status, answered.label_request_result), (Request.REQUESTED, ""))
+
+    def test_a_successful_batch_marks_the_unanswered_ocs_without_response(self):
+        self._post({"evento": "proceso_finalizado", "proceso_exitoso": True, "ordenes_procesadas": []})
+
+        self.assertEqual((self._refresh().label_request_status, self.order.label_request_result), (Request.ERROR, Result.NO_RESPONSE))
 
     def test_wrong_token_unknown_event_or_unknown_oc(self):
         self.assertEqual(self._post({"evento": "orden_procesada"}, token="").status_code, 403)
@@ -270,10 +312,12 @@ class ChannelLabelInPanelTests(TestCase):
         user = User.objects.create_user("ops", password="x")
         user.groups.add(Group.objects.get_or_create(name="Operaciones")[0])
         self.client.force_login(user)
-        self.with_label = _oc("1")
+        self.with_label = _oc("1", label_request_result=Result.GENERATED)
         MarketplaceLabel.objects.create(order=self.with_label, tracking_number="474272966", label_pdf=ROTULO, relation_pdf=RELACION)
-        _oc("2", label_request_status=Request.MANUAL, label_request_note="Ya generada en el portal")
-        for oc, name in (("1", "20482"), ("2", "20483")):
+        _oc("2", label_request_status=Request.MANUAL, label_request_note="Ya generada en el portal",
+            label_request_result=Result.ALREADY_GENERATED)
+        MarketplaceLabel.objects.create(order=_oc("3"), tracking_number="3", label_pdf=HOME_DELIVERY)
+        for oc, name in (("1", "20482"), ("2", "20483"), ("3", "20485")):
             ShopifyOrder.objects.create(shopify_id=f"s{oc}", name=name, marketplace="sodimac")
         ShopifyOrder.objects.create(shopify_id="w1", name="20484", marketplace="shopify")
 
@@ -281,14 +325,20 @@ class ChannelLabelInPanelTests(TestCase):
         rows = {row["shopify_order_name"]: row for row in self.client.get("/api/orders/").json()["orders"]}
 
         self.assertEqual(
-            {k: rows["20482"]["channel_label"][k] for k in ("status", "tracking_number")},
-            {"status": "recibida", "tracking_number": "474272966"},
+            {k: rows["20482"]["channel_label"][k] for k in ("status", "tracking_number", "result", "has_relation")},
+            {"status": "recibida", "tracking_number": "474272966", "result": "guia_generada", "has_relation": True},
         )
         self.assertEqual(
-            {k: rows["20483"]["channel_label"][k] for k in ("status", "note")},
-            {"status": "manual", "note": "Ya generada en el portal"},
+            {k: rows["20483"]["channel_label"][k] for k in ("status", "note", "result", "result_label")},
+            {"status": "manual", "note": "Ya generada en el portal", "result": "guia_ya_generada",
+             "result_label": "La guía ya estaba generada en el portal"},
         )
+        self.assertFalse(rows["20485"]["channel_label"]["has_relation"])
         self.assertIsNone(rows["20484"]["channel_label"])  # tienda web: no aplica
+
+    def test_a_label_without_relation_has_no_relation_to_download(self):
+        self.assertEqual(self.client.get("/api/orders/s3/channel-label/rotulo/").status_code, 200)
+        self.assertEqual(self.client.get("/api/orders/s3/channel-label/relacion/").status_code, 404)
 
     def test_downloads_the_label_and_the_relation(self):
         response = self.client.get("/api/orders/s1/channel-label/rotulo/")
@@ -378,11 +428,14 @@ class UploadLabelButtonTests(TestCase):
     def _upload(self, label=ROTULO, relation=RELACION, **data):
         from django.core.files.uploadedfile import SimpleUploadedFile
 
-        files = {"label": SimpleUploadedFile("rotulo.pdf", label, "application/pdf"),
-                 "relation": SimpleUploadedFile("relacion.pdf", relation, "application/pdf")}
+        files = {"label": SimpleUploadedFile("rotulo.pdf", label, "application/pdf")}
+        if relation is not None:
+            files["relation"] = SimpleUploadedFile("relacion.pdf", relation, "application/pdf")
         return self.client.post(self.URL, {**files, **data})
 
     def test_uploads_both_pdfs_and_reads_the_number_from_the_label(self):
+        MarketplaceOrder.objects.filter(pk=self.row.pk).update(label_request_result=Result.ALREADY_GENERATED)
+
         response = self._upload()
 
         self.assertEqual(response.status_code, 200)
@@ -390,7 +443,18 @@ class UploadLabelButtonTests(TestCase):
         label = MarketplaceLabel.objects.get(order=self.row)
         self.assertEqual((bytes(label.label_pdf), bytes(label.relation_pdf)), (ROTULO, RELACION))
         self.row.refresh_from_db()
-        self.assertEqual((self.row.label_request_status, self.row.label_request_note), (Request.RECEIVED, ""))
+        self.assertEqual(
+            (self.row.label_request_status, self.row.label_request_note, self.row.label_request_result),
+            (Request.RECEIVED, "", ""),
+        )
+
+    def test_a_home_delivery_label_is_uploaded_without_relation(self):
+        response = self._upload(label=_pdf("Home Delivery Guia: 16206245"), relation=None)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(response.json()["channel_label"]["has_relation"])
+        self.assertEqual(MarketplaceLabel.objects.get().tracking_number, "16206245")
+        self.assertIn("Falta la relación", self._upload(relation=None).json()["detail"])
 
     def test_a_typed_number_is_used_when_the_label_has_none(self):
         response = self._upload(label=_pdf("sin numero"), relation=_pdf("sin numero"), tracking_number="474000001")
