@@ -1,4 +1,5 @@
 from datetime import datetime, timezone as dt_timezone
+from decimal import Decimal
 from unittest.mock import patch
 
 from django.contrib.auth.models import Group, User
@@ -7,11 +8,12 @@ from django.core.exceptions import ValidationError
 from django.test import TestCase, override_settings
 
 from .functions.assign_dispatch_location import assign_dispatch_location
-from .functions.dispatch_orders import dispatch_orders, process_order_dispatch
+from .functions.dispatch_orders import dispatch_orders, ensure_dispatches, process_order_dispatch, split_location_ids
 from .functions.shopify_fulfillment import tracking_company
 from .functions.sync_dispatch_locations import sync_dispatch_locations
 from .models import (
-    Dispatch, DispatchLocation, DispatchNotification, MarketplaceLabel, MarketplaceOrder, ShopifyOrder, ShopifyOrderLine,
+    Dispatch, DispatchLocation, DispatchNotification, MarketplaceLabel, MarketplaceOrder, ShopifyFulfillmentOrder,
+    ShopifyFulfillmentOrderLine, ShopifyOrder, ShopifyOrderLine,
 )
 
 F = "orders.functions"
@@ -291,11 +293,14 @@ class OrderListDispatchTests(TestCase):
 
         orders = {row["shopify_order_name"]: row for row in self.client.get("/api/orders/").json()["orders"]}
 
-        self.assertEqual(orders["20400"]["dispatch"]["location_name"], "Boccherini")
-        self.assertEqual(orders["20400"]["dispatch"]["notifications"][0]["channel"], "email")
-        self.assertIsNone(orders["20400"]["dispatch"]["shopify_fulfilled_at"])
-        self.assertEqual(orders["20400"]["dispatch"]["shopify_fulfillment_error"], "")
-        self.assertIsNone(orders["20401"]["dispatch"])
+        [listed] = orders["20400"]["dispatches"]
+        self.assertEqual((listed["id"], listed["split"]), (dispatch.pk, False))
+        self.assertEqual((listed["location_id"], listed["location_name"]), (BOCCHERINI, "Boccherini"))
+        self.assertEqual(listed["items"], [{"sku": "I001", "name": "Dispensador", "quantity": 1}])
+        self.assertEqual(listed["notifications"][0]["channel"], "email")
+        self.assertIsNone(listed["shopify_fulfilled_at"])
+        self.assertEqual(listed["shopify_fulfillment_error"], "")
+        self.assertEqual(orders["20401"]["dispatches"], [])
 
 
 class EnviaIdentifierTests(TestCase):
@@ -552,7 +557,7 @@ class AssignWebDispatchTests(TestCase):
 
         order = _order(marketplace="shopify", financial_status="PAID")
 
-        dispatch = assign_web_dispatch(order.shopify_id)
+        [dispatch] = assign_web_dispatch(order.shopify_id)
 
         self.assertEqual(dispatch.location, self.envia)
         self.assertIsNone(assign_web_dispatch(order.shopify_id))  # ya tiene despacho
@@ -974,3 +979,159 @@ class TrackingCompanyTests(TestCase):
     def test_generated_in_envia_uses_its_carrier(self):
         dispatch = self._dispatch(_order(marketplace="madecentro"), label_source="envia", label_carrier="coordinadora")
         self.assertEqual(tracking_company(dispatch), "coordinadora")
+
+
+BARU = "98784313621"
+
+
+@patch(f"{A}.resolve_colombia_city", return_value={"city": "11001000", "state": "DC"})
+@patch(f"{A}.get_order_shipping_address", return_value=WEB_SHIPPING)
+class SplitDispatchTests(TestCase):
+    """Pedido web que Shopify repartió en dos bodegas (como #20577): un
+    despacho por bodega, cada uno con sus productos y su guía."""
+
+    def setUp(self):
+        address = dict(origin_address="Calle 1", origin_phone="3000000000", origin_province_code="DC", city="Bogotá")
+        self.envia = _location(ENVIA_LOCATION, "Bodega Envia", notify_api=True, **address)
+        self.baru = _location(BARU, "Baru", **address)
+        self.order = _order(shopify_id="20577", name="20577", marketplace="shopify", total="300000.00")
+        ShopifyOrderLine.objects.create(
+            order=self.order, position=1, sku="CB8080L", name="Cabina", quantity=2, unit_price="100000.00"
+        )
+        self._fulfillment_order(BARU, "Baru", [("CB8080L", 2)])
+        self._fulfillment_order(ENVIA_LOCATION, "Bodega Envia", [("I001", 1)])
+        user = User.objects.create_user("ops", password="x")
+        user.groups.add(Group.objects.get_or_create(name="Operaciones")[0])
+        self.client.force_login(user)
+
+    def _fulfillment_order(self, location_id, name, lines, status="OPEN"):
+        position = self.order.fulfillment_orders.count()
+        item = ShopifyFulfillmentOrder.objects.create(
+            order=self.order, position=position, shopify_id=f"fo-{position}", status=status,
+            location_id=location_id, location_name=name,
+        )
+        for index, (sku, quantity) in enumerate(lines):
+            ShopifyFulfillmentOrderLine.objects.create(fulfillment_order=item, position=index, sku=sku, quantity=quantity)
+        return item
+
+    def _dispatch(self, location):
+        return Dispatch.objects.get(shopify_order=self.order, location=location)
+
+    def _post(self, path, body=None):
+        return self.client.post(
+            f"/api/orders/{self.order.shopify_id}/dispatch/{path}", body or {}, content_type="application/json"
+        )
+
+    def test_one_dispatch_per_shopify_warehouse_with_its_products(self, shipping, city):
+        from .functions.dispatch_actions import DispatchActionError, dispatch_for_action
+        from .functions.dispatch_details import dispatch_lines
+
+        dispatches = ensure_dispatches(self.order)
+
+        self.assertEqual([(d.location, d.split, d.status) for d in dispatches], [
+            (self.baru, True, Dispatch.Status.WAITING_LABEL), (self.envia, True, Dispatch.Status.WAITING_LABEL),
+        ])
+        self.assertEqual(
+            [(line["sku"], line["quantity"], line["unit_price"]) for line in dispatch_lines(dispatches[0])],
+            [("CB8080L", 2, Decimal("100000.00"))],
+        )
+        self.assertEqual(ensure_dispatches(self.order), dispatches)  # no se duplican
+        with self.assertRaisesMessage(DispatchActionError, "varias bodegas"):
+            dispatch_for_action(self.order)
+
+    def test_a_closed_fulfillment_order_or_a_marketplace_order_is_not_split(self, shipping, city):
+        self.order.fulfillment_orders.filter(location_id=BARU).update(status="CLOSED")
+        self.assertEqual(split_location_ids(self.order), [])
+        self.order.fulfillment_orders.filter(location_id=BARU).update(status="OPEN")
+        self.order.marketplace = "madecentro"
+        self.assertEqual(split_location_ids(self.order), [])
+
+    def test_a_manual_dispatch_without_activity_is_replaced_by_one_per_warehouse(self, shipping, city):
+        # Lo que pasó con #20577: "ninguna bodega tiene el pedido completo".
+        Dispatch.objects.create(shopify_order=self.order, channel="shopify", status=Dispatch.Status.MANUAL, note="Novedad")
+
+        self.assertEqual(len(ensure_dispatches(self.order)), 2)
+        self.assertFalse(Dispatch.objects.filter(shopify_order=self.order, location__isnull=True).exists())
+
+    def test_a_dispatch_with_notifications_is_never_replaced(self, shipping, city):
+        dispatch = Dispatch.objects.create(
+            shopify_order=self.order, location=self.envia, channel="shopify", status=Dispatch.Status.ERROR
+        )
+        DispatchNotification.objects.create(dispatch=dispatch, channel="api", status="error")
+
+        self.assertEqual(ensure_dispatches(self.order), [dispatch])
+
+    def test_an_unregistered_warehouse_leaves_its_part_manual(self, shipping, city):
+        self.baru.delete()
+
+        dispatches = ensure_dispatches(self.order)
+
+        self.assertEqual([(d.location, d.status) for d in dispatches], [
+            (self.envia, Dispatch.Status.WAITING_LABEL), (None, Dispatch.Status.MANUAL),
+        ])
+        self.assertIn("Baru", dispatches[1].note)
+
+    @patch(f"{A}.quote", return_value=[QUOTE_OPTION])
+    def test_quote_and_generate_go_from_the_chosen_warehouse_with_its_products(self, quote, shipping, city):
+        ensure_dispatches(self.order)
+        baru = self._dispatch(self.baru)
+
+        self.assertEqual(self._post("label/quote/").status_code, 400)  # sin dispatch_id
+        response = self._post("label/quote/", {"dispatch_id": baru.pk})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["route"]["origin"]["name"], "Baru")
+        package = quote.call_args.args[0]["packages"][0]
+        self.assertEqual((package["content"], package["declaredValue"]), ("Cabina", 200000.0))
+
+        with patch(f"{A}.create_label", return_value=GENERATED) as create_label, patch(
+            f"{A}.download_label", return_value=PDF
+        ):
+            response = self._post("label/", {"dispatch_id": baru.pk, "carrier": "tcc", "service": "mensajeria"})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(create_label.call_args.kwargs["order_reference"], f"pamo-20577-{baru.pk}")
+        self.assertEqual(response.json()["dispatch"]["id"], baru.pk)
+        self.assertEqual(len(response.json()["dispatches"]), 2)
+        self.assertEqual(self._dispatch(self.baru).tracking_number, "474231399")
+        self.assertEqual(self._dispatch(self.envia).tracking_number, "")
+
+        url = f"/api/orders/{self.order.shopify_id}/dispatch/label/file/"
+        self.assertEqual(self.client.get(url).status_code, 400)  # sin dispatch_id
+        file = self.client.get(url, {"dispatch_id": baru.pk})
+        self.assertEqual(file.content, PDF)
+        self.assertIn(f'filename="pamo-20577-{baru.pk}-guia-474231399.pdf"', file["Content-Disposition"])
+
+    def test_a_dispatch_of_another_order_is_404(self, shipping, city):
+        other = Dispatch.objects.create(
+            shopify_order=_order(shopify_id="9", name="9"), channel="mercadolibre", status=Dispatch.Status.MANUAL
+        )
+
+        self.assertEqual(self._post("label/quote/", {"dispatch_id": other.pk}).status_code, 404)
+
+    def test_notify_is_not_available_yet_for_a_split_dispatch(self, shipping, city):
+        ensure_dispatches(self.order)
+
+        response = self._post("notify/", {"dispatch_id": self._dispatch(self.envia).pk})
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(process_order_dispatch(self.order), Dispatch.Status.WAITING_LABEL)  # el proceso tampoco avisa
+        self.assertFalse(DispatchNotification.objects.exists())
+
+    def test_the_listing_shows_both_dispatches(self, shipping, city):
+        ensure_dispatches(self.order)
+
+        [row] = self.client.get("/api/orders/").json()["orders"]
+
+        self.assertEqual([(d["location_name"], d["items"]) for d in row["dispatches"]], [
+            ("Baru", [{"sku": "CB8080L", "name": "Cabina", "quantity": 2}]),
+            ("Bodega Envia", [{"sku": "I001", "name": "Dispensador", "quantity": 1}]),
+        ])
+        self.assertEqual(row["fulfillment"]["location_name"], "Baru, Bodega Envia")
+
+    def test_buttons_reject_users_without_the_role(self, shipping, city):
+        ensure_dispatches(self.order)
+        self.client.force_login(User.objects.create_user("otro", password="x"))
+        body = {"dispatch_id": self._dispatch(self.baru).pk}
+        for path in ("notify/", "label/quote/", "label/"):
+            self.assertEqual(self._post(path, body).status_code, 403)

@@ -471,7 +471,8 @@ Contrato: `GET /api/orders/` en
 
 ## Despacho a bodegas
 
-Plan: [`../implementations-plans/order-dispatch-to-warehouses.md`](../implementations-plans/order-dispatch-to-warehouses.md).
+Plan en curso (despachos por bodega en pedidos repartidos):
+[`../implementations-plans/dispatch-per-fulfillment-order.md`](../implementations-plans/dispatch-per-fulfillment-order.md).
 Este backend decide qué bodega despacha cada pedido de Shopify (marketplace
 o tienda web) y le avisa por su canal; a Envía, por API.
 
@@ -503,8 +504,27 @@ guía del canal.
   se lanza por la API del orquestador
   (`POST /api/orchestrator/process-types/orders.sync_dispatch_locations/launch/`):
   la acción del admin exige seleccionar filas y la tabla empieza vacía.
-- **`Dispatch`** (uno por `ShopifyOrder`) y **`DispatchNotification`** (uno
-  por despacho y canal).
+- **`Dispatch`** y **`DispatchNotification`** (uno por despacho y canal).
+  Un `Dispatch` por `ShopifyOrder`, salvo los pedidos repartidos (abajo);
+  nunca dos despachos del mismo pedido con la misma bodega, ni dos sin
+  bodega (restricciones del modelo).
+- **Pedido repartido por Shopify** (desde 2026-10-16; decisión del
+  usuario: solo la **tienda web**, marketplace por ahora no): si el pedido
+  tiene fulfillment orders abiertos en más de una bodega
+  (`split_location_ids`, sobre la copia local), `ensure_dispatches` crea un
+  despacho por bodega con `split=True`, sin recalcular inventario: se sigue
+  lo que Shopify reservó. Cada uno lleva solo los productos de su
+  fulfillment order (`dispatch_lines`; precio de la línea del pedido con el
+  mismo SKU), que usan la guía (contenido y valor declarado) y el aviso.
+  - Una bodega de Shopify sin registrar deja un despacho `manual` sin
+    bodega para esa parte, con el motivo.
+  - Un despacho único sin actividad (sin avisos ni guía) se reemplaza por
+    los de cada bodega si Shopify ya repartió el pedido (caso #20577, que
+    quedó `manual` con "ninguna bodega tiene el pedido completo").
+  - **Fase 1**: se genera y descarga la guía por bodega. **Todavía no** se
+    avisa por bodega ni se cumple en Shopify: el proceso salta esos
+    despachos y "Notificar a proveedor" responde `400`. Eso es la fase 2
+    del plan.
 - **`dispatch_orders`** (proceso `orders.dispatch_orders`): pedidos creados
   desde `since`, sin despachar ni borrar ni cumplidos (`FULFILLED`). **No
   tiene interruptores** (se quitaron el 2026-10-11): se enciende creando su
@@ -600,6 +620,8 @@ guía del canal.
     reabre.
   - "Traer guía" (Mercado Libre, Falabella): guía del canal. Sodimac no
     lleva botón: el aviso toma la guía cargada por el RPA.
+  - Cada botón actúa sobre **un** despacho (`dispatch_for_action`): con
+    varios, el panel manda `dispatch_id`.
   - "Generar guía" (tienda web, Addi, cotizaciones y Madecentro): cotiza y
     genera en Envía Shipping desde la dirección de la bodega (copiada de
     Shopify al sincronizar bodegas) a la dirección de entrega (tienda web:

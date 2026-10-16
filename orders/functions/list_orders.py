@@ -1,9 +1,10 @@
 from collections import defaultdict
 
-from django.db.models import BooleanField, ExpressionWrapper, Q
+from django.db.models import BooleanField, ExpressionWrapper, Prefetch, Q
 from django.utils import timezone
 
 from ..models import Dispatch, MarketplaceLabel, MarketplaceOrder, ShopifyOrder
+from .dispatch_details import dispatch_lines
 from .order_listing_format import buyer_from_row, day_range, fulfillment_from_row, money_str
 
 
@@ -32,11 +33,15 @@ def filter_orders(*, marketplace=None, date_from=None, date_to=None, search=""):
             .values("shopify_order_id")
         )
         orders = orders.filter(Q(name=search) | Q(shopify_id__in=marketplace_ids))
+    return orders.prefetch_related(
+        "lines", Prefetch("dispatches", queryset=_dispatches()), "fulfillment_orders__lines"
+    ).order_by("-shopify_created_at", "-id")
+
+
+def _dispatches():
+    """Despachos para el listado, sin traer el PDF de la guía."""
     return (
-        orders.select_related("dispatch__location")
-        .defer("dispatch__label_pdf")
-        .prefetch_related("lines", "dispatch__notifications", "fulfillment_orders__lines")
-        .order_by("-shopify_created_at", "-id")
+        Dispatch.objects.select_related("location").defer("label_pdf").prefetch_related("notifications").order_by("id")
     )
 
 
@@ -81,7 +86,7 @@ def _format_order(order, rows, labels):
         ],
         "total": money_str(order.total),
         "currency": order.currency,
-        "dispatch": format_dispatch(order),
+        "dispatches": [format_dispatch(dispatch) for dispatch in order.dispatches.all()],
         "fulfillment_orders": [_format_fulfillment_order(item) for item in order.fulfillment_orders.all()],
         "channel_label": _channel_label(rows[0], labels.get(rows[0].pk)) if rows else None,
     }
@@ -144,11 +149,20 @@ def _format_fulfillment_order(item):
 def _fulfillment_from_dispatch(order):
     """Bodega de un pedido sin `MarketplaceOrder` (tienda web), con la misma
     forma que `fulfillment_from_row`: asignada si el despacho tiene bodega;
-    novedad con el motivo si no (sin stock, SKU desconocido)."""
-    try:
-        dispatch = order.dispatch
-    except Dispatch.DoesNotExist:
+    novedad con el motivo si no (sin stock, SKU desconocido). Repartido en
+    varias bodegas: asignada con los nombres separados por coma."""
+    dispatches = list(order.dispatches.all())
+    if not dispatches:
         return fulfillment_from_row(None)
+    if len(dispatches) > 1:
+        located = [dispatch.location for dispatch in dispatches if dispatch.location]
+        return {
+            "status": "asignada",
+            "location_id": ",".join(location.shopify_location_id for location in located),
+            "location_name": ", ".join(location.name for location in located),
+            "note": " ".join(dispatch.note for dispatch in dispatches if not dispatch.location),
+        }
+    dispatch = dispatches[0]
     if dispatch.location:
         return {
             "status": "asignada",
@@ -161,15 +175,20 @@ def _fulfillment_from_dispatch(order):
     return {"status": "novedad", "location_id": "", "location_name": "", "note": dispatch.note}
 
 
-def format_dispatch(order):
-    """Despacho a bodega (`Dispatch`), o None si el proceso aún no lo creó
-    (pedidos anteriores al `since` del proceso nunca lo tienen)."""
-    try:
-        dispatch = order.dispatch
-    except Dispatch.DoesNotExist:
-        return None
+def format_dispatches(order):
+    """Todos los despachos del pedido (uno por bodega si Shopify lo
+    repartió); `[]` si el proceso aún no los creó (pedidos anteriores al
+    `since` del proceso nunca los tienen)."""
+    return [format_dispatch(dispatch) for dispatch in _dispatches().filter(shopify_order=order)]
+
+
+def format_dispatch(dispatch):
+    """Despacho a bodega (`Dispatch`), con los productos que lleva."""
     return {
+        "id": dispatch.pk,
+        "split": dispatch.split,
         "status": dispatch.status,
+        "location_id": dispatch.location.shopify_location_id if dispatch.location else "",
         "location_name": dispatch.location.name if dispatch.location else "",
         "location_creates_own_label": bool(dispatch.location and dispatch.location.creates_own_label),
         "note": dispatch.note,
@@ -189,6 +208,9 @@ def format_dispatch(order):
                 "error": notification.error_description,
             }
             for notification in dispatch.notifications.all()
+        ],
+        "items": [
+            {"sku": line["sku"], "name": line["name"], "quantity": line["quantity"]} for line in dispatch_lines(dispatch)
         ],
         "updated_at": _iso(dispatch.updated_at),
     }

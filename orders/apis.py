@@ -1,4 +1,4 @@
-from django.http import HttpResponse
+from django.http import Http404, HttpResponse
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from rest_framework.pagination import PageNumberPagination
@@ -17,13 +17,15 @@ from integrations.sodimac_rpa.client import SodimacRpaBusy, SodimacRpaError
 from .functions.channel_label_file import ChannelLabelFileNotFound, channel_label_file
 from .functions.dispatch_actions import (
     DispatchActionError,
+    DispatchNotFound,
+    dispatch_for_action,
     envia_label_file,
     fetch_channel_label_now,
     generate_dispatch_label,
     notify_dispatch_now,
     quote_dispatch_label,
 )
-from .functions.list_orders import channel_label_for_order, filter_orders, format_dispatch, format_orders
+from .functions.list_orders import channel_label_for_order, filter_orders, format_dispatch, format_dispatches, format_orders
 from .functions.list_orders_not_created import list_orders_not_created
 from .functions.sodimac_rpa import (
     LabelRequestError,
@@ -89,24 +91,38 @@ class OrderListAPI(RoleRequiredMixin, APIView):
         )
 
 
+def _order_dispatch(shopify_order_id, dispatch_id, *, create=True):
+    """(pedido, despacho) de un botón del panel; 404 si el pedido no existe o
+    el despacho no es suyo. Un pedido repartido en varias bodegas exige
+    `dispatch_id` (`DispatchActionError` → 400)."""
+    order = get_object_or_404(ShopifyOrder, shopify_id=str(shopify_order_id), deleted_at__isnull=True)
+    try:
+        return order, dispatch_for_action(order, dispatch_id, create=create)
+    except DispatchNotFound as error:
+        raise Http404(str(error)) from error
+
+
 class DispatchActionAPI(RoleRequiredMixin, APIView):
-    """Acciones manuales sobre el despacho de UN pedido de Shopify, desde el
+    """Acciones manuales sobre UN despacho de un pedido de Shopify, desde el
     panel (botones "Traer/Generar guía" y "Notificar a proveedor"). Para
     probar el flujo de forma controlada mientras no se automatiza. La lógica
     vive en `orders/functions/dispatch_actions.py`.
-    Respuesta: {"dispatch": ...} (misma forma que en `GET /api/orders/`) o
+    Cuerpo: `dispatch_id` opcional; obligatorio si el pedido sale de varias
+    bodegas (un despacho por bodega).
+    Respuesta: {"dispatch": ..., "dispatches": [...]} (el despacho de la
+    acción y todos los del pedido, misma forma que en `GET /api/orders/`) o
     {"detail": ...} con 400 (no aplica) o 502 (proveedor; "resultado
     incierto" incluido)."""
 
     allowed_roles = ORDERS_LIST_ROLES
 
-    def run(self, order, request):
+    def run(self, dispatch, request):
         raise NotImplementedError
 
     def post(self, request, shopify_order_id):
-        order = get_object_or_404(ShopifyOrder, shopify_id=str(shopify_order_id), deleted_at__isnull=True)
         try:
-            return self.run(order, request)
+            _, dispatch = _order_dispatch(shopify_order_id, request.data.get("dispatch_id"))
+            return self.run(dispatch, request)
         except DispatchActionError as error:
             return Response({"detail": str(error)}, status=400)
         except ValueError as error:  # validación del payload de Envía, antes de enviar
@@ -117,27 +133,27 @@ class DispatchActionAPI(RoleRequiredMixin, APIView):
             return Response({"detail": f"Envía respondió con error: {error}"}, status=502)
 
     @staticmethod
-    def dispatch_response(order):
-        order.refresh_from_db()
-        return Response({"dispatch": format_dispatch(order)})
+    def dispatch_response(dispatch):
+        dispatch.refresh_from_db()
+        return Response({"dispatch": format_dispatch(dispatch), "dispatches": format_dispatches(dispatch.shopify_order)})
 
 
 class DispatchNotifyAPI(DispatchActionAPI):
     """POST /api/orders/<id>/dispatch/notify/: avisa a la bodega por sus
     canales (trae la guía si hace falta)."""
 
-    def run(self, order, request):
-        notify_dispatch_now(order)
-        return self.dispatch_response(order)
+    def run(self, dispatch, request):
+        notify_dispatch_now(dispatch)
+        return self.dispatch_response(dispatch)
 
 
 class DispatchFetchLabelAPI(DispatchActionAPI):
     """POST /api/orders/<id>/dispatch/label/fetch/: trae la guía del canal
     (Mercado Libre, Falabella)."""
 
-    def run(self, order, request):
-        fetch_channel_label_now(order)
-        return self.dispatch_response(order)
+    def run(self, dispatch, request):
+        fetch_channel_label_now(dispatch)
+        return self.dispatch_response(dispatch)
 
 
 class DispatchQuoteLabelAPI(DispatchActionAPI):
@@ -147,9 +163,9 @@ class DispatchQuoteLabelAPI(DispatchActionAPI):
     {"origin": {"name", "city"}, "destination": {"name", "address", "city",
     "region", "phone"}}}."""
 
-    def run(self, order, request):
+    def run(self, dispatch, request):
         keys = ("carrier", "carrierLabel", "service", "price", "currency", "etaMinDays", "etaMaxDays")
-        options, route = quote_dispatch_label(order)
+        options, route = quote_dispatch_label(dispatch)
         return Response({"options": [{key: option.get(key) for key in keys} for option in options], "route": route})
 
 
@@ -157,25 +173,29 @@ class DispatchGenerateLabelAPI(DispatchActionAPI):
     """POST /api/orders/<id>/dispatch/label/ con {"carrier", "service"}:
     genera la guía en Envía (**cobra**). Nunca genera una segunda."""
 
-    def run(self, order, request):
+    def run(self, dispatch, request):
         carrier = str(request.data.get("carrier") or "").strip()
         service = str(request.data.get("service") or "").strip()
         if not carrier or not service:
             return Response({"detail": "Falta la opción elegida (carrier y service)."}, status=400)
-        generate_dispatch_label(order, carrier=carrier, service=service)
-        return self.dispatch_response(order)
+        generate_dispatch_label(dispatch, carrier=carrier, service=service)
+        return self.dispatch_response(dispatch)
 
 
 class DispatchLabelFileAPI(RoleRequiredMixin, APIView):
-    """GET /api/orders/<id>/dispatch/label/file/: descarga el PDF de la guía
-    generada en Envía (guardada en el despacho). 404 si no tiene."""
+    """GET /api/orders/<id>/dispatch/label/file/[?dispatch_id=N]: descarga el
+    PDF de la guía generada en Envía (guardada en el despacho). 404 si no
+    tiene; `dispatch_id` obligatorio si el pedido sale de varias bodegas."""
 
     allowed_roles = ORDERS_LIST_ROLES
 
     def get(self, request, shopify_order_id):
-        order = get_object_or_404(ShopifyOrder, shopify_id=str(shopify_order_id), deleted_at__isnull=True)
         try:
-            filename, content = envia_label_file(order)
+            _, dispatch = _order_dispatch(shopify_order_id, request.query_params.get("dispatch_id"), create=False)
+        except DispatchActionError as error:
+            return Response({"detail": str(error)}, status=400)
+        try:
+            filename, content = envia_label_file(dispatch)
         except DispatchActionError as error:
             return Response({"detail": str(error)}, status=404)
         except EnviaAPIError as error:

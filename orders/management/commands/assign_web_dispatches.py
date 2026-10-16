@@ -31,7 +31,7 @@ class Command(BaseCommand):
                 financial_status=PAID,
                 cancelled_at__isnull=True,
                 deleted_at__isnull=True,
-                dispatch__isnull=True,
+                dispatches__isnull=True,
                 shopify_created_at__gte=start,
             )
             .exclude(fulfillment_status="FULFILLED")
@@ -45,14 +45,14 @@ class Command(BaseCommand):
             return
         assigned = novedad = failed = 0
         for order in orders:
-            dispatch = assign_web_dispatch(order.shopify_id)
-            if dispatch is None:
+            dispatches = assign_web_dispatch(order.shopify_id)
+            if dispatches is None:
                 failed += 1
                 self.stdout.write(f"  {order.name}: error (ver log); se reintenta en la reconciliación")
-            elif dispatch.location:
+            elif all(dispatch.location for dispatch in dispatches):
                 assigned += 1
-                self.stdout.write(f"  {order.name}: {dispatch.location.name}")
+                self.stdout.write(f"  {order.name}: {', '.join(dispatch.location.name for dispatch in dispatches)}")
             else:
                 novedad += 1
-                self.stdout.write(f"  {order.name}: novedad ({dispatch.note})")
+                self.stdout.write(f"  {order.name}: novedad ({' '.join(d.note for d in dispatches if d.note)})")
         self.stdout.write(self.style.SUCCESS(f"Asignados {assigned}, novedad {novedad}, con error {failed}."))

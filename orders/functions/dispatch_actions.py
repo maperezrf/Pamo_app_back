@@ -9,7 +9,8 @@ from integrations.envia.functions.resolve_colombia_city import resolve_colombia_
 from integrations.shopify.functions.get_order_shipping_address import get_order_shipping_address
 
 from ..models import Dispatch, MarketplaceOrder
-from .dispatch_orders import process_order_dispatch, reopen_manual_dispatch, stored_envia_label
+from .dispatch_details import dispatch_lines, lines_total
+from .dispatch_orders import ensure_dispatches, process_dispatch, reopen_manual_dispatch, stored_envia_label
 from .fetch_dispatch_label import CHANNEL_LABELS, fetch_dispatch_label
 from .shopify_order_marketplace import SHOPIFY_CHANNEL
 
@@ -24,20 +25,53 @@ class DispatchActionError(Exception):
     equipo (se muestra en el panel)."""
 
 
-def notify_dispatch_now(order):
+class DispatchNotFound(Exception):
+    """El despacho pedido no es de este pedido."""
+
+
+def dispatch_for_action(order, dispatch_id=None, *, create=True):
+    """El despacho sobre el que actúa un botón del panel, creando los del
+    pedido si no existen (`ensure_dispatches`; con `create=False`, solo los
+    que ya hay). Con un solo despacho, `dispatch_id` no hace falta; si el
+    pedido sale de varias bodegas, sí."""
+    if create:
+        dispatches = ensure_dispatches(order)
+    else:
+        dispatches = list(Dispatch.objects.filter(shopify_order=order).select_related("location").order_by("id"))
+        if not dispatches:
+            raise DispatchNotFound(f"El pedido {order.name} no tiene despacho.")
+    if dispatch_id not in (None, ""):
+        for dispatch in dispatches:
+            if str(dispatch.pk) == str(dispatch_id):
+                return dispatch
+        raise DispatchNotFound(f"El despacho {dispatch_id} no es del pedido {order.name}.")
+    if len(dispatches) > 1:
+        raise DispatchActionError(
+            "El pedido sale de varias bodegas: ya tiene un despacho por bodega. Recarga y usa los botones de cada una."
+        )
+    return dispatches[0]
+
+
+def notify_dispatch_now(dispatch):
     """Botón "Notificar a proveedor": avanza el despacho ya (trae la guía y
     avisa por los canales de la bodega), sin esperar al proceso. Un
     despacho en gestión manual se vuelve a evaluar."""
-    reopen_manual_dispatch(order)
-    process_order_dispatch(order)
-    return Dispatch.objects.select_related("location").get(shopify_order=order)
+    if dispatch.split:
+        raise DispatchActionError(
+            "Pedido repartido en varias bodegas: el aviso por bodega todavía no está disponible. "
+            "Avisar a la bodega a mano con la guía generada."
+        )
+    reopen_manual_dispatch(dispatch)
+    process_dispatch(dispatch)
+    return dispatch
 
 
-def fetch_channel_label_now(order):
+def fetch_channel_label_now(dispatch):
     """Botón "Traer guía" (Mercado Libre, Falabella): la pide al canal y la
     deja registrada en el despacho. Ojo: en Mercado Libre una guía sin
     imprimir queda marcada como impresa."""
-    dispatch = _dispatch_with_location(order)
+    order = dispatch.shopify_order
+    _require_location(dispatch)
     if order.marketplace not in CHANNEL_LABELS:
         raise DispatchActionError("Este canal no trae guía propia: hay que generarla en Envía.")
     label, reason = fetch_dispatch_label(order)
@@ -51,13 +85,14 @@ def fetch_channel_label_now(order):
     return dispatch
 
 
-def quote_dispatch_label(order):
+def quote_dispatch_label(dispatch):
     """Botón "Generar guía", paso 1 (no cobra): opciones de Envía Shipping
-    desde la bodega del despacho hasta la dirección de envío del pedido.
-    Devuelve (opciones, ruta): la ruta es lo que se muestra para revisar
-    antes de pagar, `{"origin": {name, city}, "destination": {name,
-    address, city, region, phone}}`."""
-    dispatch = _dispatch_for_generation(order)
+    desde la bodega del despacho hasta la dirección de envío del pedido,
+    con los productos del despacho. Devuelve (opciones, ruta): la ruta es lo
+    que se muestra para revisar antes de pagar, `{"origin": {name, city},
+    "destination": {name, address, city, region, phone}}`."""
+    _check_generation(dispatch)
+    order = dispatch.shopify_order
     shipping = _destination(order)
     route = {
         "origin": {"name": dispatch.location.name, "city": dispatch.location.city},
@@ -69,18 +104,18 @@ def quote_dispatch_label(order):
             "phone": shipping["phone"] or order.phone,
         },
     }
-    return quote(_shipping_payload(order, dispatch.location, shipping)), route
+    return quote(_shipping_payload(dispatch, shipping)), route
 
 
-def generate_dispatch_label(order, *, carrier, service):
+def generate_dispatch_label(dispatch, *, carrier, service):
     """Botón "Generar guía", paso 2 (**cobra**): genera la guía de la opción
     elegida, la baja y la deja en el despacho. Nunca genera una segunda.
     Si el resultado es incierto, lo anota en el despacho y no reintenta."""
-    dispatch = _dispatch_for_generation(order)
+    _check_generation(dispatch)
     option = {"providerPayload": {"carrier": carrier, "service": service, "type": 1}}
-    reference = f"pamo-{str(order.name).lstrip('#')}"
+    reference = label_reference(dispatch)
     try:
-        result = create_label(_shipping_payload(order, dispatch.location), option, order_reference=reference)
+        result = create_label(_shipping_payload(dispatch), option, order_reference=reference)
     except LabelUnknownResult as error:
         dispatch.note = (
             f"Resultado incierto al generar la guía ({error}). Revisar en Envía si existe una con la referencia "
@@ -102,41 +137,51 @@ def generate_dispatch_label(order, *, carrier, service):
     return dispatch
 
 
-def envia_label_file(order):
-    """PDF de la guía generada en Envía del pedido: (nombre de archivo,
+def label_reference(dispatch):
+    """Referencia de la guía en Envía: `pamo-<pedido>`; en un despacho de
+    una bodega de un pedido repartido, `pamo-<pedido>-<despacho>`, para que
+    cada bodega tenga la suya."""
+    reference = f"pamo-{str(dispatch.shopify_order.name).lstrip('#')}"
+    return f"{reference}-{dispatch.pk}" if dispatch.split else reference
+
+
+def envia_label_file(dispatch):
+    """PDF de la guía generada en Envía del despacho: (nombre de archivo,
     bytes). Una guía generada antes de guardar el PDF se baja de su URL y
     queda guardada."""
-    dispatch = Dispatch.objects.filter(shopify_order=order, label_source=Dispatch.LabelSource.ENVIA).first()
-    if dispatch is None:
-        raise DispatchActionError("El pedido no tiene guía generada en Envía.")
-    return f"pamo-{str(order.name).lstrip('#')}-guia-{dispatch.tracking_number}.pdf", stored_envia_label(dispatch)
+    if dispatch.label_source != Dispatch.LabelSource.ENVIA:
+        raise DispatchActionError("El despacho no tiene guía generada en Envía.")
+    return f"{label_reference(dispatch)}-guia-{dispatch.tracking_number}.pdf", stored_envia_label(dispatch)
 
 
-def _dispatch_with_location(order):
-    dispatch = reopen_manual_dispatch(order)
+def _require_location(dispatch):
+    reopen_manual_dispatch(dispatch)
     if dispatch.location is None:
         raise DispatchActionError(dispatch.note or "El pedido no tiene bodega asignada.")
-    return dispatch
 
 
-def _dispatch_for_generation(order):
-    dispatch = _dispatch_with_location(order)
+def _check_generation(dispatch):
+    order = dispatch.shopify_order
+    _require_location(dispatch)
     if order.marketplace in CHANNEL_LABELS:
         raise DispatchActionError("Este canal trae su propia guía: usar \"Traer guía\".")
     if dispatch.location.creates_own_label and order.marketplace == SHOPIFY_CHANNEL:
         raise DispatchActionError(f"{dispatch.location.name} crea su propia guía: no se genera en Envía.")
     if dispatch.label_source == Dispatch.LabelSource.ENVIA:
         raise DispatchActionError(f"Ya tiene una guía generada ({dispatch.tracking_number}); no se genera otra.")
-    return dispatch
 
 
-def _shipping_payload(order, location, shipping=None):
+def _shipping_payload(dispatch, shipping=None):
+    """Envío de la guía: desde la bodega del despacho, con sus productos."""
+    order = dispatch.shopify_order
+    location = dispatch.location
     if not location.origin_address or not location.origin_phone:
         raise DispatchActionError(f"A {location.name} le falta dirección o teléfono en Shopify (sincronizar bodegas).")
     shipping = shipping or _destination(order)
     origin_city = resolve_colombia_city(location.city, location.origin_province_code)
     destination_city = resolve_colombia_city(shipping["city"], shipping["province_code"])
-    names = ", ".join(line.name for line in order.lines.all() if line.name)
+    lines = dispatch_lines(dispatch)
+    names = ", ".join(line["name"] for line in lines if line["name"])
     return {
         "origin": {
             "name": location.name, "company": "Pamo", "phone": location.origin_phone, "email": DISPATCH_EMAIL,
@@ -156,7 +201,7 @@ def _shipping_payload(order, location, shipping=None):
                 "type": "box",
                 "content": (names or f"Pedido {order.name}")[:180],
                 "amount": 1,
-                "declaredValue": float(order.total or 0),
+                "declaredValue": float((lines_total(lines) if dispatch.split else order.total) or 0),
                 **DEFAULT_PACKAGE,
             }
         ],

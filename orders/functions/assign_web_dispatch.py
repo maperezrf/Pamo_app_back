@@ -1,7 +1,7 @@
 import logging
 
 from ..models import Dispatch, DispatchLocation, ShopifyOrder
-from .dispatch_orders import ensure_dispatch
+from .dispatch_orders import ensure_dispatches
 from .shopify_order_marketplace import SHOPIFY_CHANNEL
 
 logger = logging.getLogger(__name__)
@@ -21,7 +21,8 @@ def assign_web_dispatch(shopify_id):
     webhook puede llegar antes de que se guarde su vínculo con
     `MarketplaceOrder`.
 
-    Una sola vez: si ya tiene despacho no se recalcula. Solo pedidos
+    Si Shopify repartió el pedido en varias bodegas, un despacho por bodega
+    (`ensure_dispatches`). Una sola vez: si ya tiene despacho no se recalcula. Solo pedidos
     pagados, sin cancelar ni despachar (regla del 2026-10-08: una cotización
     entra solo si se vuelve pedido y está pagada). Un error (inventario de
     Shopify caído) no interrumpe a quien llama: se registra y la
@@ -29,11 +30,11 @@ def assign_web_dispatch(shopify_id):
     bodegas esté vacío (sin `sync_dispatch_locations`): el pedido quedaría
     en `manual` para siempre por "bodega sin registrar".
 
-    Devuelve el `Dispatch` creado o None.
+    Devuelve la lista de `Dispatch` creados o None.
     """
     order = (
         ShopifyOrder.objects.filter(shopify_id=str(shopify_id), deleted_at__isnull=True)
-        .prefetch_related("lines")
+        .prefetch_related("lines", "fulfillment_orders")
         .first()
     )
     if (
@@ -47,7 +48,7 @@ def assign_web_dispatch(shopify_id):
     ):
         return None
     try:
-        return ensure_dispatch(order)
+        return ensure_dispatches(order)
     except Exception:  # noqa: BLE001 -- la reconciliación lo reintenta
         logger.exception("No se pudo asignar bodega al pedido web %s", order.name)
         return None

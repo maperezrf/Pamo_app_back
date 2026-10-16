@@ -154,13 +154,14 @@ class DispatchNotificationInline(admin.TabularInline):
 @admin.register(Dispatch)
 class DispatchAdmin(admin.ModelAdmin):
     list_display = (
-        "shopify_order", "channel", "location", "status", "tracking_number", "shopify_fulfilled_at", "updated_at"
+        "shopify_order", "channel", "location", "split", "status", "tracking_number", "shopify_fulfilled_at", "updated_at"
     )
     list_filter = ("status", "channel", "location")
     search_fields = ("shopify_order__name", "shopify_order__shopify_id", "tracking_number")
     readonly_fields = (
         "shopify_order",
         "channel",
+        "split",
         "tracking_number",
         "label_sha256",
         "label_fetched_at",

@@ -33,7 +33,8 @@ def process_shopify_order_webhook(params, progress_callback=None, cancellation_t
         return
     result = upsert_shopify_order(data)
     # Pedido web pagado: se le asigna bodega al llegar (sin avisar a nadie).
-    dispatch = assign_web_dispatch(data["id"])
-    suffix = f"; bodega {dispatch.location.name}" if dispatch and dispatch.location else ""
-    suffix = suffix or ("; sin bodega (ver despacho)" if dispatch else "")
+    dispatches = assign_web_dispatch(data["id"]) or []
+    names = [dispatch.location.name for dispatch in dispatches if dispatch.location]
+    suffix = f"; bodega {', '.join(names)}" if names else ""
+    suffix = suffix or ("; sin bodega (ver despacho)" if dispatches else "")
     progress_callback(100, f"Pedido {data['name'] or order_id}: {result}{suffix}")

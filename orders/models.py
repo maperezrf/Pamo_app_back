@@ -404,6 +404,9 @@ class Dispatch(models.Model):
     """Despacho de un pedido de Shopify (todos los pedidos, de marketplace o
     de la tienda web, terminan en `ShopifyOrder`): qué bodega lo despacha,
     con qué guía y si ya se le avisó. Lo crea y avanza `dispatch_orders`.
+    Uno por pedido, salvo un pedido de la tienda web que Shopify reparte en
+    varias bodegas: uno por bodega (`split`), cada uno con los productos de
+    su fulfillment order.
     Las guías del canal no se guardan (solo su hash; se vuelven a pedir al
     canal). Las generadas en Envía sí (`label_pdf`), como las del RPA de
     Sodimac, para descargarlas desde el panel.
@@ -417,10 +420,13 @@ class Dispatch(models.Model):
         MANUAL = "manual", "Gestión manual"
         CANCELLED = "cancelado", "Cancelado"
 
-    shopify_order = models.OneToOneField(ShopifyOrder, related_name="dispatch", on_delete=models.CASCADE)
+    shopify_order = models.ForeignKey(ShopifyOrder, related_name="dispatches", on_delete=models.CASCADE)
     location = models.ForeignKey(
         DispatchLocation, related_name="dispatches", null=True, blank=True, on_delete=models.PROTECT
     )
+    # Parte de un pedido web repartido por Shopify en varias bodegas: lleva
+    # solo los productos del fulfillment order de su bodega.
+    split = models.BooleanField(default=False)
     # Canal de venta (`ShopifyOrder.marketplace`): define de dónde sale la guía.
     channel = models.CharField(max_length=20, blank=True)
     status = models.CharField(max_length=20, choices=Status.choices, db_index=True)
@@ -454,6 +460,13 @@ class Dispatch(models.Model):
     class Meta:
         verbose_name = "Despacho"
         verbose_name_plural = "Despachos"
+        constraints = [
+            models.UniqueConstraint(fields=["shopify_order", "location"], name="unique_dispatch_order_location"),
+            # Los NULL no chocan entre sí: un pedido no tiene dos despachos sin bodega.
+            models.UniqueConstraint(
+                fields=["shopify_order"], condition=models.Q(location__isnull=True), name="unique_dispatch_order_no_location"
+            ),
+        ]
 
     def __str__(self):
         return f"{self.shopify_order} -> {self.location or 'sin bodega'} ({self.status})"
