@@ -15,5 +15,5 @@ WHATSAPP_TEMPLATES = {
     # (botón "Notificar a proveedor" y el proceso); el aviso masivo usará
     # la misma. Encabezado: documento. Cuerpo: {{1}} bodega, {{2}} cuántos
     # pedidos.
-    "despacho_bodega": {"name": "despacho_pedido", "language": "es_CO"},
+    "despacho_bodega": {"name": "despacho_pedido", "language": "es"},
 }
