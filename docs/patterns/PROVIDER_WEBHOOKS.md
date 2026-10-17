@@ -20,8 +20,8 @@ las APIs internas de la app, en su propio archivo.
   mandó el proveedor, no sobre una re-serialización de DRF, y acceder a
   `request.data` primero puede consumir el stream.
 - La función que verifica la firma vive en `integrations/<provider>/client.py`
-  (ej. `WhatsAppClient.verify_signature`, o `ShopifyClient.verify_webhook_signature`
-  para el caso nuevo de Shopify) — no se reimplementa por endpoint.
+  (ej. `ShopifyClient.verify_webhook_signature`) — no se reimplementa por
+  endpoint.
 - El endpoint responde rápido: no procesa nada pesado dentro del request.
   Encola el trabajo real vía `orchestrator.services.launch_process(...)`
   (ver `docs/apps/orchestrator.md`) y responde `200` de inmediato —
@@ -66,8 +66,7 @@ En la app dueña de los datos que trae el webhook:
   `launch_process`, responde. No parsea el payload de negocio ni persiste
   nada — eso es del proceso registrado.
 - `<app>/functions/parse_<evento>_webhook.py`: normaliza el payload crudo
-  del proveedor a un dict propio de la app (mismo criterio que
-  `integrations/whatsapp/functions/parse_webhook_event.py`).
+  del proveedor a un dict propio de la app.
 - `<app>/functions/process_<evento>_webhook.py`: el callable registrado en
   el orquestador (`(params, progress_callback=None, cancellation_token=None)`).
   Llama al parser y después a la función que persiste.

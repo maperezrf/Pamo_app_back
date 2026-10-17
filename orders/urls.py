@@ -2,6 +2,7 @@ from django.urls import path
 from .apis import (
     DispatchFetchLabelAPI,
     DispatchLabelFileAPI,
+    DispatchLabelLinkAPI,
     DispatchGenerateLabelAPI,
     DispatchNotifyAPI,
     DispatchQuoteLabelAPI,
@@ -19,6 +20,7 @@ from .webhooks import MadecentroOrderWebhookView, MercadoLibreOrderWebhookView, 
 
 urlpatterns = [
     path("", OrderListAPI.as_view(), name="orders-list"),
+    path("labels/<str:token>/", DispatchLabelLinkAPI.as_view(), name="orders-dispatch-label-link"),
     path("sodimac/rpa/callback/", SodimacRpaCallbackAPI.as_view(), name="orders-sodimac-rpa-callback"),
     path("sodimac/rpa/status/", SodimacRpaStatusAPI.as_view(), name="orders-sodimac-rpa-status"),
     path(

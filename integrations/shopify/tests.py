@@ -17,8 +17,11 @@ from .functions.create_order import ShopifyOrderCreationError, create_order
 from .functions.get_variant_by_sku import get_variant_by_sku
 from .functions.get_variant_inventory_by_sku import get_variant_inventory_by_sku
 from .functions.list_locations import list_locations
+from .functions.download_image import DownloadImageError, download_image
+from .functions.get_variant_images_by_skus import get_variant_images_by_skus
 from .functions.get_variants_by_skus import get_variants_by_skus
 from .functions.list_customers_page import list_customers_page
+from .functions.get_fulfillment_order_order_id import get_fulfillment_order_order_id
 from .functions.get_order import get_order
 from .functions.list_orders_page import list_orders_page
 from .functions.update_customer_address import update_customer_address
@@ -678,3 +681,60 @@ class ListLocationsTests(SimpleTestCase):
                  "zip": "", "phone": ""},
             ],
         )
+
+
+@patch("integrations.shopify.client.requests.post")
+class GetVariantImagesBySkusTests(SimpleTestCase):
+    def test_variant_image_first_then_the_product_one(self, mock_post):
+        mock_post.return_value.raise_for_status.return_value = None
+        mock_post.return_value.json.return_value = {"data": {"productVariants": {
+            "edges": [
+                {"node": {"sku": "A", "image": {"url": "https://cdn.shopify.com/a.jpg"}, "product": {"featuredImage": {"url": "https://cdn.shopify.com/pa.jpg"}}}},
+                {"node": {"sku": "B", "image": None, "product": {"featuredImage": {"url": "https://cdn.shopify.com/pb.jpg"}}}},
+                {"node": {"sku": "C", "image": None, "product": {"featuredImage": None}}},
+                {"node": {"sku": "A-OTRO", "image": {"url": "https://cdn.shopify.com/x.jpg"}, "product": None}},
+            ],
+            "pageInfo": {"hasNextPage": False, "endCursor": None},
+        }}}
+
+        self.assertEqual(
+            get_variant_images_by_skus(["A", "B", "C"]),
+            {"A": "https://cdn.shopify.com/a.jpg", "B": "https://cdn.shopify.com/pb.jpg"},
+        )
+
+
+class DownloadImageTests(SimpleTestCase):
+    @patch("integrations.shopify.functions.download_image.requests.get")
+    def test_only_the_shopify_cdn(self, mock_get):
+        for url in ("http://cdn.shopify.com/a.jpg", "https://evil.test/a.jpg", ""):
+            with self.assertRaises(DownloadImageError):
+                download_image(url)
+        mock_get.assert_not_called()
+
+    @patch("integrations.shopify.functions.download_image.requests.get")
+    def test_downloads_resized(self, mock_get):
+        mock_get.return_value.status_code = 200
+        mock_get.return_value.iter_content.return_value = [b"img", b"bytes"]
+
+        self.assertEqual(download_image("https://cdn.shopify.com/a.jpg?v=1"), b"imgbytes")
+        self.assertEqual(mock_get.call_args.kwargs["params"], {"width": 240})
+        self.assertFalse(mock_get.call_args.kwargs["allow_redirects"])
+
+
+class GetFulfillmentOrderOrderIdTests(SimpleTestCase):
+    @patch("integrations.shopify.client.requests.post")
+    def test_returns_order_id_without_prefix(self, mock_post):
+        mock_post.return_value.raise_for_status.return_value = None
+        mock_post.return_value.json.return_value = {"data": {"fulfillmentOrder": {
+            "id": "gid://shopify/FulfillmentOrder/7", "order": {"id": "gid://shopify/Order/10"},
+        }}}
+
+        self.assertEqual(get_fulfillment_order_order_id("7"), "10")
+        self.assertEqual(mock_post.call_args.kwargs["json"]["variables"], {"id": "gid://shopify/FulfillmentOrder/7"})
+
+    @patch("integrations.shopify.client.requests.post")
+    def test_missing_fulfillment_order_is_empty(self, mock_post):
+        mock_post.return_value.raise_for_status.return_value = None
+        mock_post.return_value.json.return_value = {"data": {"fulfillmentOrder": None}}
+
+        self.assertEqual(get_fulfillment_order_order_id("7"), "")

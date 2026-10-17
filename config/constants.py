@@ -113,11 +113,12 @@ ENVIA_FULFILLMENT_WAREHOUSE_ID = config("ENVIA_FULFILLMENT_WAREHOUSE_ID", defaul
 # interruptores: lo enciende o pausa la programación de
 # `orders.dispatch_orders` en el orquestador, con la fecha de inicio como
 # parámetro (`{"since": "AAAA-MM-DD"}`).
-# Plantilla aprobada en Meta para avisar por WhatsApp (los mensajes que
-# inicia la empresa la exigen). Variables del cuerpo, en orden: pedido,
-# productos, ciudad. Sin plantilla, el aviso por WhatsApp queda en error.
-DISPATCH_WHATSAPP_TEMPLATE = config("DISPATCH_WHATSAPP_TEMPLATE", default="")
-DISPATCH_WHATSAPP_TEMPLATE_LANGUAGE = config("DISPATCH_WHATSAPP_TEMPLATE_LANGUAGE", default="es_CO")
+# La plantilla de WhatsApp del aviso no es configuración de entorno: vive
+# en orders/whatsapp_templates.py.
+# URL pública de este backend (Railway), sin "/" final. Con ella se arman
+# los links firmados a las guías que se mandan a las bodegas
+# (orders/functions/label_links.py).
+BACKEND_PUBLIC_URL = config("BACKEND_PUBLIC_URL", default="")
 # Correo que va en la orden de Envía cuando el canal no da el del
 # comprador (Envía lo exige sin customerId).
 DISPATCH_ENVIA_FALLBACK_EMAIL = config("DISPATCH_ENVIA_FALLBACK_EMAIL", default="")
@@ -158,14 +159,12 @@ EMAIL_USE_TLS = config("EMAIL_USE_TLS", default=True, cast=bool)
 DEFAULT_FROM_EMAIL = config("DEFAULT_FROM_EMAIL", default="")
 EMAIL_TIMEOUT = 20
 
-# WHATSAPP (integrations/whatsapp/) -- WhatsApp Cloud API (Meta), autenticación
-# por token Bearer. Credenciales pendientes de conseguir.
-WHATSAPP_ACCESS_TOKEN = config("WHATSAPP_ACCESS_TOKEN")
-WHATSAPP_PHONE_NUMBER_ID = config("WHATSAPP_PHONE_NUMBER_ID")
-WHATSAPP_BUSINESS_ACCOUNT_ID = config("WHATSAPP_BUSINESS_ACCOUNT_ID")
-WHATSAPP_APP_SECRET = config("WHATSAPP_APP_SECRET")
-WHATSAPP_WEBHOOK_VERIFY_TOKEN = config("WHATSAPP_WEBHOOK_VERIFY_TOKEN")
-WHATSAPP_API_VERSION = config("WHATSAPP_API_VERSION", default="v21.0")
+# ZERNIO (integrations/zernio/) -- WhatsApp a través de Zernio, autenticación
+# por API key Bearer. ZERNIO_WHATSAPP_ACCOUNT_ID es el `accountId` de la línea
+# de WhatsApp conectada en Zernio (desde ahí salen los mensajes).
+ZERNIO_API_KEY = config("ZERNIO_API_KEY")
+ZERNIO_WHATSAPP_ACCOUNT_ID = config("ZERNIO_WHATSAPP_ACCOUNT_ID")
+ZERNIO_BASE_URL = config("ZERNIO_BASE_URL", default="https://zernio.com/api/v1")
 
 # DATABASE
 # Vacío en desarrollo local (se usa SQLite). En Railway apunta al Postgres

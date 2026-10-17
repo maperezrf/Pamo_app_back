@@ -74,28 +74,35 @@ def dispatch_details(dispatch):
 def dispatch_text(details, location, tracking_number=""):
     """Texto del aviso para correo y vista previa: pedido, productos y
     destinatario. Sin datos que la bodega no necesite para despachar."""
-    buyer = details["buyer"]
-    name = " ".join(part for part in (buyer["first_name"], buyer["last_name"]) if part)
     lines = [
-        f"Pedido {details['order_name']} ({details['channel_label']}"
-        + (f" #{', #'.join(details['marketplace_numbers'])}" if details["marketplace_numbers"] else "")
-        + f") - despacha {location.name}",
+        f"Pedido {details['order_name']} ({channel_text(details)}) - despacha {location.name}",
         "",
         "Productos:",
         *[f"- {item['sku'] or '(sin SKU)'} x{item['quantity']}  {item['name']}" for item in details["items"]],
         "",
         "Destinatario:",
-        f"{name or '-'}",
-        f"{buyer['address'] or '-'}, {buyer['city'] or '-'}, {buyer['region'] or '-'}",
-        f"Teléfono: {buyer['phone'] or '-'}",
+        *recipient_lines(details),
     ]
     if tracking_number:
         lines += ["", f"Guía: {tracking_number} (adjunta)"]
     return "\n".join(lines)
 
 
-def items_summary(details):
-    return ", ".join(f"{item['sku'] or item['name']} x{item['quantity']}" for item in details["items"])
+def channel_text(details):
+    """Canal y número del pedido en él: "Mercado Libre #2000012345"."""
+    numbers = details["marketplace_numbers"]
+    return details["channel_label"] + (f" #{', #'.join(numbers)}" if numbers else "")
+
+
+def recipient_lines(details):
+    """Destinatario en líneas: nombre, dirección, ciudad y teléfono."""
+    buyer = details["buyer"]
+    name = " ".join(part for part in (buyer["first_name"], buyer["last_name"]) if part)
+    return [
+        name or "-",
+        f"{buyer['address'] or '-'}, {buyer['city'] or '-'}, {buyer['region'] or '-'}",
+        f"Teléfono: {buyer['phone'] or '-'}",
+    ]
 
 
 def _shopify_buyer(order):

@@ -1770,6 +1770,47 @@ class ProcessShopifyOrderWebhookTests(NoWebDispatchAssignmentMixin, TestCase):
 
         self.assertIsNotNone(ShopifyOrder.objects.get(shopify_id="10").deleted_at)
 
+    @patch("orders.functions.process_shopify_order_webhook.get_fulfillment_order_order_id")
+    def test_fulfillment_order_move_rereads_the_order_found_locally(self, live_lookup, get_order):
+        get_order.return_value = _shopify_data("10")
+        self._process("orders/create")
+        get_order.return_value = _shopify_data(
+            "10", updated_at="2026-10-04T15:00:00Z", fulfillment_orders=[_fulfillment_order("701", location="Baru")]
+        )
+
+        from .functions.process_shopify_order_webhook import process_shopify_order_webhook
+
+        process_shopify_order_webhook({"topic": "fulfillment_orders/moved", "fulfillment_order_ids": ["700", "701"]})
+
+        live_lookup.assert_not_called()
+        self.assertEqual(
+            list(ShopifyFulfillmentOrder.objects.filter(order__shopify_id="10").values_list("location_name", flat=True)),
+            ["Baru"],
+        )
+
+    @patch("orders.functions.process_shopify_order_webhook.get_fulfillment_order_order_id")
+    def test_unknown_fulfillment_order_is_looked_up_in_shopify(self, live_lookup, get_order):
+        live_lookup.side_effect = ["", "10"]
+        get_order.return_value = _shopify_data("10")
+
+        from .functions.process_shopify_order_webhook import process_shopify_order_webhook
+
+        process_shopify_order_webhook(
+            {"topic": "fulfillment_orders/order_routing_complete", "fulfillment_order_ids": ["800", "801"]}
+        )
+
+        get_order.assert_called_once_with("10")
+        self.assertTrue(ShopifyOrder.objects.filter(shopify_id="10").exists())
+
+    @patch("orders.functions.process_shopify_order_webhook.get_fulfillment_order_order_id", return_value="")
+    def test_fulfillment_order_without_order_does_nothing(self, live_lookup, get_order):
+        from .functions.process_shopify_order_webhook import process_shopify_order_webhook
+
+        process_shopify_order_webhook({"topic": "fulfillment_orders/cancelled", "fulfillment_order_ids": ["900"]})
+
+        get_order.assert_not_called()
+        self.assertFalse(ShopifyOrder.objects.exists())
+
 
 TEST_SHOPIFY_SECRET = "test-shopify-secret"
 
@@ -1811,6 +1852,50 @@ class ShopifyOrderWebhookViewTests(TestCase):
         self.assertEqual(self._post({"id": 1}, topic="orders/paid").status_code, 200)
         self.assertEqual(self._post({"name": "x"}).status_code, 200)
         launch.assert_not_called()
+
+    def test_fulfillment_uses_its_order_id(self, launch):
+        response = self._post({"id": 255858046, "order_id": 450789469, "tracking_number": "1Z"}, topic="fulfillments/create")
+
+        self.assertEqual(response.status_code, 200)
+        launch.assert_called_once_with(
+            code="orders.process_shopify_order_webhook",
+            params={"topic": "fulfillments/create", "order_id": "450789469"},
+        )
+
+    def test_fulfillment_order_move_launches_with_fulfillment_order_ids(self, launch):
+        body = {
+            "original_fulfillment_order": {"id": "gid://shopify/FulfillmentOrder/1", "status": "closed",
+                                           "assigned_location_id": "gid://shopify/Location/5"},
+            "moved_fulfillment_order": {"id": "gid://shopify/FulfillmentOrder/2", "status": "open"},
+            "destination_location_id": "gid://shopify/Location/6",
+            "fulfillment_order_line_items_requested": None,
+        }
+
+        self.assertEqual(self._post(body, topic="fulfillment_orders/moved").status_code, 200)
+        launch.assert_called_once_with(
+            code="orders.process_shopify_order_webhook",
+            params={"topic": "fulfillment_orders/moved", "fulfillment_order_ids": ["1", "2"]},
+        )
+
+    def test_fulfillment_order_topic_without_ids_is_200_without_launch(self, launch):
+        self.assertEqual(self._post({"x": 1}, topic="fulfillment_orders/split").status_code, 200)
+        self.assertEqual(self._post({"id": 1}, topic="fulfillments/create").status_code, 200)
+        launch.assert_not_called()
+
+
+class ParseFulfillmentOrderWebhookTests(SimpleTestCase):
+    def test_collects_gids_and_numeric_ids_once(self):
+        from .functions.parse_fulfillment_order_webhook import parse_fulfillment_order_webhook
+
+        payload = {
+            "fulfillment_order": {"id": "gid://shopify/FulfillmentOrder/3"},
+            "remaining_fulfillment_order": {"id": "gid://shopify/FulfillmentOrder/4"},
+            "merge_intents": [{"fulfillment_order_id": 3}, {"fulfillment_order_id": "5"}],
+            "location": {"id": "gid://shopify/Location/9"},
+            "flag": True,
+        }
+
+        self.assertEqual(parse_fulfillment_order_webhook(payload), ["3", "4", "5"])
 
 
 class _Cancelled(Exception):

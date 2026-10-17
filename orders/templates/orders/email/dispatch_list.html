@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="es">
+<body style="margin:0;padding:16px;font-family:Arial,Helvetica,sans-serif;font-size:14px;color:#222;">
+  <h2 style="margin:0 0 4px;font-size:18px;">Despachos para {{ location_name }}</h2>
+  <p style="margin:0 0 12px;color:#555;font-size:13px;">
+    {{ orders|length }} pedido(s).{% if links_expire_on %} Los links de las guías vencen el {{ links_expire_on }}.{% endif %}
+  </p>
+  <table cellpadding="6" cellspacing="0" style="border-collapse:collapse;border:1px solid #999;font-size:13px;">
+    <thead>
+      <tr style="background:#e6e6e6;text-align:left;">
+        <th style="border:1px solid #999;">Pedido</th>
+        <th style="border:1px solid #999;">Imagen</th>
+        <th style="border:1px solid #999;">SKU</th>
+        <th style="border:1px solid #999;">Producto</th>
+        <th style="border:1px solid #999;">Cant.</th>
+        <th style="border:1px solid #999;">Destinatario</th>
+        <th style="border:1px solid #999;">Guía</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for order in orders %}{% for item in order.items %}
+      <tr>
+        {% if forloop.first %}<td rowspan="{{ order.items|length }}" style="border:1px solid #999;vertical-align:middle;"><strong>{{ order.order_name }}</strong><br><span style="color:#555;font-size:12px;">{{ order.channel }}</span></td>{% endif %}
+        <td style="border:1px solid #999;text-align:center;">{% if item.image %}<img src="{{ item.image }}" width="70" alt="{{ item.sku }}" style="display:block;max-width:70px;height:auto;">{% endif %}</td>
+        <td style="border:1px solid #999;">{{ item.sku|default:"-" }}</td>
+        <td style="border:1px solid #999;">{{ item.name }}</td>
+        <td style="border:1px solid #999;text-align:center;">{{ item.quantity }}</td>
+        {% if forloop.first %}<td rowspan="{{ order.items|length }}" style="border:1px solid #999;vertical-align:middle;">{% for line in order.recipient %}{{ line }}{% if not forloop.last %}<br>{% endif %}{% endfor %}</td>{% endif %}
+        {% if forloop.first %}<td rowspan="{{ order.items|length }}" style="border:1px solid #999;vertical-align:middle;">
+          {% if order.label_url %}<a href="{{ order.label_url }}">{{ order.tracking_number|default:"Ver guía" }}</a>
+          {% elif order.tracking_number %}{{ order.tracking_number }}
+          {% else %}Sin guía{% endif %}
+        </td>{% endif %}
+      </tr>
+      {% endfor %}{% endfor %}
+    </tbody>
+  </table>
+</body>
+</html>

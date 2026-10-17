@@ -196,6 +196,7 @@ def format_dispatch(dispatch):
         "label_source": dispatch.label_source,
         "label_carrier": dispatch.label_carrier,
         "label_service": dispatch.label_service,
+        "label_package": dispatch.label_package,
         "shopify_fulfilled_at": _iso(dispatch.shopify_fulfilled_at),
         "shopify_fulfillment_error": dispatch.shopify_fulfillment_error,
         "notifications": [

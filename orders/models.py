@@ -407,9 +407,9 @@ class Dispatch(models.Model):
     Uno por pedido, salvo un pedido de la tienda web que Shopify reparte en
     varias bodegas: uno por bodega (`split`), cada uno con los productos de
     su fulfillment order.
-    Las guías del canal no se guardan (solo su hash; se vuelven a pedir al
-    canal). Las generadas en Envía sí (`label_pdf`), como las del RPA de
-    Sodimac, para descargarlas desde el panel.
+    La guía queda guardada en `label_pdf`: la generada en Envía y, desde
+    2026-10-16, la del canal al traerla para avisar (antes solo su hash).
+    De ahí sale el link firmado que se manda a la bodega (`label_links`).
     """
 
     class Status(models.TextChoices):
@@ -443,9 +443,12 @@ class Dispatch(models.Model):
     label_url = models.TextField(blank=True)
     label_carrier = models.CharField(max_length=40, blank=True)
     label_service = models.CharField(max_length=60, blank=True)
+    # Paquete con el que se generó la guía en Envía (lo que se cobró):
+    # `{"weight", "length", "width", "height"}` en kg y cm.
+    label_package = models.JSONField(default=dict, blank=True)
     label_sha256 = models.CharField(max_length=64, blank=True)
-    # PDF de la guía generada en Envía. Las anteriores a este campo se bajan
-    # de `label_url` la primera vez que se piden y quedan guardadas.
+    # PDF de la guía: la generada en Envía (las anteriores a este campo se
+    # bajan de `label_url` la primera vez que se piden) o la del canal.
     label_pdf = models.BinaryField("Guía (PDF)", null=True, blank=True)
     label_fetched_at = models.DateTimeField(null=True, blank=True)
     # La guía quedó en Shopify (pedido cumplido con ella), después de avisar a

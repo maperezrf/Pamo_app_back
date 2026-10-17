@@ -150,6 +150,25 @@ query ListCustomersPage($cursor: String) {
 """.strip()
 
 
+GET_VARIANT_IMAGES_BY_SKUS = """
+query GetVariantImagesBySkus($query: String!, $cursor: String) {
+  productVariants(first: 250, after: $cursor, query: $query) {
+    edges {
+      node {
+        sku
+        image { url }
+        product { featuredImage { url } }
+      }
+    }
+    pageInfo {
+      hasNextPage
+      endCursor
+    }
+  }
+}
+""".strip()
+
+
 GET_VARIANTS_BY_SKUS = """
 query GetVariantsBySkus($query: String!, $cursor: String) {
   productVariants(first: 250, after: $cursor, query: $query) {
@@ -341,6 +360,18 @@ query GetOrderShippingAddress($id: ID!) {
       zip
       phone
     }
+  }
+}
+"""
+
+
+# Pedido al que pertenece un fulfillment order. Los webhooks
+# `fulfillment_orders/*` solo traen ids de fulfillment order, no del pedido.
+GET_FULFILLMENT_ORDER_ORDER = """
+query GetFulfillmentOrderOrder($id: ID!) {
+  fulfillmentOrder(id: $id) {
+    id
+    order { id }
   }
 }
 """

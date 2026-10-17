@@ -3,6 +3,7 @@ from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.parsers import JSONParser, MultiPartParser
+from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
@@ -23,8 +24,10 @@ from .functions.dispatch_actions import (
     fetch_channel_label_now,
     generate_dispatch_label,
     notify_dispatch_now,
+    parse_package,
     quote_dispatch_label,
 )
+from .functions.label_links import LabelLinkExpired, LabelLinkInvalid, label_from_link
 from .functions.list_orders import channel_label_for_order, filter_orders, format_dispatch, format_dispatches, format_orders
 from .functions.list_orders_not_created import list_orders_not_created
 from .functions.sodimac_rpa import (
@@ -161,24 +164,32 @@ class DispatchQuoteLabelAPI(DispatchActionAPI):
     (no cobra). Responde {"options": [{"carrier", "carrierLabel",
     "service", "price", "currency", "etaMinDays", "etaMaxDays"}], "route":
     {"origin": {"name", "city"}, "destination": {"name", "address", "city",
-    "region", "phone"}}}."""
+    "region", "phone"}}, "package": {"weight", "length", "width", "height"}}.
+    Cuerpo opcional: `package` con peso (kg) y medidas (cm)."""
 
     def run(self, dispatch, request):
         keys = ("carrier", "carrierLabel", "service", "price", "currency", "etaMinDays", "etaMaxDays")
-        options, route = quote_dispatch_label(dispatch)
-        return Response({"options": [{key: option.get(key) for key in keys} for option in options], "route": route})
+        package = parse_package(request.data.get("package"))
+        options, route = quote_dispatch_label(dispatch, package)
+        return Response({
+            "options": [{key: option.get(key) for key in keys} for option in options],
+            "route": route,
+            "package": package,
+        })
 
 
 class DispatchGenerateLabelAPI(DispatchActionAPI):
-    """POST /api/orders/<id>/dispatch/label/ con {"carrier", "service"}:
-    genera la guía en Envía (**cobra**). Nunca genera una segunda."""
+    """POST /api/orders/<id>/dispatch/label/ con {"carrier", "service"} y
+    el `package` cotizado: genera la guía en Envía (**cobra**). Nunca genera
+    una segunda."""
 
     def run(self, dispatch, request):
         carrier = str(request.data.get("carrier") or "").strip()
         service = str(request.data.get("service") or "").strip()
         if not carrier or not service:
             return Response({"detail": "Falta la opción elegida (carrier y service)."}, status=400)
-        generate_dispatch_label(dispatch, carrier=carrier, service=service)
+        package = parse_package(request.data.get("package"))
+        generate_dispatch_label(dispatch, carrier=carrier, service=service, package=package)
         return self.dispatch_response(dispatch)
 
 
@@ -202,6 +213,28 @@ class DispatchLabelFileAPI(RoleRequiredMixin, APIView):
             return Response({"detail": f"No se pudo bajar la guía de Envía: {error}"}, status=502)
         response = HttpResponse(content, content_type="application/pdf")
         response["Content-Disposition"] = f'attachment; filename="{filename}"'
+        return response
+
+
+class DispatchLabelLinkAPI(APIView):
+    """GET /api/orders/labels/<token>/: la guía de un despacho por su link
+    firmado (`label_links.label_link`), para la bodega, que no tiene sesión.
+    Público a propósito: la firma es la autorización (solo esa guía, vence a
+    los 10 días). 404 si el link no vale; 410 si venció. Se abre en el
+    navegador (inline)."""
+
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    def get(self, request, token):
+        try:
+            filename, content = label_from_link(token)
+        except LabelLinkExpired:
+            return HttpResponse("El link de la guía venció. Pídela de nuevo.", status=410, content_type="text/plain; charset=utf-8")
+        except LabelLinkInvalid:
+            return HttpResponse("Link de guía inválido.", status=404, content_type="text/plain; charset=utf-8")
+        response = HttpResponse(content, content_type="application/pdf")
+        response["Content-Disposition"] = f'inline; filename="{filename}"'
         return response
 
 

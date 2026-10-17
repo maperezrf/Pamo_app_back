@@ -23,27 +23,36 @@ def get_variants_by_skus(skus):
     llama decide si reintenta. Para avanzar bloque por bloque (progreso,
     reintentos), llamar con un bloque a la vez.
     """
+    nodes = search_variants_by_skus(skus, GET_VARIANTS_BY_SKUS)
+    return {sku: node["id"].removeprefix("gid://shopify/ProductVariant/") for sku, node in nodes.items()}
+
+
+def search_variants_by_skus(skus, graphql):
+    """La búsqueda por lotes de arriba con cualquier query `graphql` sobre
+    `productVariants` que reciba `$query`/`$cursor`, pida `sku` y
+    `pageInfo`. Devuelve `{sku: node}` con el nodo tal cual. La reutiliza
+    `get_variant_images_by_skus`."""
     unique = list(dict.fromkeys(sku for sku in skus if sku))
     found = {}
     client = ShopifyClient()
     for start in range(0, len(unique), BATCH_SIZE):
         block = unique[start : start + BATCH_SIZE]
-        found.update(_search_block(client, block))
+        found.update(_search_block(client, block, graphql))
     return found
 
 
-def _search_block(client, block):
+def _search_block(client, block, graphql):
     wanted = set(block)
     query = " OR ".join(f'sku:"{_escape(sku)}"' for sku in block)
     found = {}
     cursor = None
     for _ in range(MAX_PAGES):
-        response = client.request_graphql(GET_VARIANTS_BY_SKUS, variables={"query": query, "cursor": cursor})
+        response = client.request_graphql(graphql, variables={"query": query, "cursor": cursor})
         variants = (response.get("data") or {}).get("productVariants") or {}
         for edge in variants.get("edges") or []:
             node = edge["node"]
             if node.get("sku") in wanted:
-                found[node["sku"]] = node["id"].removeprefix("gid://shopify/ProductVariant/")
+                found[node["sku"]] = node
         page_info = variants.get("pageInfo") or {}
         if not page_info.get("hasNextPage"):
             break

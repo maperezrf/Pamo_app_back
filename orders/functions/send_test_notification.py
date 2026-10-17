@@ -4,7 +4,7 @@ import time
 from django.conf import settings
 from django.core.mail import EmailMessage
 
-from integrations.whatsapp.functions.send_template_message import send_template_message
+from integrations.zernio.functions.send_whatsapp_template import send_whatsapp_template
 
 from .notify_dispatch import email_configured
 
@@ -54,11 +54,11 @@ def email_settings_summary():
 
 def send_test_whatsapp(to, *, template="hello_world", language="en_US", body_params=()):
     """Plantilla aprobada de prueba (por defecto `hello_world`, en_US).
-    `to` en E.164 sin "+". Devuelve el id del mensaje en Meta."""
+    `to` en E.164 sin "+". Sale por Zernio. Devuelve el id del mensaje."""
     if not re.fullmatch(r"\d{10,15}", to or ""):
         raise TestNotificationError('Número inválido: va en formato E.164 sin "+" ni espacios, ej. 573001234567.')
     try:
-        result = send_template_message(to, template, language=language, body_params=body_params)
-    except Exception as error:  # noqa: BLE001 -- se muestra el motivo de Meta para diagnosticar
+        result = send_whatsapp_template(to, template, language=language, body_params=body_params)
+    except Exception as error:  # noqa: BLE001 -- se muestra el motivo de Zernio para diagnosticar
         raise TestNotificationError(f"No se pudo enviar: {error}") from error
     return result["message_id"]

@@ -27,6 +27,12 @@ seller id; es estado de conexión, no información de clientes o facturas.
   (`ShopifyClient.verify_webhook_signature`), y
   `get_variant_inventory_by_sku` (variante + unidades disponibles por
   bodega) que consume `orders`.
+  - `get_variant_images_by_skus(skus) → {sku: url}`: imagen de la variante
+    o, si no tiene (lo normal en la tienda), la principal del producto.
+    Reutiliza la búsqueda por lotes (`search_variants_by_skus`). La consume
+    el PDF de despachos de `orders`. `download_image(url, width=240)` baja
+    la imagen ya reducida, solo de `cdn.shopify.com` (sin redirecciones,
+    máximo 2 MB).
   - `get_variants_by_skus(skus) → {sku: variant_id}` consulta por lotes,
     sin inventario. Hace bloques de 50 SKU (`sku:"A" OR sku:"B"`, con
     comillas y barras escapadas) y recorre `pageInfo`. Solo acepta
@@ -50,6 +56,9 @@ seller id; es estado de conexión, no información de clientes o facturas.
     del último fulfillment de ese fulfillment order con número. Costo
     medido de `LIST_ORDERS_PAGE` con esto: 835 puntos con `first: 50`
     (2026-10-15).
+  - `get_fulfillment_order_order_id(id) → str`: pedido (sin `gid://`) de
+    un fulfillment order; `""` si no existe. Lo usa el webhook de pedidos
+    con los avisos `fulfillment_orders/*`.
   - Los webhooks de Shopify se suscriben desde el admin, no por API (ver
     [`orders.md`](orders.md)).
 - `falabella/`: cliente REST firmado y funciones de pedidos.
@@ -98,8 +107,12 @@ seller id; es estado de conexión, no información de clientes o facturas.
 - `sodimac_rpa/`: cliente del RPA de guías de Sodimac (servicio propio en
   Railway) y `trigger_labels`; el webhook y la consulta de bodega viven en
   `orders`.
-- `whatsapp/`: cliente REST (WhatsApp Cloud API de Meta) y funciones de
-  envío (texto, documento, plantilla, botones) y de parseo de webhook.
+- `zernio/`: WhatsApp a través de Zernio (reemplazó a la WhatsApp Cloud
+  API de Meta el 2026-10-16). Cliente REST con API key y funciones
+  `send_whatsapp_template` (plantilla aprobada a un número, con PDF
+  opcional en el encabezado por URL), `upload_media` (sube el PDF y
+  devuelve una URL pública temporal) y `list_whatsapp_templates`. Las
+  consume el canal `whatsapp` de los avisos de despacho de `orders`.
 
 Cada proveedor mantiene sus pruebas cerca de su código. Las pruebas deben
 simular la red y verificar autenticación, errores y normalización sin usar

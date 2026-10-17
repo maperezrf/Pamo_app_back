@@ -1,4 +1,5 @@
 import hashlib
+from decimal import Decimal, InvalidOperation
 
 from django.utils import timezone
 
@@ -14,9 +15,10 @@ from .dispatch_orders import ensure_dispatches, process_dispatch, reopen_manual_
 from .fetch_dispatch_label import CHANNEL_LABELS, fetch_dispatch_label
 from .shopify_order_marketplace import SHOPIFY_CHANNEL
 
-# Paquete por defecto mientras Shopify no tenga peso y medidas reales: el de
+# Paquete de la guía (kg y cm) cuando el panel no manda peso y medidas: el de
 # referencia de pamo-one-engineering (1 kg, 10×10×10 cm).
-DEFAULT_PACKAGE = {"weight": 1, "dimensions": {"length": 10, "width": 10, "height": 10}}
+DEFAULT_PACKAGE = {"weight": 1, "length": 10, "width": 10, "height": 10}
+PACKAGE_FIELDS = {"weight": "El peso (kg)", "length": "El largo (cm)", "width": "El ancho (cm)", "height": "El alto (cm)"}
 DISPATCH_EMAIL = "despachos@pamo.co"
 
 
@@ -85,12 +87,35 @@ def fetch_channel_label_now(dispatch):
     return dispatch
 
 
-def quote_dispatch_label(dispatch):
+def parse_package(data):
+    """Peso y medidas del paquete que manda el panel, `{"weight", "length",
+    "width", "height"}` en kg y cm. Sin datos, `DEFAULT_PACKAGE`. Cada valor
+    tiene que ser un número mayor que 0 (sin tope: lo que se envía es
+    pequeño)."""
+    if not data:
+        return dict(DEFAULT_PACKAGE)
+    if not isinstance(data, dict):
+        raise DispatchActionError("El paquete debe traer peso, largo, ancho y alto.")
+    package = {}
+    for field, label in PACKAGE_FIELDS.items():
+        value = data.get(field)
+        try:
+            number = None if isinstance(value, bool) else Decimal(str(value).strip().replace(",", "."))
+        except InvalidOperation:
+            number = None
+        if number is None or not number.is_finite() or number <= 0:
+            raise DispatchActionError(f"{label} debe ser un número mayor que 0.")
+        package[field] = float(number)
+    return package
+
+
+def quote_dispatch_label(dispatch, package=None):
     """Botón "Generar guía", paso 1 (no cobra): opciones de Envía Shipping
     desde la bodega del despacho hasta la dirección de envío del pedido,
-    con los productos del despacho. Devuelve (opciones, ruta): la ruta es lo
-    que se muestra para revisar antes de pagar, `{"origin": {name, city},
-    "destination": {name, address, city, region, phone}}`."""
+    con los productos del despacho y el paquete del panel (`parse_package`).
+    Devuelve (opciones, ruta): la ruta es lo que se muestra para revisar
+    antes de pagar, `{"origin": {name, city}, "destination": {name, address,
+    city, region, phone}}`."""
     _check_generation(dispatch)
     order = dispatch.shopify_order
     shipping = _destination(order)
@@ -104,18 +129,20 @@ def quote_dispatch_label(dispatch):
             "phone": shipping["phone"] or order.phone,
         },
     }
-    return quote(_shipping_payload(dispatch, shipping)), route
+    return quote(_shipping_payload(dispatch, shipping, package)), route
 
 
-def generate_dispatch_label(dispatch, *, carrier, service):
+def generate_dispatch_label(dispatch, *, carrier, service, package=None):
     """Botón "Generar guía", paso 2 (**cobra**): genera la guía de la opción
-    elegida, la baja y la deja en el despacho. Nunca genera una segunda.
-    Si el resultado es incierto, lo anota en el despacho y no reintenta."""
+    elegida con el paquete cotizado, la baja y la deja en el despacho, con
+    ese paquete en `label_package`. Nunca genera una segunda. Si el
+    resultado es incierto, lo anota en el despacho y no reintenta."""
+    package = package or dict(DEFAULT_PACKAGE)
     _check_generation(dispatch)
     option = {"providerPayload": {"carrier": carrier, "service": service, "type": 1}}
     reference = label_reference(dispatch)
     try:
-        result = create_label(_shipping_payload(dispatch), option, order_reference=reference)
+        result = create_label(_shipping_payload(dispatch, package=package), option, order_reference=reference)
     except LabelUnknownResult as error:
         dispatch.note = (
             f"Resultado incierto al generar la guía ({error}). Revisar en Envía si existe una con la referencia "
@@ -129,6 +156,7 @@ def generate_dispatch_label(dispatch, *, carrier, service):
     dispatch.label_url = result["label_url"]
     dispatch.label_carrier = result["carrier"]
     dispatch.label_service = result["service"]
+    dispatch.label_package = package
     dispatch.label_sha256 = hashlib.sha256(pdf).hexdigest()
     dispatch.label_pdf = pdf
     dispatch.label_fetched_at = timezone.now()
@@ -171,8 +199,10 @@ def _check_generation(dispatch):
         raise DispatchActionError(f"Ya tiene una guía generada ({dispatch.tracking_number}); no se genera otra.")
 
 
-def _shipping_payload(dispatch, shipping=None):
-    """Envío de la guía: desde la bodega del despacho, con sus productos."""
+def _shipping_payload(dispatch, shipping=None, package=None):
+    """Envío de la guía: desde la bodega del despacho, con sus productos, en
+    un paquete (`parse_package`; por defecto `DEFAULT_PACKAGE`)."""
+    package = package or DEFAULT_PACKAGE
     order = dispatch.shopify_order
     location = dispatch.location
     if not location.origin_address or not location.origin_phone:
@@ -202,7 +232,8 @@ def _shipping_payload(dispatch, shipping=None):
                 "content": (names or f"Pedido {order.name}")[:180],
                 "amount": 1,
                 "declaredValue": float((lines_total(lines) if dispatch.split else order.total) or 0),
-                **DEFAULT_PACKAGE,
+                "weight": package["weight"],
+                "dimensions": {dimension: package[dimension] for dimension in ("length", "width", "height")},
             }
         ],
     }

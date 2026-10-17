@@ -1,4 +1,5 @@
-from datetime import datetime, timezone as dt_timezone
+import io
+from datetime import datetime, timedelta, timezone as dt_timezone
 from decimal import Decimal
 from unittest.mock import patch
 
@@ -6,8 +7,14 @@ from django.contrib.auth.models import Group, User
 from django.core import mail
 from django.core.exceptions import ValidationError
 from django.test import TestCase, override_settings
+from PIL import Image
+from pypdf import PdfReader
 
 from .functions.assign_dispatch_location import assign_dispatch_location
+from .functions import label_links
+from .functions import process_shopify_order_webhook  # noqa: F401 -- los @patch lo resuelven como atributo
+from .functions.dispatch_list_pdf import dispatch_list_pdf
+from .functions.product_images import product_images
 from .functions.dispatch_orders import dispatch_orders, ensure_dispatches, process_order_dispatch, split_location_ids
 from .functions.shopify_fulfillment import tracking_company
 from .functions.sync_dispatch_locations import sync_dispatch_locations
@@ -15,6 +22,7 @@ from .models import (
     Dispatch, DispatchLocation, DispatchNotification, MarketplaceLabel, MarketplaceOrder, ShopifyFulfillmentOrder,
     ShopifyFulfillmentOrderLine, ShopifyOrder, ShopifyOrderLine,
 )
+from .whatsapp_templates import WHATSAPP_TEMPLATES
 
 F = "orders.functions"
 PDF = b"%PDF-1.4 " + b"x" * 64 + b" %%EOF"
@@ -177,9 +185,11 @@ class DispatchOrdersTests(TestCase):
         self.assertIn("aún no disponible", self._dispatch().note)
 
     @override_settings(**EMAIL_SETTINGS)
+    @patch(f"{F}.label_links.BACKEND_PUBLIC_URL", "https://api.pamo.test")
+    @patch(f"{F}.notify_dispatch.product_image_urls", return_value={"I001": "https://cdn.shopify.com/i001.jpg"})
     @patch(f"{F}.fetch_dispatch_label.get_shipment_label", return_value=PDF)
     @patch(f"{F}.fetch_dispatch_label.get_shipment", return_value=ML_SHIPMENT)
-    def test_emails_the_warehouse_once_with_the_guide(self, get_shipment, get_label):
+    def test_emails_the_warehouse_once_with_the_guide(self, get_shipment, get_label, image_urls):
         self.assertEqual(dispatch_orders(SINCE), {"notificado": 1})
 
         [message] = mail.outbox
@@ -188,13 +198,52 @@ class DispatchOrdersTests(TestCase):
         self.assertIn("I001 x1", message.body)
         self.assertIn("MEL48195006881", message.body)
         self.assertEqual(message.attachments[0][1], PDF)
+        [(html, mimetype)] = message.alternatives  # la misma tabla del PDF
+        self.assertEqual(mimetype, "text/html")
+        self.assertIn('src="https://cdn.shopify.com/i001.jpg"', html)
+        self.assertIn(">I001<", html)
+        self.assertIn('href="https://api.pamo.test/api/orders/labels/', html)
+        self.assertIn(">Destinatario<", html)  # columna de la tabla, por pedido
         notification = DispatchNotification.objects.get()
         self.assertEqual((notification.channel, notification.status), ("email", "enviado"))
+        self.assertEqual(bytes(self._dispatch().label_pdf), PDF)  # la guía del canal queda guardada
 
         dispatch_orders(SINCE)  # ya notificado: no vuelve a enviar
         self.assertEqual(len(mail.outbox), 1)
 
+    @patch.dict(WHATSAPP_TEMPLATES["despacho_bodega"], name="despacho_bodega")
+    @patch(f"{F}.label_links.BACKEND_PUBLIC_URL", "https://api.pamo.test")
+    @patch(f"{F}.notify_dispatch.product_images", return_value={})
+    @patch(f"{F}.notify_dispatch.send_whatsapp_template", side_effect=[{"message_id": "m1"}, {"message_id": "m2"}])
+    @patch(f"{F}.notify_dispatch.upload_media", return_value="https://media.zernio.com/temp/g.pdf")
+    @patch(f"{F}.fetch_dispatch_label.get_shipment_label", return_value=PDF)
+    @patch(f"{F}.fetch_dispatch_label.get_shipment", return_value=ML_SHIPMENT)
+    def test_whatsapp_sends_the_list_pdf_with_a_working_guide_link(self, get_shipment, get_label, upload, send_template, images):
+        self.location.notify_email = False
+        self.location.notify_whatsapp = True
+        self.location.whatsapp_numbers = ["573001234567", "573007654321"]
+        self.location.save()
+
+        self.assertEqual(dispatch_orders(SINCE), {"notificado": 1})
+
+        upload.assert_called_once()  # un PDF para todos los números
+        list_pdf, filename = upload.call_args.args
+        self.assertEqual(filename, "despacho-20400.pdf")
+        page = PdfReader(io.BytesIO(list_pdf)).pages[0]
+        self.assertIn("I001", page.extract_text())
+        [link] = [annotation.get_object()["/A"]["/URI"] for annotation in page["/Annots"]]
+        response = self.client.get(link.removeprefix("https://api.pamo.test"))  # la bodega, sin sesión
+        self.assertEqual(response.content, PDF)
+
+        self.assertEqual(send_template.call_count, 2)
+        for call in send_template.call_args_list:
+            self.assertEqual(call.args[1], "despacho_bodega")
+            self.assertEqual(call.kwargs["body_params"], ["Boccherini", "1"])
+            self.assertEqual(call.kwargs["document_url"], "https://media.zernio.com/temp/g.pdf")
+        self.assertEqual(DispatchNotification.objects.get().external_id, "m1,m2")
+
     @override_settings(EMAIL_HOST="", DEFAULT_FROM_EMAIL="")  # sin depender del .env
+    @patch.dict(WHATSAPP_TEMPLATES["despacho_bodega"], name="")
     def test_unconfigured_email_whatsapp_and_unknown_envia_sku_are_errors_not_sends(self):
         self.location.requires_label = False
         self.location.notify_whatsapp = True
@@ -204,7 +253,7 @@ class DispatchOrdersTests(TestCase):
         self.location.save()
 
         with patch(f"{F}.notify_dispatch.create_order") as create_order, \
-                patch(f"{F}.notify_dispatch.send_template_message") as send_template, \
+                patch(f"{F}.notify_dispatch.send_whatsapp_template") as send_template, \
                 patch(f"{F}.notify_dispatch.find_order", return_value=None), \
                 patch(f"{F}.notify_dispatch.find_variant_ids", return_value={}):
             self.assertEqual(dispatch_orders(SINCE), {"error": 1})
@@ -213,14 +262,15 @@ class DispatchOrdersTests(TestCase):
 
         errors = dict(DispatchNotification.objects.values_list("channel", "error_description"))
         self.assertIn("EMAIL_HOST", errors["email"])
-        self.assertIn("DISPATCH_WHATSAPP_TEMPLATE", errors["whatsapp"])
+        self.assertIn("despacho_bodega", errors["whatsapp"])
         self.assertIn("SKU sin producto en Envía: I001", errors["api"])
         self.assertEqual(len(mail.outbox), 0)
 
-    @patch(f"{F}.notify_dispatch.DISPATCH_WHATSAPP_TEMPLATE", "despacho_bodega")
-    @patch(f"{F}.notify_dispatch.send_template_message", return_value={"message_id": "wamid.1"})
-    @patch(f"{F}.notify_dispatch.upload_document")
-    def test_whatsapp_uses_the_approved_template(self, upload, send_template):
+    @patch.dict(WHATSAPP_TEMPLATES["despacho_bodega"], name="despacho_bodega")
+    @patch(f"{F}.notify_dispatch.product_images", return_value={})
+    @patch(f"{F}.notify_dispatch.send_whatsapp_template", return_value={"message_id": "wamid.1"})
+    @patch(f"{F}.notify_dispatch.upload_media", return_value="https://media.zernio.com/temp/l.pdf")
+    def test_whatsapp_without_guide_still_sends_the_list(self, upload, send_template, images):
         self.location.requires_label = False
         self.location.notify_email = False
         self.location.notify_whatsapp = True
@@ -229,17 +279,19 @@ class DispatchOrdersTests(TestCase):
 
         self.assertEqual(dispatch_orders(SINCE), {"notificado": 1})
 
-        upload.assert_not_called()  # sin guía, sin documento
+        list_pdf, _ = upload.call_args.args
+        self.assertIn("Sin gu", PdfReader(io.BytesIO(list_pdf)).pages[0].extract_text())
         args, kwargs = send_template.call_args
         self.assertEqual(args, ("573001234567", "despacho_bodega"))
-        self.assertEqual(kwargs["body_params"], ["20400", "I001 x1", "Bogotá"])
+        self.assertEqual(kwargs["body_params"], ["Boccherini", "1"])
+        self.assertEqual(kwargs["document_url"], "https://media.zernio.com/temp/l.pdf")
         self.assertEqual(DispatchNotification.objects.get().external_id, "wamid.1")
 
     @override_settings(**EMAIL_SETTINGS)
     def test_a_failed_notification_is_retried_and_a_processing_one_is_not(self):
         self.location.requires_label = False
         self.location.save()
-        with patch(f"{F}.notify_dispatch.EmailMessage.send", side_effect=OSError("smtp caído")):
+        with patch(f"{F}.notify_dispatch.EmailMultiAlternatives.send", side_effect=OSError("smtp caído")):
             self.assertEqual(dispatch_orders(SINCE), {"error": 1})
 
         self.assertEqual(dispatch_orders(SINCE), {"notificado": 1})  # reintento
@@ -473,6 +525,48 @@ class DispatchActionAPITests(TestCase):
         self.assertEqual(payload["origin"]["street"], "Calle 1")
         self.assertEqual(payload["destination"]["street"], "Calle 9")
         self.assertEqual(payload["packages"][0]["weight"], 1)
+        self.assertEqual(response.json()["package"], {"weight": 1, "length": 10, "width": 10, "height": 10})
+
+    @patch(f"{A}.quote", return_value=[QUOTE_OPTION])
+    @patch(f"{A}.resolve_colombia_city", return_value={"city": "11001000", "state": "DC"})
+    @patch(f"{A}.get_order_shipping_address", return_value=WEB_SHIPPING)
+    def test_quote_and_generate_use_the_package_from_the_panel(self, shipping, city, quote):
+        order = self._web_order()
+        package = {"weight": "2,5", "length": 30, "width": 20, "height": "15"}
+
+        response = self._post(order, "label/quote/", {"package": package})
+
+        self.assertEqual(response.status_code, 200)
+        expected = {"weight": 2.5, "length": 30.0, "width": 20.0, "height": 15.0}
+        self.assertEqual(response.json()["package"], expected)
+        sent = quote.call_args.args[0]["packages"][0]
+        self.assertEqual((sent["weight"], sent["dimensions"]), (2.5, {"length": 30, "width": 20, "height": 15}))
+
+        with patch(f"{A}.create_label", return_value=GENERATED) as create_label, patch(
+            f"{A}.download_label", return_value=PDF
+        ):
+            response = self._post(order, "label/", {"carrier": "tcc", "service": "mensajeria", "package": package})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(create_label.call_args.args[0]["packages"][0]["weight"], 2.5)
+        self.assertEqual(Dispatch.objects.get(shopify_order=order).label_package, expected)
+        self.assertEqual(response.json()["dispatch"]["label_package"], expected)
+
+    @patch(f"{A}.quote")
+    @patch(f"{A}.create_label")
+    def test_an_invalid_package_is_400_without_calling_envia(self, create_label, quote):
+        order = self._web_order()
+        for package in ({"weight": 0, "length": 10, "width": 10, "height": 10},
+                        {"weight": 1, "length": -5, "width": 10, "height": 10},
+                        {"weight": "uno", "length": 10, "width": 10, "height": 10},
+                        {"weight": 1, "length": 10, "width": 10}):
+            response = self._post(order, "label/quote/", {"package": package})
+            self.assertEqual(response.status_code, 400, package)
+            self.assertIn("mayor que 0", response.json()["detail"])
+            body = {"carrier": "tcc", "service": "mensajeria", "package": package}
+            self.assertEqual(self._post(order, "label/", body).status_code, 400, package)
+        quote.assert_not_called()
+        create_label.assert_not_called()
 
     @patch(f"{A}.download_label", return_value=PDF)
     @patch(f"{A}.create_label", return_value=GENERATED)
@@ -713,7 +807,7 @@ class TestNotificationsAdminTests(TestCase):
         self.assertContains(response, "Correo enviado a yo@example.com")
         self.assertEqual(mail.outbox[0].to, ["yo@example.com"])
 
-    @patch(f"{F}.send_test_notification.send_template_message", return_value={"message_id": "wamid.1", "raw": {}})
+    @patch(f"{F}.send_test_notification.send_whatsapp_template", return_value={"message_id": "wamid.1", "raw": {}})
     def test_a_superuser_sends_a_test_whatsapp(self, send):
         self._login(is_superuser=True)
 
@@ -1135,3 +1229,181 @@ class SplitDispatchTests(TestCase):
         body = {"dispatch_id": self._dispatch(self.baru).pk}
         for path in ("notify/", "label/quote/", "label/"):
             self.assertEqual(self._post(path, body).status_code, 403)
+
+
+@patch(f"{F}.label_links.BACKEND_PUBLIC_URL", "https://api.pamo.test")
+class LabelLinkTests(TestCase):
+    def setUp(self):
+        self.dispatch = Dispatch.objects.create(
+            shopify_order=_order(), location=_location(), status=Dispatch.Status.NOTIFIED,
+            tracking_number="474231303", label_pdf=PDF,
+        )
+
+    def _path(self):
+        link = label_links.label_link(self.dispatch)
+        self.assertTrue(link.startswith("https://api.pamo.test/api/orders/labels/"))
+        return link.removeprefix("https://api.pamo.test")
+
+    def test_anyone_with_the_link_opens_that_guide(self):
+        response = self.client.get(self._path())  # sin sesión
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.content, PDF)
+        self.assertEqual(response["Content-Type"], "application/pdf")
+        self.assertEqual(response["Content-Disposition"], 'inline; filename="guia-20400-474231303.pdf"')
+
+    def test_a_tampered_link_is_rejected(self):
+        path = self._path()
+        self.assertEqual(self.client.get(path[:-3] + "x/").status_code, 404)
+
+    def test_the_link_stops_working_if_the_guide_changes(self):
+        path = self._path()
+        self.dispatch.label_pdf = PDF + b"otra"
+        self.dispatch.save()
+        self.assertEqual(self.client.get(path).status_code, 404)
+
+    def test_an_expired_link_says_so(self):
+        path = self._path()
+        with patch(f"{F}.label_links.LINK_MAX_AGE", timedelta(seconds=-1)):
+            self.assertEqual(self.client.get(path).status_code, 410)
+
+    def test_no_link_without_a_stored_guide_or_public_url(self):
+        self.dispatch.label_pdf = None
+        with self.assertRaisesMessage(label_links.LabelLinkError, "no tiene la guía guardada"):
+            label_links.label_link(self.dispatch)
+        with patch(f"{F}.label_links.BACKEND_PUBLIC_URL", ""):
+            with self.assertRaisesMessage(label_links.LabelLinkError, "BACKEND_PUBLIC_URL"):
+                label_links.label_link(self.dispatch)
+
+
+def _png():
+    buffer = io.BytesIO()
+    Image.new("RGB", (8, 8), "red").save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
+class DispatchListPdfTests(TestCase):
+    def test_one_row_per_product_with_image_sku_and_guide_link(self):
+        pdf = dispatch_list_pdf("Boccherini", [
+            {"order_name": "#20400", "channel": "Mercado Libre #2000012345", "recipient": ["Ana Pérez", "Calle 1, Bogotá"],
+             "tracking_number": "474231303", "label_url": "https://api.pamo.test/l/1/", "items": [
+                {"sku": "I001", "name": "Dispensador ñandú", "quantity": 2, "image": _png()},
+                {"sku": "", "name": "Mesa “roble”", "quantity": 1, "image": None},
+            ]},
+            {"order_name": "#20401", "channel": "Tienda web", "recipient": ["Luis"], "tracking_number": "", "label_url": "", "items": [
+                {"sku": "S9", "name": "Silla", "quantity": 4, "image": None},
+            ]},
+        ])
+
+        page = PdfReader(io.BytesIO(pdf)).pages[0]
+        text = page.extract_text()
+        for expected in (
+            "Despachos para Boccherini", "#20400", "#2000012345", "I001", "Dispensador ñandú", "Mesa ?roble?",
+            "Ana Pérez", "#20401", "Sin guía",
+        ):
+            self.assertIn(expected, text)
+        self.assertEqual(len(page.images), 1)
+        self.assertEqual([a.get_object()["/A"]["/URI"] for a in page["/Annots"]], ["https://api.pamo.test/l/1/"])
+
+
+@patch(f"{F}.product_images.download_image")
+@patch(f"{F}.product_images.get_variant_images_by_skus")
+class ProductImagesTests(TestCase):
+    def test_a_failing_image_only_leaves_that_product_without_it(self, get_urls, download):
+        get_urls.return_value = {"A": "https://cdn.shopify.com/a.png", "B": "https://cdn.shopify.com/b.png", "C": "x"}
+        download.side_effect = [_png(), b"no es una imagen", OSError("cdn caído")]
+
+        self.assertEqual(product_images(["A", "B", "C"]), {"A": _png()})
+
+    def test_without_shopify_there_are_no_images_and_no_error(self, get_urls, download):
+        get_urls.side_effect = OSError("Shopify caído")
+        self.assertEqual(product_images(["A"]), {})
+        download.assert_not_called()
+
+
+class FollowShopifyLocationsTests(TestCase):
+    """Alguien cambió la bodega en Shopify: el despacho la sigue si aún no
+    hizo nada; si ya tiene guía o avisos, nunca se avisa a otra bodega."""
+
+    def setUp(self):
+        self.boccherini = _location()
+        self.envia = _location(ENVIA_LOCATION, "Bodega Envia")
+        self.order = _order(marketplace="shopify")
+
+    def _shopify_at(self, *location_ids):
+        self.order.fulfillment_orders.all().delete()
+        for position, location_id in enumerate(location_ids):
+            ShopifyFulfillmentOrder.objects.create(
+                order=self.order, position=position, shopify_id=f"fo-{position}", status="OPEN",
+                location_id=location_id, location_name=location_id,
+            )
+
+    def _follow(self):
+        from .functions.dispatch_orders import follow_shopify_locations
+
+        return follow_shopify_locations(ShopifyOrder.objects.prefetch_related("fulfillment_orders").get(pk=self.order.pk))
+
+    def _dispatch(self, **fields):
+        fields.setdefault("status", Dispatch.Status.WAITING_LABEL)
+        return Dispatch.objects.create(shopify_order=self.order, location=self.boccherini, channel="shopify", **fields)
+
+    def test_untouched_dispatch_moves_to_the_shopify_warehouse(self):
+        self._dispatch()
+        self._shopify_at(ENVIA_LOCATION)
+
+        dispatches = self._follow()
+
+        self.assertEqual([(d.location, d.status) for d in dispatches], [(self.envia, Dispatch.Status.WAITING_LABEL)])
+        self.assertEqual(Dispatch.objects.filter(shopify_order=self.order).count(), 1)
+
+    def test_manual_dispatch_without_warehouse_takes_the_shopify_one(self):
+        Dispatch.objects.create(shopify_order=self.order, channel="shopify", status=Dispatch.Status.MANUAL,
+                                note="Ninguna bodega tiene el pedido completo.")
+        self._shopify_at(BOCCHERINI)
+
+        self.assertEqual([d.location for d in self._follow()], [self.boccherini])
+
+    def test_same_warehouse_changes_nothing(self):
+        dispatch = self._dispatch()
+        self._shopify_at(BOCCHERINI)
+
+        self.assertEqual([d.pk for d in self._follow()], [dispatch.pk])
+
+    def test_dispatch_with_label_goes_manual_instead_of_moving(self):
+        dispatch = self._dispatch(tracking_number="014")
+        self._shopify_at(ENVIA_LOCATION)
+
+        self._follow()
+
+        dispatch.refresh_from_db()
+        self.assertEqual((dispatch.location, dispatch.status), (self.boccherini, Dispatch.Status.MANUAL))
+        self.assertIn(ENVIA_LOCATION, dispatch.note)
+
+    def test_notified_dispatch_keeps_its_status_with_a_note(self):
+        dispatch = self._dispatch(status=Dispatch.Status.NOTIFIED)
+        DispatchNotification.objects.create(dispatch=dispatch, channel="email", status=DispatchNotification.Status.SENT)
+        self._shopify_at(ENVIA_LOCATION)
+
+        self._follow()
+
+        dispatch.refresh_from_db()
+        self.assertEqual(dispatch.status, Dispatch.Status.NOTIFIED)
+        self.assertIn("revisar a mano", dispatch.note)
+
+    def test_web_order_moved_into_two_warehouses_is_split(self):
+        self._dispatch()
+        self._shopify_at(BOCCHERINI, ENVIA_LOCATION)
+
+        dispatches = self._follow()
+
+        self.assertEqual([(d.location, d.split) for d in dispatches], [(self.boccherini, True), (self.envia, True)])
+
+    def test_marketplace_order_in_two_warehouses_goes_manual(self):
+        self.order.marketplace = "mercadolibre"
+        self.order.save()
+        self._dispatch()
+        self._shopify_at(BOCCHERINI, ENVIA_LOCATION)
+
+        dispatches = self._follow()
+
+        self.assertEqual([(d.location, d.status) for d in dispatches], [(None, Dispatch.Status.MANUAL)])

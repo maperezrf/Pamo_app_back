@@ -386,20 +386,34 @@ reconciliación, con una sola función de guardado.
   decide este sistema es `Dispatch`, ver "Despacho a bodegas"). Shopify
   divide pedidos web con su propio enrutamiento, por eso un pedido puede
   tener varias. Para llenarlas en pedidos viejos: `backfill_shopify_orders`.
-  **Sin verificar**: si mover un fulfillment order de bodega dispara
-  `orders/updated` o cambia el `updatedAt` del pedido; si no, la foto queda
-  vieja hasta el próximo cambio del pedido.
+  Los movimientos de bodega y los cumplimientos llegan por los webhooks de
+  fulfillment y fulfillment order (abajo). **Sin verificar**: si mover un
+  fulfillment order cambia el `updatedAt` del pedido; si no, la
+  reconciliación no ve un movimiento cuyo aviso se haya perdido.
 - **Borrado lógico**: `mark_shopify_order_deleted` pone `deleted_at` (o
   crea una marca borrada si no existía). El listado excluye los borrados.
 - **Webhook**: `POST /api/orders/webhooks/shopify/`
   (`ShopifyOrderWebhookView`). Verifica la firma sobre el body crudo
-  (`403` si falla). Para `orders/create`, `orders/updated` y
-  `orders/delete` lanza `orders.process_shopify_order_webhook`
-  (`allow_concurrent=True`) **solo con el tema y el id**. Otro tema o un
-  aviso sin id → `200` sin lanzar nada.
-- **Proceso del webhook** (`process_shopify_order_webhook`): con
-  `orders/delete` marca el borrado; si no, vuelve a leer el pedido con
-  `get_order` y lo guarda. Si Shopify ya no lo encuentra, lo marca borrado.
+  (`403` si falla) y lanza `orders.process_shopify_order_webhook`
+  (`allow_concurrent=True`) **solo con el tema y los ids**:
+  - `orders/create`, `orders/updated`, `orders/delete`: el `id` del aviso.
+  - `fulfillments/create`, `fulfillments/update` (bodega cumplida, guía):
+    el `order_id` del aviso.
+  - `fulfillment_orders/moved`, `/split`, `/merged`, `/cancelled`,
+    `/order_routing_complete` (cambios de bodega): estos avisos no traen el
+    pedido; `parse_fulfillment_order_webhook` junta los ids de fulfillment
+    order que mencione (gids `FulfillmentOrder` y claves
+    `fulfillment_order_id`).
+  - Otro tema o un aviso sin ids → `200` sin lanzar nada.
+- **Proceso del webhook** (`process_shopify_order_webhook`): con ids de
+  fulfillment order, busca el pedido primero en `ShopifyFulfillmentOrder`
+  y, si no está, en vivo (`get_fulfillment_order_order_id`); sin pedido,
+  termina sin hacer nada. Con `orders/delete` marca el borrado; si no,
+  vuelve a leer el pedido con `get_order` y lo guarda (incluidos sus
+  fulfillment orders) y corre `assign_web_dispatch`. Si Shopify ya no lo
+  encuentra, lo marca borrado. Con `fulfillment_orders/moved`, `/split` y
+  `/merged` (alguien cambió la bodega en Shopify) no asigna: alinea el
+  despacho con `follow_shopify_locations` (ver "Despacho a bodegas").
 - **Carga inicial** `orders.backfill_shopify_orders`
   (`allow_concurrent=False`, manual): pedidos creados desde
   `params["created_from"]` (`YYYY-MM-DD`, por defecto hoy menos 30 días).
@@ -417,9 +431,17 @@ reconciliación, con una sola función de guardado.
 - Las dos recorren las páginas con `iter_shopify_order_pages` (50 por
   página, por `UPDATED_AT` ascendente).
 - **Suscripción**: desde el admin de Shopify (Configuración → Notificaciones → Webhooks),
-  igual que la de `customers`, con los eventos de creación, actualización y
-  eliminación de pedido, formato JSON y la URL
-  `https://<host>/api/orders/webhooks/shopify/`. No se crea por API: los
+  igual que la de `customers`, formato JSON y la URL
+  `https://<host>/api/orders/webhooks/shopify/`, un webhook por evento:
+  - Order creation, Order update, Order deletion.
+  - Fulfillment creation, Fulfillment update.
+  - Fulfillment order moved, Fulfillment orders split, Fulfillment orders
+    merged, Fulfillment orders canceled, Fulfillment order's order routing
+    complete.
+
+  Los demás eventos de fulfillment order del menú (retenciones, solicitudes
+  a servicios de fulfillment, retiro en tienda, entrega local, programados)
+  no se suscriben: el webhook los responde con `200` sin hacer nada. No se crea por API: los
   webhooks del admin se firman con la clave que muestra esa pantalla
   (`SHOPIFY_WEBHOOK_SECRET`); los creados por API se firmarían con otro
   secreto y responderían `403`.
@@ -518,6 +540,24 @@ guía del canal.
   mismo SKU), que usan la guía (contenido y valor declarado) y el aviso.
   - Una bodega de Shopify sin registrar deja un despacho `manual` sin
     bodega para esa parte, con el motivo.
+- **Bodega cambiada en Shopify** (desde 2026-10-16; decisión del usuario:
+  nunca avisar a una bodega distinta de la que tiene Shopify). Con los
+  avisos `fulfillment_orders/moved`, `/split` y `/merged`,
+  `follow_shopify_locations` compara las bodegas de los fulfillment orders
+  abiertos con las de los despachos:
+  - iguales, o pedido ya cumplido: nada (el movimiento que hace
+    `fulfill_in_shopify` después de avisar cae aquí);
+  - ningún despacho con guía ni avisos: se borran y se crean en la(s)
+    bodega(s) de Shopify (pedido web en varias → despachos `split`;
+    marketplace en varias → uno `manual`, decisión E);
+  - alguno con guía o avisos: no se reasigna (la guía salió de la bodega
+    anterior); los no avisados pasan a `manual` con el motivo y los
+    avisados conservan su estado con la nota.
+
+  La asignación inicial no cambia: el enrutamiento de Shopify
+  (`order_routing_complete`, `orders/*`) no reemplaza la bodega elegida por
+  inventario; esa diferencia se resuelve al cumplir, cuando
+  `fulfill_in_shopify` mueve el pedido a la bodega del despacho.
   - Un despacho único sin actividad (sin avisos ni guía) se reemplaza por
     los de cada bodega si Shopify ya repartió el pedido (caso #20577, que
     quedó `manual` con "ninguna bodega tiene el pedido completo").
@@ -587,11 +627,31 @@ guía del canal.
 - **Canales** (`orders/functions/notify_dispatch.py`):
   - `email`: `django.core.mail` (API de Gmail o SMTP, ver
     `architecture/INTEGRATIONS.md`), con la guía adjunta y, en Sodimac, la
-    relación. Sin configurar → error del aviso, no se intenta enviar.
-  - `whatsapp`: plantilla aprobada en Meta (`DISPATCH_WHATSAPP_TEMPLATE`;
-    variables: pedido, productos, ciudad; la guía como documento del
-    encabezado). Envía a todos los números antes de fallar y el error dice a
-    quiénes llegó.
+    relación. Desde 2026-10-16 el cuerpo es HTML
+    (`orders/templates/orders/email/dispatch_list.html`) con la misma tabla
+    que el PDF de WhatsApp (imágenes enlazadas al CDN de Shopify con
+    `product_image_urls`, link firmado a la guía si hay
+    `BACKEND_PUBLIC_URL`; si no, solo el número); el texto plano de siempre
+    va como alternativa. Sin configurar → error
+    del aviso, no se intenta enviar.
+  - `whatsapp`: una sola plantilla por ahora, clave `despacho_bodega`
+    (aprobada en Meta como `despacho_pedido`; nombre e idioma en
+    `orders/whatsapp_templates.py`, en código, no en el entorno;
+    cuerpo: {{1}} bodega, {{2}} cuántos pedidos), enviada por Zernio
+    (`integrations/zernio/`). En el encabezado va el **listado en PDF**
+    (`dispatch_list_pdf`, `fpdf2`, A4 horizontal): una fila por producto
+    con imagen, SKU, producto y cantidad; pedido (con canal y número en el
+    canal), destinatario (nombre, dirección, ciudad, teléfono) y la guía
+    como **link firmado** (`label_links`, vence a los 10 días) van
+    combinados por pedido, para que con varios pedidos cada destinatario y
+    guía quede junto a sus productos. La guía ya no va adjunta. Hoy el
+    listado lleva un pedido; el aviso masivo usará la misma plantilla. Las
+    imágenes salen de Shopify (`product_images`: imagen de la variante o
+    del producto, bajada del CDN a 240 px); si fallan, esa fila va sin
+    imagen y el aviso sigue. El PDF se sube una vez a Zernio (URL pública
+    temporal, 7 días) y lo usan todos los números. Requiere
+    `BACKEND_PUBLIC_URL` si hay guía. Envía a todos los números antes de
+    fallar y el error dice a quiénes llegó.
   - `api`: `integrations.envia_fulfillment.create_order` con el rótulo como
     guía (pre-tracking). La relación de Sodimac va después como comentario
     con archivo (`add_order_comment`); si esa carga falla, el aviso queda
@@ -626,13 +686,28 @@ guía del canal.
     genera en Envía Shipping desde la dirección de la bodega (copiada de
     Shopify al sincronizar bodegas) a la dirección de entrega (tienda web:
     la de envío del pedido en Shopify; Madecentro: la del comprador en
-    `MarketplaceOrder`, porque en Shopify va al cliente fijo), paquete por
-    defecto 1 kg 10×10×10. Deshabilitado en la tienda web cuando la bodega
+    `MarketplaceOrder`, porque en Shopify va al cliente fijo). Peso (kg) y
+    medidas (cm) del paquete se editan en el panel (`parse_package`: cada
+    valor mayor que 0, sin tope; por defecto 1 kg 10×10×10); el panel manda
+    en la generación el mismo paquete que cotizó, y el despacho guarda en
+    `label_package` el paquete con que se generó (lo que se cobró). Deshabilitado en la tienda web cuando la bodega
     crea su guía. La guía generada queda en
     el despacho (`label_source="envia"`, `label_url` y el PDF en
     `label_pdf`) y no se repite; se descarga con "Descargar guía"
     (`GET .../dispatch/label/file/`). Generarla no avisa a la bodega: eso lo
     hace "Notificar a proveedor" o el proceso.
+  - **Guía guardada y link firmado** (desde 2026-10-16): la guía del canal
+    (Mercado Libre, Falabella, Sodimac) también queda en `label_pdf` al
+    traerla para avisar; antes solo se guardaba su hash y se volvía a pedir
+    al canal. Los despachos avisados antes no la tienen. De `label_pdf`
+    sale `label_links.label_link(dispatch)`: un link público a
+    `GET /api/orders/labels/<token>/` para quien no tiene sesión (la
+    bodega). Va firmado con la `SECRET_KEY` (`django.core.signing`): abre
+    solo esa guía, vence a los 10 días (`LINK_MAX_AGE`: lo que tarda un
+    despacho con un puente festivo) y deja de servir si la guía cambia. No
+    se guarda nada en la base: cambiar la `SECRET_KEY` invalida todos los
+    links. Requiere `BACKEND_PUBLIC_URL`. Lo usa el listado en PDF del aviso
+    por WhatsApp (un link por guía).
   - Aviso por **API de Envía**: busca primero la orden en Envía (nuestro
     identificador o número de Shopify, recorriendo el listado por fecha con
     `find_order`) y la vincula si existe (le carga la guía si no tiene); si
@@ -658,11 +733,8 @@ guía del canal.
 - WhatsApp: `python manage.py send_test_whatsapp --list` lista las
   plantillas de la cuenta (solo lectura);
   `python manage.py send_test_whatsapp 573001234567` envía `hello_world`
-  (`--template`, `--language`, `--param` para otra plantilla; `--text` para
-  texto libre, que solo llega dentro de la ventana de 24 h). Requiere un
-  token **permanente** de usuario del sistema de Meta: el temporal de la
-  consola de desarrolladores vence (visto el 2026-10-08: vencido desde el
-  2026-09-14, error 190).
+  (`--template`, `--language`, `--param` para otra plantilla). Sale por
+  Zernio: requiere `ZERNIO_API_KEY` y `ZERNIO_WHATSAPP_ACCOUNT_ID`.
 - Pruebas: `orders/tests_dispatch.py`.
 
 ## Bodega de despacho

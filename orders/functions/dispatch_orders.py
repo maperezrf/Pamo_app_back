@@ -124,6 +124,7 @@ def process_dispatch(dispatch):
             return _save(dispatch, Dispatch.Status.WAITING_LABEL, reason)
         dispatch.tracking_number = label["tracking_number"]
         dispatch.label_source = Dispatch.LabelSource.CHANNEL
+        dispatch.label_pdf = label["pdf"]
         dispatch.label_sha256 = hashlib.sha256(label["pdf"]).hexdigest()
         dispatch.label_fetched_at = timezone.now()
 
@@ -181,11 +182,69 @@ def split_location_ids(order):
     local, que el webhook de pedidos refresca antes de crear el despacho."""
     if order.marketplace != SHOPIFY_CHANNEL:
         return []
+    location_ids = shopify_location_ids(order)
+    return location_ids if len(location_ids) > 1 else []
+
+
+def follow_shopify_locations(order):
+    """Alinea los despachos del pedido con las bodegas que tiene en Shopify
+    después de que alguien las cambió allá (aviso `fulfillment_orders/moved`,
+    `/split` o `/merged`; ver docs/apps/orders.md, "Despacho a bodegas").
+    Lee la copia local, que el webhook acaba de refrescar.
+
+    - Sin despachos, sin fulfillment orders abiertos (ya cumplido) o con las
+      mismas bodegas: no hace nada. Así un movimiento hecho por
+      `fulfill_in_shopify` (bodega ya avisada) no cambia nada.
+    - Si ningún despacho hizo nada todavía (sin guía ni avisos): se borran y
+      se crean de nuevo en la(s) bodega(s) de Shopify.
+    - Si alguno ya tiene guía o avisos: no se reasigna (la guía sale de la
+      bodega anterior). Los que no se han avisado pasan a `manual` con el
+      motivo, para que nunca se avise a la bodega equivocada; los avisados
+      quedan igual, con la nota.
+
+    Devuelve los despachos del pedido.
+    """
+    dispatches = list(Dispatch.objects.filter(shopify_order=order).select_related("location").order_by("id"))
+    location_ids = shopify_location_ids(order)
+    current = {dispatch.location.shopify_location_id for dispatch in dispatches if dispatch.location}
+    if not dispatches or not location_ids or (
+        set(location_ids) == current and all(dispatch.location for dispatch in dispatches)
+    ):
+        return dispatches
+
+    names = {item.location_id: item.location_name for item in order.fulfillment_orders.all()}
+    shopify_names = ", ".join(names.get(location_id) or location_id for location_id in location_ids)
+    if all(_untouched(dispatch) for dispatch in dispatches):
+        for dispatch in dispatches:
+            dispatch.delete()
+        if len(location_ids) == 1:
+            return [_create_at(order, location_ids[0], names.get(location_ids[0]))]
+        if order.marketplace == SHOPIFY_CHANNEL:
+            return _create_split(order, location_ids)
+        # Marketplace: un envío sale de una sola bodega (decisión E de Mercado Libre).
+        return [Dispatch.objects.create(
+            shopify_order=order, channel=order.marketplace, status=Dispatch.Status.MANUAL,
+            note=f"En Shopify el pedido quedó repartido en {shopify_names}: un envío de marketplace sale de una sola bodega.",
+        )]
+
+    note = f"En Shopify la bodega cambió a {shopify_names}, pero el despacho ya tiene guía o avisos: revisar a mano."
+    for dispatch in dispatches:
+        if dispatch.status == Dispatch.Status.NOTIFIED:
+            dispatch.note = note
+            dispatch.save(update_fields=["note", "updated_at"])
+        elif dispatch.status != Dispatch.Status.CANCELLED:
+            _save(dispatch, Dispatch.Status.MANUAL, note)
+    return dispatches
+
+
+def shopify_location_ids(order):
+    """Bodegas (ids de `Location` de Shopify) de los fulfillment orders
+    abiertos del pedido, en orden y sin repetir, según la copia local."""
     location_ids = []
     for item in order.fulfillment_orders.all():
         if item.status not in CLOSED_STATUSES and item.location_id and item.location_id not in location_ids:
             location_ids.append(item.location_id)
-    return location_ids if len(location_ids) > 1 else []
+    return location_ids
 
 
 def reopen_manual_dispatch(dispatch):
@@ -210,12 +269,7 @@ def reopen_manual_dispatch(dispatch):
 
 
 def _replaceable(dispatch):
-    return (
-        not dispatch.split
-        and dispatch.status in (*OPEN_STATUSES, Dispatch.Status.MANUAL)
-        and not dispatch.tracking_number
-        and not dispatch.notifications.exists()
-    )
+    return not dispatch.split and _untouched(dispatch)
 
 
 def _create(order):
@@ -226,6 +280,27 @@ def _create(order):
         channel=order.marketplace,
         status=Dispatch.Status.WAITING_LABEL if location else Dispatch.Status.MANUAL,
         note=reason,
+    )
+
+
+def _untouched(dispatch):
+    """El despacho no hizo nada todavía: se puede borrar y crear de nuevo."""
+    return (
+        dispatch.status in (*OPEN_STATUSES, Dispatch.Status.MANUAL)
+        and not dispatch.tracking_number
+        and not dispatch.notifications.exists()
+    )
+
+
+def _create_at(order, location_id, location_name=""):
+    """Despacho en la bodega que Shopify le asignó al pedido."""
+    location = DispatchLocation.objects.filter(shopify_location_id=location_id).first()
+    return Dispatch.objects.create(
+        shopify_order=order,
+        location=location,
+        channel=order.marketplace,
+        status=Dispatch.Status.WAITING_LABEL if location else Dispatch.Status.MANUAL,
+        note="" if location else f"Bodega de Shopify sin registrar: {location_name or location_id} (sincronizar bodegas).",
     )
 
 

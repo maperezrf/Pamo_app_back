@@ -45,8 +45,7 @@ class ShopifyClient:
     def verify_webhook_signature(raw_body, header_signature):
         """Verifica la firma de un webhook entrante de Shopify (header
         `X-Shopify-Hmac-Sha256`). Shopify firma con HMAC-SHA256 + base64
-        (no hex, a diferencia de WhatsApp/Meta -- ver
-        `integrations/whatsapp/client.py::verify_signature`).
+        (no hex, a diferencia de Meta, que firma en hex).
 
         `raw_body` debe ser el cuerpo crudo del request (`request.body`,
         bytes), nunca `request.data` ya parseado -- la firma se calculó

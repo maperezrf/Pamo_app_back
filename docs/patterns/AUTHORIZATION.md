@@ -15,6 +15,7 @@ endpoint.
 | Proceso interno sin sesión | `ApiKeyRequiredMixin` | Requiere `X-API-Key` válido. |
 | Lectura para humano con rol o proceso interno | `RoleOrApiKeyRequiredMixin` | Acepta uno de los dos mecanismos. |
 | Sistema externo propio con token dedicado (ej. RPA) | `BearerTokenRequiredMixin` | Requiere `Authorization: Bearer` (o `X-Bot-Token`) igual a `bearer_token` de la vista. |
+| Persona externa sin cuenta que debe abrir **un** recurso (ej. la bodega abre su guía) | `AllowAny` + `authentication_classes = []` + link firmado con `django.core.signing` (salt propio, `max_age`) | La firma es la autorización: abre solo ese recurso y vence. Ejemplo: `orders/functions/label_links.py`. |
 
 ## Uso con roles
 
