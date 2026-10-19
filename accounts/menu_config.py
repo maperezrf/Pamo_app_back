@@ -23,4 +23,12 @@ MENU = [
         "roles": ["Admin", "Operaciones"],
         "submodulos": [],
     },
+    {
+        "key": "invoicing",
+        "label": "Facturación",
+        "path": "/invoicing",
+        # Mismos roles que `invoicing.apis.INVOICES_LIST_ROLES` (GET /api/invoicing/).
+        "roles": ["Admin", "Operaciones"],
+        "submodulos": [],
+    },
 ]

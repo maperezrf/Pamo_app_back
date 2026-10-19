@@ -94,7 +94,33 @@ timbrado ante la DIAN).
 ## Visibilidad
 
 `Invoice` está en el admin de Django; lo que devolvió Siigo es de solo
-lectura. Todavía no hay API para el frontend.
+lectura.
+
+## Listado (`GET /api/invoicing/`)
+
+`invoicing/apis.py` (`InvoiceListAPI`, roles `Admin` y `Operaciones`, los
+mismos de pedidos) sobre `invoicing/functions/list_invoices.py`. Solo lee
+la base de datos, nunca Siigo. Contrato en
+[`../contracts/API.md`](../contracts/API.md); lo consume la pantalla
+"Facturación" del frontend.
+
+- **Link a Siigo**: al crear la factura, Siigo devuelve `public_url`
+  (`https://documentview.siigo.com/document?data=…`, vista pública del
+  documento), que queda en `response_payload`. Se expone como `siigo_url`;
+  vacío si la factura no se creó. Verificado el 2026-10-17: lo traen las 45
+  facturas creadas.
+- **SKU**: salen de `request_payload["items"]` (`code`, `quantity`,
+  `price`), es decir, lo que se envió a Siigo: el SKU de Pamo, o el del
+  marketplace si no tiene equivalencia. Sin nombre: el catálogo no guarda
+  nombres de producto (`Product.name` vacío en todos al 2026-10-17).
+- **Pedido de Shopify**: `shopify_order_id` / `shopify_order_name` del
+  `MarketplaceOrder`; vacíos si la orden de Shopify falló (se factura
+  igual). `shopify_order_name` se guarda sin `#`; la búsqueda acepta los
+  dos.
+- **Motivo del fallo**: `error_message` tal cual. Un *"The code doesn't
+  exist: <sku>"* significa que ese código no existe como producto en Siigo:
+  no se arregla reintentando, hay que crearlo en Siigo (o corregir la
+  equivalencia del catálogo) y la siguiente corrida lo reintenta.
 
 ## Pruebas
 
@@ -104,7 +130,10 @@ Siigo; proceso con éxito (datos fijos y sin timbrar), factura aunque
 Shopify haya fallado, no factura OC abiertas, de otro canal ni ya
 facturadas, rechazo → `error` y reintento, rechazo con total calculado →
 reintento con ese total, fallo incierto → queda `creando` y no se
-reintenta, `limit`, `ProcessType` sembrado.
+reintenta, `limit`, `ProcessType` sembrado. Listado: campos, link a Siigo y SKU,
+factura en `error` sin link ni pedido de Shopify, filtros (estado, canal,
+fechas, búsqueda por OC, pedido de Shopify o número de factura), `403` sin
+sesión o rol y `400`/`404` por parámetros.
 
 ```
 DATABASE_URL= python manage.py test invoicing

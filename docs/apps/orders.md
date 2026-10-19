@@ -696,6 +696,22 @@ guía del canal.
     `label_pdf`) y no se repite; se descarga con "Descargar guía"
     (`GET .../dispatch/label/file/`). Generarla no avisa a la bodega: eso lo
     hace "Notificar a proveedor" o el proceso.
+  - "Cargar guía" (desde 2026-10-19, `upload_dispatch_label`; mismos
+    canales que "Generar guía"): sube una guía hecha fuera del sistema
+    (PDF hasta 5 MB, número y transportadora). Queda con
+    `label_source="manual"`; `STORED_LABEL_SOURCES` (Envía y manual) se
+    avisa con el PDF guardado, se descarga y se libera igual, y en Shopify
+    va con la transportadora escrita (`label_carrier`).
+  - "Liberar guía" (desde 2026-10-19, `release_envia_label`): quita del
+    despacho la guía generada en Envía o cargada a mano para generar o
+    cargar otra (otra transportadora u otro paquete, caso #20585). **No la cancela en Envía**
+    (decisión del usuario: por ahora se cancela a mano allá); la guía
+    liberada queda en `note`. Solo si el despacho no tiene avisos ni está
+    cumplido en Shopify. La nueva guía reusa la referencia `pamo-<pedido>`.
+  - Transportadoras de la cotización: las de `ENVIA_ALLOWED_CARRIERS`
+    (producción desde 2026-10-19: `tcc`, `interRapidisimo`, `coordinadora`,
+    `servientrega`; antes solo `servientrega`). Si una responde con error,
+    la cotización entera falla (`quote`).
   - **Guía guardada y link firmado** (desde 2026-10-16): la guía del canal
     (Mercado Libre, Falabella, Sodimac) también queda en `label_pdf` al
     traerla para avisar; antes solo se guardaba su hash y se volvía a pedir

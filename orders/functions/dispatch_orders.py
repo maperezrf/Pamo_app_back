@@ -4,7 +4,7 @@ from datetime import date
 from django.db.models import Q
 from django.utils import timezone
 
-from ..models import Dispatch, DispatchLocation, DispatchNotification, ShopifyOrder
+from ..models import STORED_LABEL_SOURCES, Dispatch, DispatchLocation, DispatchNotification, ShopifyOrder
 from integrations.envia.functions.download_label import download_label
 
 from .assign_dispatch_location import assign_dispatch_location
@@ -113,8 +113,8 @@ def process_dispatch(dispatch):
         return _save(dispatch, Dispatch.Status.MANUAL, f"{location.name} no tiene canales de aviso configurados.")
 
     label = None
-    if dispatch.label_source == Dispatch.LabelSource.ENVIA and dispatch.label_url:
-        # Guía generada en Envía: la guardada (o se baja), nunca se genera otra.
+    if dispatch.label_source in STORED_LABEL_SOURCES and (dispatch.label_pdf or dispatch.label_url):
+        # Guía generada en Envía o cargada a mano: la guardada (o se baja), nunca se genera otra.
         label = {"pdf": stored_envia_label(dispatch), "tracking_number": dispatch.tracking_number}
     elif location.creates_own_label and order.marketplace == SHOPIFY_CHANNEL:
         pass  # tienda web: la bodega genera la guía (le llega por la tienda conectada); se avisa sin guía
@@ -140,8 +140,8 @@ def process_dispatch(dispatch):
 
 
 def stored_envia_label(dispatch):
-    """El PDF guardado de una guía de Envía; si falta, lo baja de
-    `label_url` y lo guarda."""
+    """El PDF guardado de una guía de Envía o cargada a mano; si falta (guía
+    de Envía anterior a guardar PDFs), lo baja de `label_url` y lo guarda."""
     if dispatch.label_pdf:
         return bytes(dispatch.label_pdf)
     pdf = download_label(dispatch.label_url)

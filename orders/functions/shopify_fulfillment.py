@@ -5,10 +5,11 @@ from integrations.shopify.functions.get_fulfillment_orders import get_fulfillmen
 from integrations.shopify.functions.move_fulfillment_order import move_fulfillment_order
 from products.models import Marketplace
 
-from ..models import Dispatch, MarketplaceLabel
+from ..models import STORED_LABEL_SOURCES, MarketplaceLabel
 
 # Transportadora que se muestra en Shopify, por canal. La de una guía
-# generada en Envía es la que eligió quien la generó (`label_carrier`).
+# generada en Envía o cargada a mano es la que eligió quien la generó o la
+# cargó (`label_carrier`).
 CHANNEL_CARRIERS = {
     Marketplace.MERCADOLIBRE: "Mercado Envíos",
     Marketplace.FALABELLA: "Falabella",
@@ -79,7 +80,7 @@ def _fulfill(dispatch):
 
 def tracking_company(dispatch):
     """Transportadora de la guía del despacho, como se muestra en Shopify."""
-    if dispatch.label_source == Dispatch.LabelSource.ENVIA:
+    if dispatch.label_source in STORED_LABEL_SOURCES:
         return dispatch.label_carrier
     if dispatch.channel == Marketplace.SODIMAC:
         label = MarketplaceLabel.objects.filter(order__shopify_order_id=dispatch.shopify_order.shopify_id).first()

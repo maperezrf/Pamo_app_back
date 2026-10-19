@@ -9,11 +9,12 @@ from integrations.envia.functions.quote import quote
 from integrations.envia.functions.resolve_colombia_city import resolve_colombia_city
 from integrations.shopify.functions.get_order_shipping_address import get_order_shipping_address
 
-from ..models import Dispatch, MarketplaceOrder
+from ..models import STORED_LABEL_SOURCES, Dispatch, MarketplaceOrder
 from .dispatch_details import dispatch_lines, lines_total
 from .dispatch_orders import ensure_dispatches, process_dispatch, reopen_manual_dispatch, stored_envia_label
 from .fetch_dispatch_label import CHANNEL_LABELS, fetch_dispatch_label
 from .shopify_order_marketplace import SHOPIFY_CHANNEL
+from .sodimac_rpa import MAX_PDF_BYTES
 
 # Paquete de la guía (kg y cm) cuando el panel no manda peso y medidas: el de
 # referencia de pamo-one-engineering (1 kg, 10×10×10 cm).
@@ -165,6 +166,72 @@ def generate_dispatch_label(dispatch, *, carrier, service, package=None):
     return dispatch
 
 
+def upload_dispatch_label(dispatch, pdf, *, tracking_number, carrier):
+    """Botón "Cargar guía" (tienda web, Addi, cotizaciones y Madecentro):
+    deja en el despacho una guía hecha fuera del sistema (p. ej. en el panel
+    de Envía o con la transportadora), con su número y transportadora (la
+    que se pone en Shopify al cumplir). Mismas reglas que "Generar guía": no
+    reemplaza una guía que ya tenga (se libera primero). El PDF, hasta 5 MB
+    como la carga de Sodimac."""
+    _check_generation(dispatch)
+    tracking_number = str(tracking_number or "").strip()
+    carrier = str(carrier or "").strip()
+    if not tracking_number or not carrier:
+        raise DispatchActionError("Faltan el número de guía y la transportadora.")
+    if len(tracking_number) > 64 or len(carrier) > 40:
+        raise DispatchActionError("El número de guía o la transportadora son demasiado largos.")
+    if not pdf or len(pdf) > MAX_PDF_BYTES or not bytes(pdf[:5]) == b"%PDF-":
+        raise DispatchActionError("El archivo de la guía no es un PDF válido (o pesa más de 5 MB).")
+    dispatch.tracking_number = tracking_number
+    dispatch.label_source = Dispatch.LabelSource.MANUAL
+    dispatch.label_url = ""
+    dispatch.label_carrier = carrier
+    dispatch.label_service = ""
+    dispatch.label_package = {}
+    dispatch.label_sha256 = hashlib.sha256(pdf).hexdigest()
+    dispatch.label_pdf = pdf
+    dispatch.label_fetched_at = timezone.now()
+    dispatch.note = ""
+    dispatch.save()
+    return dispatch
+
+
+def release_envia_label(dispatch):
+    """Botón "Liberar guía": quita del despacho la guía generada en Envía o
+    cargada a mano para poder generar o cargar otra (otra transportadora u
+    otro paquete). **No la cancela en Envía** (decisión del usuario,
+    2026-10-19): se cancela a mano en el panel de Envía; por eso la guía
+    liberada queda en `note`. Solo antes de avisar a la bodega y de cumplir
+    en Shopify: después la guía ya salió."""
+    if dispatch.label_source not in STORED_LABEL_SOURCES:
+        raise DispatchActionError("El despacho no tiene guía generada en Envía ni cargada a mano.")
+    if dispatch.notifications.exists() or dispatch.shopify_fulfilled_at:
+        raise DispatchActionError(
+            f"La guía {dispatch.tracking_number} ya se avisó a la bodega o está en Shopify: no se puede liberar."
+        )
+    released = f"{dispatch.tracking_number} ({' '.join(filter(None, (dispatch.label_carrier, dispatch.label_service)))})"
+    cancel = (
+        "cancelarla en Envía para que no se cobre" if dispatch.label_source == Dispatch.LabelSource.ENVIA
+        else "anularla donde se hizo si no se va a usar"
+    )
+    dispatch.tracking_number = ""
+    dispatch.label_source = ""
+    dispatch.label_url = ""
+    dispatch.label_carrier = ""
+    dispatch.label_service = ""
+    dispatch.label_package = {}
+    dispatch.label_sha256 = ""
+    dispatch.label_pdf = None
+    dispatch.label_fetched_at = None
+    if dispatch.status == Dispatch.Status.READY:
+        dispatch.status = Dispatch.Status.WAITING_LABEL
+    dispatch.note = (
+        f"Guía {released} liberada el {timezone.localdate():%Y-%m-%d}: {cancel}."
+    )
+    dispatch.save()
+    return dispatch
+
+
 def label_reference(dispatch):
     """Referencia de la guía en Envía: `pamo-<pedido>`; en un despacho de
     una bodega de un pedido repartido, `pamo-<pedido>-<despacho>`, para que
@@ -174,11 +241,11 @@ def label_reference(dispatch):
 
 
 def envia_label_file(dispatch):
-    """PDF de la guía generada en Envía del despacho: (nombre de archivo,
-    bytes). Una guía generada antes de guardar el PDF se baja de su URL y
-    queda guardada."""
-    if dispatch.label_source != Dispatch.LabelSource.ENVIA:
-        raise DispatchActionError("El despacho no tiene guía generada en Envía.")
+    """PDF de la guía generada en Envía o cargada a mano del despacho:
+    (nombre de archivo, bytes). Una guía generada antes de guardar el PDF se
+    baja de su URL y queda guardada."""
+    if dispatch.label_source not in STORED_LABEL_SOURCES:
+        raise DispatchActionError("El despacho no tiene guía generada en Envía ni cargada a mano.")
     return f"{label_reference(dispatch)}-guia-{dispatch.tracking_number}.pdf", stored_envia_label(dispatch)
 
 
@@ -195,8 +262,10 @@ def _check_generation(dispatch):
         raise DispatchActionError("Este canal trae su propia guía: usar \"Traer guía\".")
     if dispatch.location.creates_own_label and order.marketplace == SHOPIFY_CHANNEL:
         raise DispatchActionError(f"{dispatch.location.name} crea su propia guía: no se genera en Envía.")
-    if dispatch.label_source == Dispatch.LabelSource.ENVIA:
-        raise DispatchActionError(f"Ya tiene una guía generada ({dispatch.tracking_number}); no se genera otra.")
+    if dispatch.label_source in STORED_LABEL_SOURCES:
+        raise DispatchActionError(
+            f"Ya tiene una guía ({dispatch.tracking_number}); para cambiarla, liberarla primero."
+        )
 
 
 def _shipping_payload(dispatch, shipping=None, package=None):

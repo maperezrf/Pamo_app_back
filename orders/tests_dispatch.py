@@ -6,6 +6,7 @@ from unittest.mock import patch
 from django.contrib.auth.models import Group, User
 from django.core import mail
 from django.core.exceptions import ValidationError
+from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import TestCase, override_settings
 from PIL import Image
 from pypdf import PdfReader
@@ -612,6 +613,84 @@ class DispatchActionAPITests(TestCase):
         self.assertEqual(self.client.get(url).status_code, 404)
         self.client.force_login(User.objects.create_user("otro2", password="x"))
         self.assertEqual(self.client.get(url).status_code, 403)
+
+    def _with_envia_label(self, order):
+        Dispatch.objects.filter(shopify_order=order).update(
+            label_source="envia", tracking_number="2298972094", label_url="https://api.envia.com/l.pdf",
+            label_carrier="servientrega", label_service="premier", label_pdf=PDF, label_package={"weight": 0.5},
+        )
+
+    @patch(f"{A}.download_label", return_value=PDF)
+    @patch(f"{A}.create_label", return_value=GENERATED)
+    @patch(f"{A}._shipping_payload", return_value={})
+    def test_release_frees_the_dispatch_for_a_new_label_and_notes_the_old_one(self, payload, create_label, download):
+        order = self._web_order()
+        self._with_envia_label(order)
+
+        response = self._post(order, "label/release/")
+
+        self.assertEqual(response.status_code, 200)
+        dispatch = Dispatch.objects.get(shopify_order=order)
+        self.assertEqual((dispatch.label_source, dispatch.tracking_number, dispatch.label_pdf), ("", "", None))
+        self.assertIn("2298972094 (servientrega premier)", dispatch.note)
+        self.assertEqual(self._post(order, "label/", {"carrier": "tcc", "service": "mensajeria"}).status_code, 200)
+        self.assertEqual(Dispatch.objects.get(shopify_order=order).tracking_number, "474231399")
+
+    def test_release_is_refused_once_the_warehouse_was_notified_or_without_a_label(self):
+        order = self._web_order()
+        self.assertEqual(self._post(order, "label/release/").status_code, 400)
+        self._with_envia_label(order)
+        dispatch = Dispatch.objects.get(shopify_order=order)
+        DispatchNotification.objects.create(dispatch=dispatch, channel="email", status="enviado")
+
+        response = self._post(order, "label/release/")
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(Dispatch.objects.get(shopify_order=order).tracking_number, "2298972094")
+
+    def _upload(self, order, pdf=PDF, **fields):
+        data = {"tracking_number": "700123", "carrier": "TCC", **fields}
+        if pdf is not None:
+            data["label"] = SimpleUploadedFile("guia.pdf", pdf, content_type="application/pdf")
+        return self.client.post(f"/api/orders/{order.shopify_id}/dispatch/label/upload/", data)
+
+    def test_upload_stores_a_manual_label_used_for_shopify_and_download(self):
+        order = self._web_order()
+
+        response = self._upload(order)
+
+        self.assertEqual(response.status_code, 200)
+        dispatch = Dispatch.objects.get(shopify_order=order)
+        self.assertEqual((dispatch.label_source, dispatch.tracking_number, dispatch.label_carrier), ("manual", "700123", "TCC"))
+        self.assertEqual(bytes(dispatch.label_pdf), PDF)
+        self.assertEqual(tracking_company(dispatch), "TCC")
+        file = self.client.get(f"/api/orders/{order.shopify_id}/dispatch/label/file/")
+        self.assertEqual(file.content, PDF)
+        # Con guía no se carga ni se genera otra hasta liberarla.
+        self.assertEqual(self._upload(order, tracking_number="999").status_code, 400)
+        self.assertEqual(self._post(order, "label/quote/").status_code, 400)
+        self.assertEqual(self._post(order, "label/release/").status_code, 200)
+        self.assertEqual(self._upload(order, tracking_number="999").status_code, 200)
+
+    def test_upload_rejects_a_non_pdf_or_missing_fields(self):
+        order = self._web_order()
+        self.assertEqual(self._upload(order, pdf=b"hola").status_code, 400)
+        self.assertEqual(self._upload(order, pdf=None).status_code, 400)
+        self.assertEqual(self._upload(order, carrier="").status_code, 400)
+        self.assertEqual(Dispatch.objects.get(shopify_order=order).label_source, "")
+
+    def test_upload_is_403_without_the_role(self):
+        order = self._web_order()
+        self.client.force_login(User.objects.create_user("otro4", password="x"))
+        self.assertEqual(self._upload(order).status_code, 403)
+
+    def test_release_is_403_without_the_role(self):
+        order = self._web_order()
+        self._with_envia_label(order)
+        self.client.force_login(User.objects.create_user("otro3", password="x"))
+
+        self.assertEqual(self._post(order, "label/release/").status_code, 403)
+        self.assertEqual(Dispatch.objects.get(shopify_order=order).label_source, "envia")
 
     @patch(f"{A}._shipping_payload", return_value={})
     def test_generate_with_an_unknown_result_is_502_and_noted(self, payload):

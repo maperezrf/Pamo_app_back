@@ -435,10 +435,14 @@ class Dispatch(models.Model):
     class LabelSource(models.TextChoices):
         CHANNEL = "canal", "Del canal"
         ENVIA = "envia", "Generada en Envía"
+        # Subida desde el panel ("Cargar guía"): una guía hecha fuera del sistema.
+        MANUAL = "manual", "Cargada a mano"
 
     tracking_number = models.CharField(max_length=64, blank=True)
     label_source = models.CharField(max_length=10, choices=LabelSource.choices, blank=True)
-    # Solo guías generadas en Envía: se vuelven a bajar de aquí (una guía del
+    # Guías generadas en Envía o cargadas a mano (`STORED_LABEL_SOURCES`):
+    # transportadora y servicio los elige quien la genera o la carga. Solo
+    # las de Envía tienen URL: se vuelven a bajar de aquí (una guía del
     # canal se vuelve a pedir al canal). Una guía generada no se repite.
     label_url = models.TextField(blank=True)
     label_carrier = models.CharField(max_length=40, blank=True)
@@ -473,6 +477,11 @@ class Dispatch(models.Model):
 
     def __str__(self):
         return f"{self.shopify_order} -> {self.location or 'sin bodega'} ({self.status})"
+
+
+# Guías que quedan guardadas en el despacho y no se vuelven a pedir a nadie:
+# se avisan, se descargan y se liberan igual.
+STORED_LABEL_SOURCES = (Dispatch.LabelSource.ENVIA, Dispatch.LabelSource.MANUAL)
 
 
 class DispatchNotification(models.Model):

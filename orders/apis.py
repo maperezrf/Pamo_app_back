@@ -26,6 +26,8 @@ from .functions.dispatch_actions import (
     notify_dispatch_now,
     parse_package,
     quote_dispatch_label,
+    release_envia_label,
+    upload_dispatch_label,
 )
 from .functions.label_links import LabelLinkExpired, LabelLinkInvalid, label_from_link
 from .functions.list_orders import channel_label_for_order, filter_orders, format_dispatch, format_dispatches, format_orders
@@ -190,6 +192,35 @@ class DispatchGenerateLabelAPI(DispatchActionAPI):
             return Response({"detail": "Falta la opción elegida (carrier y service)."}, status=400)
         package = parse_package(request.data.get("package"))
         generate_dispatch_label(dispatch, carrier=carrier, service=service, package=package)
+        return self.dispatch_response(dispatch)
+
+
+class DispatchUploadLabelAPI(DispatchActionAPI):
+    """POST /api/orders/<id>/dispatch/label/upload/ (multipart): botón "Cargar
+    guía" de los pedidos que no traen guía del canal. Campos `label` (PDF),
+    `tracking_number`, `carrier` y `dispatch_id` opcional. 400 si ya tiene
+    guía (liberarla primero) o los datos no sirven."""
+
+    parser_classes = [MultiPartParser]
+
+    def run(self, dispatch, request):
+        label = request.FILES.get("label")
+        upload_dispatch_label(
+            dispatch,
+            label.read() if label else b"",
+            tracking_number=request.data.get("tracking_number"),
+            carrier=request.data.get("carrier"),
+        )
+        return self.dispatch_response(dispatch)
+
+
+class DispatchReleaseLabelAPI(DispatchActionAPI):
+    """POST /api/orders/<id>/dispatch/label/release/: quita del despacho la
+    guía generada en Envía o cargada a mano para generar o cargar otra. No la cancela en Envía (se
+    hace a mano). 400 si ya se avisó a la bodega o está en Shopify."""
+
+    def run(self, dispatch, request):
+        release_envia_label(dispatch)
         return self.dispatch_response(dispatch)
 
 

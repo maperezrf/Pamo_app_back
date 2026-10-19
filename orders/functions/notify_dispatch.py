@@ -36,7 +36,7 @@ def notify(channel, *, dispatch, details, label):
     falló sin impedir el aviso, "warning". Un error del proveedor o
     `DispatchNotificationError` se propaga; quien llama lo registra en el
     aviso.
-    """
+    """ 
     if channel == Channel.API:
         return _notify_envia(dispatch.location, details, label, dispatch.shopify_order)
     if channel == Channel.WHATSAPP:

@@ -189,3 +189,119 @@ class InvoiceSodimacOrdersTests(TestCase):
         from orchestrator.models import ProcessType
 
         self.assertFalse(ProcessType.objects.get(code="invoicing.invoice_sodimac").allow_concurrent)
+
+
+def _invoice(order, status=Invoice.Status.CREATED, **overrides):
+    fields = {
+        "status": status,
+        "customer_identification": "800242106",
+        "customer_name": "SODIMAC COLOMBIA S A",
+        "purchase_order_number": order.marketplace_order_id,
+        "subtotal": Decimal("2000.00"),
+        "iva": Decimal("380.00"),
+        "reteiva": Decimal("57.00"),
+        "reteica": Decimal("22.08"),
+        "retefuente": Decimal("50.00"),
+        "total": Decimal("2250.92"),
+        "stamped": True,
+        "invoice_date": "2026-10-10",
+        "request_payload": {"items": [{"code": "PAC1", "quantity": 2, "price": 1000.0}]},
+    }
+    if status == Invoice.Status.CREATED:
+        fields.update(
+            siigo_id="abc-123",
+            number="FV-1-1234",
+            siigo_total=Decimal("2250.92"),
+            response_payload={"id": "abc-123", "public_url": "https://documentview.siigo.com/document?data=x"},
+        )
+    fields.update(overrides)
+    return Invoice.objects.create(marketplace_order=order, **fields)
+
+
+class InvoiceListAPITests(TestCase):
+    url = "/api/invoicing/"
+
+    def setUp(self):
+        from django.contrib.auth.models import Group, User
+
+        self.user = User.objects.create_user("ops", password="x")
+        self.user.groups.add(Group.objects.get_or_create(name="Operaciones")[0])
+        self.other = User.objects.create_user("other", password="x")
+
+    def _get(self, params=None):
+        self.client.force_login(self.user)
+        response = self.client.get(self.url, params or {})
+        self.assertEqual(response.status_code, 200, response.content)
+        return response.json()
+
+    def test_lists_invoices_with_links_values_and_skus(self):
+        _invoice(_order("9001", shopify_order_id="555", shopify_order_name="#1001"))
+
+        body = self._get()
+
+        self.assertEqual(body["count"], 1)
+        invoice = body["invoices"][0]
+        self.assertEqual(
+            {key: invoice[key] for key in (
+                "status", "number", "siigo_url", "marketplace", "marketplace_order_number",
+                "shopify_order_id", "shopify_order_name", "subtotal", "total", "stamped",
+            )},
+            {
+                "status": "creada",
+                "number": "FV-1-1234",
+                "siigo_url": "https://documentview.siigo.com/document?data=x",
+                "marketplace": "sodimac",
+                "marketplace_order_number": "9001",
+                "shopify_order_id": "555",
+                "shopify_order_name": "#1001",
+                "subtotal": "2000.00",
+                "total": "2250.92",
+                "stamped": True,
+            },
+        )
+        self.assertEqual(
+            invoice["items"],
+            [{"sku": "PAC1", "quantity": 2, "unit_price": "1000.00", "line_total": "2000.00"}],
+        )
+
+    def test_failed_invoice_has_its_reason_and_no_link(self):
+        _invoice(_order("9002"), status=Invoice.Status.ERROR, error_message="The code doesn't exist: X-1")
+
+        invoice = self._get()["invoices"][0]
+
+        self.assertEqual((invoice["status"], invoice["error_message"]), ("error", "The code doesn't exist: X-1"))
+        self.assertEqual((invoice["number"], invoice["siigo_url"], invoice["siigo_total"]), ("", "", ""))
+        # Se factura aunque la orden de Shopify haya fallado: sin pedido.
+        self.assertEqual((invoice["shopify_order_id"], invoice["shopify_order_name"]), ("", ""))
+
+    def test_filters(self):
+        _invoice(_order("1", shopify_order_name="#1001"), invoice_date="2026-10-01")
+        _invoice(_order("2"), status=Invoice.Status.ERROR, invoice_date="2026-10-05")
+        _invoice(_order("3"), number="FV-1-9", invoice_date="2026-10-09")
+
+        def ocs(params):
+            return [invoice["marketplace_order_number"] for invoice in self._get(params)["invoices"]]
+
+        self.assertEqual(ocs({}), ["3", "2", "1"])
+        self.assertEqual(ocs({"status": "error"}), ["2"])
+        self.assertEqual(ocs({"date_from": "2026-10-02", "date_to": "2026-10-05"}), ["2"])
+        self.assertEqual(ocs({"search": "1"}), ["1"])
+        self.assertEqual(ocs({"search": "1001"}), ["1"])
+        self.assertEqual(ocs({"search": "fv-1-9"}), ["3"])
+        self.assertEqual(ocs({"marketplace": "falabella"}), [])
+
+    def test_rejects_without_session_or_role(self):
+        self.assertEqual(self.client.get(self.url).status_code, 403)
+        self.client.force_login(self.other)
+        self.assertEqual(self.client.get(self.url).status_code, 403)
+
+    def test_invalid_params(self):
+        self.client.force_login(self.user)
+        for params in (
+            {"status": "otro"},
+            {"marketplace": "amazon"},
+            {"date_from": "2026-10-05", "date_to": "2026-10-01"},
+            {"page_size": 51},
+        ):
+            self.assertEqual(self.client.get(self.url, params).status_code, 400, params)
+        self.assertEqual(self.client.get(self.url, {"page": 9}).status_code, 404)
