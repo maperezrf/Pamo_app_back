@@ -1,14 +1,17 @@
 import hashlib
 import json
+import logging
 import re
 from decimal import Decimal, InvalidOperation
 
 from config.constants import ENVIA_ALLOWED_CARRIERS
 
-from ..client import EnviaClient
+from ..client import EnviaAPIError, EnviaClient
 from .validate_shipping_payload import validate_shipping_payload
 
 MAX_CARRIERS_PER_QUOTE = 12
+
+logger = logging.getLogger(__name__)
 
 
 class QuoteError(ValueError):
@@ -42,19 +45,30 @@ def quote(payload):
     trae `providerPayload`, que es lo que hay que pasarle después a
     create_label() para comprar exactamente esa opción.
 
-    Lanza QuoteError si ningún transportador devolvió una tarifa elegible.
+    Una transportadora que Envía rechaza (`ENVIA_PROVIDER_ERROR`: sin
+    cobertura, "Service Unavailable"...) se salta y se sigue con las demás;
+    cualquier otro error (token, red, respuesta inválida) es de toda la
+    cuenta y corta la cotización.
+
+    Lanza QuoteError si ningún transportador devolvió una tarifa elegible,
+    con lo que respondió cada una que falló.
     """
     if not ENVIA_ALLOWED_CARRIERS:
         raise QuoteError("ENVIA_ALLOWED_CARRIERS_REQUIRED")
     validated = validate_shipping_payload(payload)
     client = EnviaClient()
     options = []
+    failures = []
     for carrier in ENVIA_ALLOWED_CARRIERS[:MAX_CARRIERS_PER_QUOTE]:
         request_payload = {**validated, "shipment": {"type": 1, "carrier": carrier}}
-        # Fiel al original: si un transportador falla, aborta toda la
-        # cotización -- no sigue con los demás. Si prefieres que un
-        # transportador con error no tumbe a los otros, lo cambiamos.
-        result = client.post(client.shipping_base, "/ship/rate/", request_payload)
+        try:
+            result = client.post(client.shipping_base, "/ship/rate/", request_payload)
+        except EnviaAPIError as error:
+            if error.code != "ENVIA_PROVIDER_ERROR":
+                raise
+            failures.append(f"{carrier}: {error.provider_message or error.code}")
+            logger.warning("Envía no cotizó con %s: %s", carrier, error.provider_message or error.code)
+            continue
         raw_options = result.get("data") if isinstance(result.get("data"), list) else []
         for raw in raw_options:
             if not isinstance(raw, dict):
@@ -84,5 +98,5 @@ def quote(payload):
                 "providerPayload": {"carrier": carrier_code, "service": service[:120], "type": 1},
             })
     if not options:
-        raise QuoteError("ENVIA_NO_ELIGIBLE_RATES")
+        raise QuoteError("ENVIA_NO_ELIGIBLE_RATES" + (f" ({'; '.join(failures)})" if failures else ""))
     return options

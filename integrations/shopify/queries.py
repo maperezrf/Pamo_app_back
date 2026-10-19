@@ -237,6 +237,7 @@ fragment OrderFields on Order {
       lineItems(first: 50) {
         nodes {
           totalQuantity
+          remainingQuantity
           lineItem {
             sku
             name

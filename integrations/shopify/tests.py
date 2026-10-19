@@ -555,7 +555,9 @@ class ListOrdersPageTests(SimpleTestCase):
                 "status": status,
                 "assignedLocation": {"name": location, "location": {"id": f"gid://shopify/Location/{fo_id}0"}},
                 "lineItems": {"nodes": [
-                    {"totalQuantity": quantity, "lineItem": {"sku": sku, "name": None}} for sku, quantity in items
+                    {"totalQuantity": quantity, "remainingQuantity": 0 if status == "CLOSED" else quantity,
+                     "lineItem": {"sku": sku, "name": None}}
+                    for sku, quantity in items
                 ]},
                 "fulfillments": {"nodes": list(fulfillments)},
             }
@@ -565,11 +567,14 @@ class ListOrdersPageTests(SimpleTestCase):
             {"trackingInfo": [{"number": "616973194", "company": "Other", "url": None}]},
             {"trackingInfo": []},
         ]
+        moved_from = fulfillment_order(5, "CLOSED", "Taumm", [("D", 2)], [{"trackingInfo": []}])
+        moved_from["lineItems"]["nodes"][0]["remainingQuantity"] = 2
         nodes = [
             fulfillment_order(1, "OPEN", "Proveedores", [("A", 1)]),
             fulfillment_order(2, "CLOSED", "Bodega Envia", []),  # resto vacío de un movimiento
             fulfillment_order(3, "CLOSED", "Bodega Envia", [("B", 2)], tracked),
             fulfillment_order(4, "CANCELLED", "Baru", [("C", 1)]),
+            moved_from,  # bodega anterior: cumplimiento cancelado y bodega cambiada
         ]
         self._respond(mock_post, [self._order(fulfillmentOrders={"nodes": nodes})])
 

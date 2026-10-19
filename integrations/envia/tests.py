@@ -154,6 +154,34 @@ class QuoteTests(SimpleTestCase):
             quote(_valid_payload())
         self.assertEqual(raised.exception.code, "ENVIA_HTTP_401")
 
+    @staticmethod
+    def _responses(*contents):
+        return [MagicMock(is_redirect=False, status_code=200, content=content) for content in contents]
+
+    @patch("integrations.envia.functions.quote.ENVIA_ALLOWED_CARRIERS", ["tcc", "servientrega"])
+    @patch("integrations.envia.client.requests.post")
+    def test_a_carrier_rejected_by_envia_does_not_sink_the_others(self, mock_post):
+        # Visto en producción (2026-10-19): "Error: Service Unavailable" de una
+        # transportadora tumbaba toda la cotización.
+        mock_post.side_effect = self._responses(
+            b'{"meta": "error", "error": {"code": 1, "message": "Error: Service Unavailable"}}',
+            b'{"data": [{"carrier": "servientrega", "service": "premier", "totalPrice": "17250"}]}',
+        )
+        options = quote(_valid_payload())
+        self.assertEqual([option["carrier"] for option in options], ["servientrega"])
+
+    @patch("integrations.envia.functions.quote.ENVIA_ALLOWED_CARRIERS", ["tcc", "servientrega"])
+    @patch("integrations.envia.client.requests.post")
+    def test_when_every_carrier_is_rejected_the_error_says_why(self, mock_post):
+        mock_post.side_effect = self._responses(
+            b'{"meta": "error", "error": {"code": 1, "message": "Error: Service Unavailable"}}',
+            b'{"meta": "error", "error": {"code": 1, "message": "There is no coverage"}}',
+        )
+        with self.assertRaises(QuoteError) as raised:
+            quote(_valid_payload())
+        self.assertIn("tcc:", str(raised.exception))
+        self.assertIn("servientrega:", str(raised.exception))
+
     @patch("integrations.envia.functions.quote.ENVIA_ALLOWED_CARRIERS", [])
     def test_raises_when_no_carriers_are_configured(self):
         with self.assertRaises(QuoteError):

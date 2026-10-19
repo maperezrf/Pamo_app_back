@@ -385,7 +385,11 @@ reconciliación, con una sola función de guardado.
   para mostrar, este backend no decide nada con ella (la bodega que
   decide este sistema es `Dispatch`, ver "Despacho a bodegas"). Shopify
   divide pedidos web con su propio enrutamiento, por eso un pedido puede
-  tener varias. Para llenarlas en pedidos viejos: `backfill_shopify_orders`.
+  tener varias. Solo quedan las bodegas vigentes: se descartan los
+  cancelados, los vacíos y los `CLOSED` sin ninguna unidad cumplida
+  (`remainingQuantity` = `totalQuantity`), que es lo que deja Shopify en la
+  bodega anterior al cancelar el cumplimiento y cambiar de bodega
+  (`_normalize_fulfillment_orders`). Para llenarlas en pedidos viejos: `backfill_shopify_orders`.
   Los movimientos de bodega y los cumplimientos llegan por los webhooks de
   fulfillment y fulfillment order (abajo). **Sin verificar**: si mover un
   fulfillment order cambia el `updatedAt` del pedido; si no, la
@@ -686,7 +690,10 @@ guía del canal.
     genera en Envía Shipping desde la dirección de la bodega (copiada de
     Shopify al sincronizar bodegas) a la dirección de entrega (tienda web:
     la de envío del pedido en Shopify; Madecentro: la del comprador en
-    `MarketplaceOrder`, porque en Shopify va al cliente fijo). Peso (kg) y
+    `MarketplaceOrder`, porque en Shopify va al cliente fijo), con la cédula
+    del destinatario (`identificationNumber`: tienda web la del pedido,
+    Madecentro la del comprador; algunas transportadoras la exigen, caso
+    #20598). Peso (kg) y
     medidas (cm) del paquete se editan en el panel (`parse_package`: cada
     valor mayor que 0, sin tope; por defecto 1 kg 10×10×10); el panel manda
     en la generación el mismo paquete que cotizó, y el despacho guarda en
@@ -710,8 +717,11 @@ guía del canal.
     cumplido en Shopify. La nueva guía reusa la referencia `pamo-<pedido>`.
   - Transportadoras de la cotización: las de `ENVIA_ALLOWED_CARRIERS`
     (producción desde 2026-10-19: `tcc`, `interRapidisimo`, `coordinadora`,
-    `servientrega`; antes solo `servientrega`). Si una responde con error,
-    la cotización entera falla (`quote`).
+    `servientrega`; antes solo `servientrega`). Desde 2026-10-19 una
+    transportadora que Envía rechaza (`ENVIA_PROVIDER_ERROR`, p. ej.
+    Coordinadora con "Service Unavailable") se salta y se muestran las
+    demás; un error de la cuenta (token, red) sigue cortando la cotización.
+    Si ninguna cotiza, el `400` dice qué respondió cada una.
   - **Guía guardada y link firmado** (desde 2026-10-16): la guía del canal
     (Mercado Libre, Falabella, Sodimac) también queda en `label_pdf` al
     traerla para avisar; antes solo se guardaba su hash y se volvía a pedir

@@ -43,19 +43,26 @@ def normalize_order(raw, line_nodes, line_items_truncated=False):
 
 def _normalize_fulfillment_orders(raw):
     """Bodegas desde donde sale el pedido, según Shopify. Se descartan los
-    `CANCELLED` y los que no tienen productos (un movimiento de bodega deja
-    uno `CLOSED` vacío, visto en el pedido 20463 el 2026-10-15). `tracking`
-    es la guía del último fulfillment de ese fulfillment order que tenga
-    número."""
+    `CANCELLED`, los que no tienen productos (un movimiento de bodega deja
+    uno `CLOSED` vacío, visto en el pedido 20463 el 2026-10-15) y los
+    `CLOSED` sin ninguna unidad cumplida (`remainingQuantity` igual a
+    `totalQuantity`): es la bodega anterior cuando se cancela el
+    cumplimiento y se cambia la bodega (pedidos 20381 y 20522, verificado en
+    vivo el 2026-10-19). Un `CLOSED` con unidades cumplidas sí despachó y se
+    conserva. `tracking` es la guía del último fulfillment de ese
+    fulfillment order que tenga número."""
     result = []
     for node in (raw or {}).get("nodes") or []:
+        line_nodes = (node.get("lineItems") or {}).get("nodes") or []
+        if node.get("status") == "CLOSED" and not any(_fulfilled_quantity(item) for item in line_nodes):
+            continue
         items = [
             {
                 "sku": (item.get("lineItem") or {}).get("sku") or "",
                 "name": (item.get("lineItem") or {}).get("name") or "",
                 "quantity": int(item.get("totalQuantity") or 0),
             }
-            for item in (node.get("lineItems") or {}).get("nodes") or []
+            for item in line_nodes
         ]
         if node.get("status") == "CANCELLED" or not any(item["quantity"] for item in items):
             continue
@@ -69,6 +76,12 @@ def _normalize_fulfillment_orders(raw):
             "tracking": _last_tracking((node.get("fulfillments") or {}).get("nodes") or []),
         })
     return result
+
+
+def _fulfilled_quantity(item):
+    total = int(item.get("totalQuantity") or 0)
+    remaining = item.get("remainingQuantity")
+    return total if remaining is None else total - int(remaining)
 
 
 def _last_tracking(fulfillments):
