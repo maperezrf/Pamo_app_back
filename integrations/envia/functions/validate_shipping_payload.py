@@ -53,6 +53,10 @@ def _address(value, prefix):
         "city": city,
         "state": _clean_text(value.get("state"), 80, f"ENVIA_{prefix}_STATE_INVALID"),
         "country": country,
+        # Cédula o NIT (opcional): algunas transportadoras lo exigen en el
+        # destino al generar ("NIT/CC destino no puede ser vacío", pedido
+        # #20598). Sin puntos ni guiones.
+        "identificationNumber": re.sub(r"[^0-9A-Za-z]", "", str(value.get("identificationNumber") or ""))[:20],
         # En Colombia la ciudad ya va como código DANE; el postal es opcional
         # (muchos pedidos y bodegas de Shopify no lo tienen).
         "postalCode": (

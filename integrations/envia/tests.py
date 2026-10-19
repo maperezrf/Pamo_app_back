@@ -37,6 +37,13 @@ class ValidateShippingPayloadTests(SimpleTestCase):
         self.assertEqual(validated["origin"]["city"], "11001001")
         self.assertEqual(validated["packages"][0]["weightUnit"], "KG")
 
+    def test_identification_is_optional_and_sent_without_dots_or_dashes(self):
+        payload = _valid_payload()
+        payload["destination"]["identificationNumber"] = "900.123.456-7"
+        validated = validate_shipping_payload(payload)
+        self.assertEqual(validated["destination"]["identificationNumber"], "9001234567")
+        self.assertEqual(validated["origin"]["identificationNumber"], "")
+
     def test_rejects_a_colombian_city_that_is_not_an_8_digit_dane_code(self):
         payload = _valid_payload()
         payload["destination"]["city"] = "Cali"

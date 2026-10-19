@@ -293,7 +293,7 @@ def _shipping_payload(dispatch, shipping=None, package=None):
             "email": shipping.get("email") or order.email,
             "street": " ".join(part for part in (shipping["address1"], shipping["address2"]) if part),
             "city": destination_city["city"], "state": destination_city["state"], "country": "CO",
-            "postalCode": shipping["zip"],
+            "postalCode": shipping["zip"], "identificationNumber": shipping.get("identification", ""),
         },
         "packages": [
             {
@@ -310,14 +310,15 @@ def _shipping_payload(dispatch, shipping=None, package=None):
 
 def _destination(order):
     """Destino de la guía. Tienda web: la dirección de envío del pedido en
-    Shopify. Marketplace (Madecentro): la del comprador guardada en
-    `MarketplaceOrder`, porque en Shopify el pedido va al cliente fijo del
-    canal, sin dirección de envío."""
+    Shopify (la cédula, de la copia local del pedido). Marketplace
+    (Madecentro): la del comprador guardada en `MarketplaceOrder`, con su
+    cédula, porque en Shopify el pedido va al cliente fijo del canal, sin
+    dirección de envío."""
     if order.marketplace == SHOPIFY_CHANNEL:
         shipping = get_order_shipping_address(order.shopify_id)
         if not shipping or not shipping["address1"] or not shipping["city"]:
             raise DispatchActionError("El pedido no tiene dirección de envío en Shopify.")
-        return shipping
+        return {**shipping, "identification": order.customer_identification}
     row = MarketplaceOrder.objects.filter(shopify_order_id=order.shopify_id).order_by("id").first()
     if row is None or not row.customer_address or not row.customer_city:
         raise DispatchActionError("El pedido no tiene dirección de entrega del comprador.")
@@ -325,4 +326,5 @@ def _destination(order):
         "first_name": row.customer_first_name, "last_name": row.customer_last_name, "company": "",
         "email": row.customer_email, "phone": row.customer_phone, "address1": row.customer_address, "address2": "",
         "city": row.customer_city, "province_code": row.customer_region, "zip": "",
+        "identification": row.customer_identification,
     }

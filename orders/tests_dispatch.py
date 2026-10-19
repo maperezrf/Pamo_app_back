@@ -511,6 +511,7 @@ class DispatchActionAPITests(TestCase):
     @patch(f"{A}.get_order_shipping_address", return_value=WEB_SHIPPING)
     def test_quote_returns_the_options_from_the_dispatch_warehouse(self, shipping, city, quote):
         order = self._web_order()
+        ShopifyOrder.objects.filter(pk=order.pk).update(customer_identification="80196785")
 
         response = self._post(order, "label/quote/")
 
@@ -525,6 +526,7 @@ class DispatchActionAPITests(TestCase):
         payload = quote.call_args.args[0]
         self.assertEqual(payload["origin"]["street"], "Calle 1")
         self.assertEqual(payload["destination"]["street"], "Calle 9")
+        self.assertEqual(payload["destination"]["identificationNumber"], "80196785")  # la exigen algunas (#20598)
         self.assertEqual(payload["packages"][0]["weight"], 1)
         self.assertEqual(response.json()["package"], {"weight": 1, "length": 10, "width": 10, "height": 10})
 
@@ -973,7 +975,7 @@ class SodimacAndMadecentroDispatchTests(TestCase):
         order = _order(marketplace="madecentro")
         _marketplace_row(order, marketplace="madecentro", location_id=ENVIA_LOCATION, shipment_id="",
                          customer_address="Cra 50 # 10-20", customer_city="Medellín", customer_region="Antioquia",
-                         customer_email="ana@example.com")
+                         customer_email="ana@example.com", customer_identification="1.234.567")
         user = User.objects.create_user("ops", password="x")
         user.groups.add(Group.objects.get_or_create(name="Operaciones")[0])
         self.client.force_login(user)
@@ -984,6 +986,7 @@ class SodimacAndMadecentroDispatchTests(TestCase):
         shipping.assert_not_called()  # en Shopify va al cliente fijo, sin dirección
         destination = quote.call_args.args[0]["destination"]
         self.assertEqual((destination["street"], destination["email"]), ("Cra 50 # 10-20", "ana@example.com"))
+        self.assertEqual(destination["identificationNumber"], "1.234.567")  # la del comprador, no la del cliente fijo
         route = response.json()["route"]["destination"]
         self.assertEqual((route["address"], route["city"], route["region"]), ("Cra 50 # 10-20", "Medellín", "Antioquia"))
         city.assert_called_with("Medellín", "Antioquia")
