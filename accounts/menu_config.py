@@ -31,4 +31,12 @@ MENU = [
         "roles": ["Admin", "Operaciones"],
         "submodulos": [],
     },
+    {
+        "key": "products",
+        "label": "Productos",
+        "path": "/products",
+        # Mismos roles que `products.apis.CATALOG_ROLES` (GET /api/products/).
+        "roles": ["Admin"],
+        "submodulos": [],
+    },
 ]

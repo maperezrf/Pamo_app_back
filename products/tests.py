@@ -259,6 +259,12 @@ class CatalogAPITests(APITestCase):
             ("post", reverse("products-equivalences"), {"rows": [{"pamo_sku": "p"}]}),
             ("get", reverse("products-kits"), None),
             ("post", reverse("products-kits"), {"rows": [{"kit_sku": "K", "component_sku": "A", "quantity": 1}]}),
+            ("delete", reverse("products-kit-detail", args=[Product.objects.get(sku="5864").pk]), None),
+            (
+                "delete",
+                reverse("products-marketplace-sku-detail", args=[MarketplaceSku.objects.get(sku="5864").pk]),
+                None,
+            ),
         ]
 
     def test_rejects_anonymous_and_users_without_role(self):
@@ -277,8 +283,12 @@ class CatalogAPITests(APITestCase):
         self.assertEqual(response.data["count"], 1)
         product = response.data["results"][0]
         self.assertEqual(product["sku"], "5864")
+        self.assertEqual(product["id"], Product.objects.get(sku="5864").pk)
         self.assertEqual(product["components"], [{"sku": "A", "quantity": 1}])
-        self.assertEqual(product["marketplace_skus"], [{"marketplace": "sodimac", "sku": "5864", "ean": "77"}])
+        equivalence = MarketplaceSku.objects.get(marketplace="sodimac", sku="5864")
+        self.assertEqual(
+            product["marketplace_skus"], [{"id": equivalence.pk, "marketplace": "sodimac", "sku": "5864", "ean": "77"}]
+        )
 
     def test_equivalences_download_and_upload(self):
         self.client.force_login(self.admin)
@@ -319,6 +329,33 @@ class CatalogAPITests(APITestCase):
         )
         self.assertEqual(upload.status_code, 200)
         self.assertEqual(upload.data["updated"], 1)
+
+    def test_delete_marketplace_sku_keeps_the_product(self):
+        self.client.force_login(self.admin)
+        equivalence = MarketplaceSku.objects.get(marketplace="sodimac", sku="5864")
+        url = reverse("products-marketplace-sku-detail", args=[equivalence.pk])
+        self.assertEqual(self.client.delete(url).status_code, 204)
+        self.assertFalse(MarketplaceSku.objects.filter(pk=equivalence.pk).exists())
+        self.assertTrue(Product.objects.filter(sku="5864").exists())
+        self.assertEqual(self.client.delete(url).status_code, 404)
+
+    def test_delete_kit_cascades_components_and_equivalences_only(self):
+        self.client.force_login(self.admin)
+        kit = Product.objects.get(sku="5864")
+        url = reverse("products-kit-detail", args=[kit.pk])
+        self.assertEqual(self.client.delete(url).status_code, 204)
+        self.assertFalse(Product.objects.filter(pk=kit.pk).exists())
+        self.assertFalse(KitComponent.objects.filter(kit_id=kit.pk).exists())
+        self.assertFalse(MarketplaceSku.objects.filter(sku="5864").exists())
+        self.assertTrue(Product.objects.filter(sku="A").exists())
+        self.assertEqual(self.client.delete(url).status_code, 404)
+
+    def test_delete_kit_rejects_a_simple_product(self):
+        self.client.force_login(self.admin)
+        component = Product.objects.get(sku="A")
+        response = self.client.delete(reverse("products-kit-detail", args=[component.pk]))
+        self.assertEqual(response.status_code, 400)
+        self.assertTrue(Product.objects.filter(pk=component.pk).exists())
 
 
 class ImportPamoWebCatalogCommandTests(TestCase):

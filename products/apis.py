@@ -7,6 +7,8 @@ from rest_framework.views import APIView
 from accounts.permissions import RoleRequiredMixin
 from orchestrator.services import get_execution_status, launch_process
 
+from .functions.delete_kit import NotAKitError, delete_kit
+from .functions.delete_marketplace_sku import delete_marketplace_sku
 from .functions.export_equivalences import export_equivalences
 from .functions.export_kits import export_kits
 from .functions.import_equivalences import InvalidColumnsError, import_equivalences
@@ -80,6 +82,34 @@ class EquivalencesAPI(_CatalogRowsAPI):
 class KitsAPI(_CatalogRowsAPI):
     export_function = staticmethod(export_kits)
     import_function = staticmethod(import_kits)
+
+
+class MarketplaceSkuDetailAPI(RoleRequiredMixin, APIView):
+    """DELETE borra una equivalencia de SKU de marketplace (el producto se
+    conserva). `204`, o `404` si no existe."""
+
+    allowed_roles = CATALOG_ROLES
+
+    def delete(self, request, equivalence_id):
+        if delete_marketplace_sku(equivalence_id) is None:
+            return Response({"detail": "No existe."}, status=status.HTTP_404_NOT_FOUND)
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class KitDetailAPI(RoleRequiredMixin, APIView):
+    """DELETE borra un kit con sus componentes y equivalencias. `204`,
+    `404` si no existe o `400` si el producto no es kit."""
+
+    allowed_roles = CATALOG_ROLES
+
+    def delete(self, request, product_id):
+        try:
+            deleted = delete_kit(product_id)
+        except NotAKitError as error:
+            return Response({"detail": str(error)}, status=status.HTTP_400_BAD_REQUEST)
+        if deleted is None:
+            return Response({"detail": "No existe."}, status=status.HTTP_404_NOT_FOUND)
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 class SkuUploadPagination(PageNumberPagination):

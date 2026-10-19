@@ -6,7 +6,7 @@ from .models import KitComponent, Marketplace, MarketplaceSku, Product
 class MarketplaceSkuSerializer(serializers.ModelSerializer):
     class Meta:
         model = MarketplaceSku
-        fields = ["marketplace", "sku", "ean"]
+        fields = ["id", "marketplace", "sku", "ean"]
 
 
 class KitComponentSerializer(serializers.ModelSerializer):
@@ -23,7 +23,7 @@ class ProductSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Product
-        fields = ["sku", "name", "is_kit", "marketplace_skus", "components"]
+        fields = ["id", "sku", "name", "is_kit", "marketplace_skus", "components"]
 
 
 class CatalogRowsSerializer(serializers.Serializer):

@@ -49,6 +49,13 @@ todos los marketplaces, no solo para Sodimac.
   componente (`kit_sku`, `component_sku`, `quantity`).
   - La carga **reemplaza completo** cada kit que viene.
   - Si una fila del kit es inválida, ese kit no se toca.
+- `functions/delete_marketplace_sku.py`: borra una equivalencia; el
+  producto queda. `None` si no existe.
+- `functions/delete_kit.py`: borra un kit (`Product` con `is_kit`), con sus
+  componentes y equivalencias en cascada. Los productos componentes quedan
+  (`KitComponent.component` es `PROTECT`, pero el kit no es componente de
+  nadie). Un producto simple lanza `NotAKitError`. Nada fuera de `products`
+  apunta a `Product`.
 - `functions/normalize_cell.py`: limpia celdas de Excel (`54654.0` →
   `"54654"`).
 - Comando `import_pamo_web_catalog --products <csv> --kits <csv>`:
@@ -87,7 +94,8 @@ todos los marketplaces, no solo para Sodimac.
 ## API
 
 Todas las rutas requieren el rol `Admin` (`RoleRequiredMixin`). Contrato en
-[`../contracts/API.md`](../contracts/API.md).
+[`../contracts/API.md`](../contracts/API.md). La pantalla del frontend es
+`/products` (entrada "Productos" de `accounts/menu_config.py`, rol `Admin`).
 
 - `GET /api/products/`: lista paginada (100 por página), con `?search=`.
 - `GET/POST /api/products/equivalences/` y `GET/POST /api/products/kits/`:
@@ -110,6 +118,10 @@ Las equivalencias agregan `products_created` y `moved`. `row` es la posición
   `GET /api/products/sku-uploads/` (historial paginado de 20, sin `rows`).
   Rol `SKU_UPLOAD_ROLES`. El frontend hace polling sobre el detalle y arma
   el Excel del reporte con `rows`.
+- `DELETE /api/products/marketplace-skus/<id>/` y
+  `DELETE /api/products/kits/<id>/` (`204`, `404`; el kit da `400` si el
+  producto no es kit). Los `id` vienen en el listado. Son los únicos
+  borrados: las cargas nunca borran.
 
 ## Límites
 
@@ -117,6 +129,7 @@ Las equivalencias agregan `products_created` y `moved`. `row` es la posición
   SKU existan; un componente inexistente se detecta al crear la orden. La
   carga por marketplace (`sku-uploads`) **sí** valida cada `sku_pamo`
   contra Shopify.
+- No hay borrado de productos simples: solo de equivalencias y kits.
 - Sin stock ni inventario: el de Sodimac quedó pendiente por un problema
   del lado de Sodimac.
 - `orders/functions/process_shipment.py` consume el catálogo para todos
@@ -148,7 +161,8 @@ Shopify simulado, cubre:
 - la cancelación a mitad con resultados parciales;
 - el error inesperado que guarda el reporte.
 
-La API cubre:
+La API cubre (además, el borrado: equivalencia que conserva el producto,
+kit en cascada sin tocar componentes, `404` y `400` de producto simple):
 - `202` con `Admin`;
 - `403` sin sesión o sin rol;
 - `400` por marketplace, filas vacías, columna faltante o tope;
