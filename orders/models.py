@@ -447,8 +447,9 @@ class Dispatch(models.Model):
     label_url = models.TextField(blank=True)
     label_carrier = models.CharField(max_length=40, blank=True)
     label_service = models.CharField(max_length=60, blank=True)
-    # Paquete con el que se generó la guía en Envía (lo que se cobró):
-    # `{"weight", "length", "width", "height"}` en kg y cm.
+    # Cajas con que se generó la guía en Envía (lo que se cobró), todas en una
+    # guía: `[{"weight", "length", "width", "height", "quantity"}]` en kg y cm.
+    # Las anteriores al 2026-10-19 guardan un solo `{"weight", ...}`.
     label_package = models.JSONField(default=dict, blank=True)
     label_sha256 = models.CharField(max_length=64, blank=True)
     # PDF de la guía: la generada en Envía (las anteriores a este campo se

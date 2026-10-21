@@ -103,11 +103,6 @@ def process_dispatch(dispatch):
             fulfill_in_shopify(dispatch)  # reintento si la guía no quedó en Shopify
         return dispatch.status
 
-    if dispatch.split:
-        # Fase 2 de docs/implementations-plans/dispatch-per-fulfillment-order.md:
-        # avisar por bodega y cumplir en Shopify solo su fulfillment order.
-        return dispatch.status
-
     location = dispatch.location
     if not location.channels():
         return _save(dispatch, Dispatch.Status.MANUAL, f"{location.name} no tiene canales de aviso configurados.")

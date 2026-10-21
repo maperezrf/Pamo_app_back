@@ -497,8 +497,6 @@ Contrato: `GET /api/orders/` en
 
 ## Despacho a bodegas
 
-Plan en curso (despachos por bodega en pedidos repartidos):
-[`../implementations-plans/dispatch-per-fulfillment-order.md`](../implementations-plans/dispatch-per-fulfillment-order.md).
 Este backend decide qué bodega despacha cada pedido de Shopify (marketplace
 o tienda web) y le avisa por su canal; a Envía, por API.
 
@@ -565,10 +563,26 @@ guía del canal.
   - Un despacho único sin actividad (sin avisos ni guía) se reemplaza por
     los de cada bodega si Shopify ya repartió el pedido (caso #20577, que
     quedó `manual` con "ninguna bodega tiene el pedido completo").
-  - **Fase 1**: se genera y descarga la guía por bodega. **Todavía no** se
-    avisa por bodega ni se cumple en Shopify: el proceso salta esos
-    despachos y "Notificar a proveedor" responde `400`. Eso es la fase 2
-    del plan.
+  - Cada despacho genera y descarga su guía (referencia
+    `pamo-<pedido>-<despacho>`) y se avisa por separado (desde 2026-10-21):
+    "Notificar a proveedor" y el proceso avisan solo a su bodega, con sus
+    productos y su guía.
+  - **Aviso por API de Envía** en un despacho repartido: la tienda
+    conectada importa el pedido **completo** y Envía no lo despacha si a la
+    bodega le falta algo (lo de la otra bodega; visto en #20577, #20621 y
+    #20635, que Envía muestra "parcialmente cumplido"). Por eso no se
+    vincula esa orden: se busca y se crea una propia con identificador
+    `<número>-<despacho>` (`dispatch_envia_identifier`) y solo los productos
+    de esa bodega. La importada queda sin despachar; operaciones decide si
+    la cancela (decisión del usuario, 2026-10-21; antes de cancelar,
+    confirmar que cancelar en Envía no cancela el pedido en Shopify).
+  - **Guía en Shopify**: `_fulfill_split` cumple solo el fulfillment order
+    abierto en la bodega del despacho, sin mover nada. Si no hay ninguno
+    abierto ahí pero ya tiene esta guía, se marca hecho; si no, el motivo
+    queda en `shopify_fulfillment_error`.
+  - Pendiente: las bodegas sin canales de aviso (hoy solo Baru y Bodega
+    Envia los tienen) quedan `manual` al notificar; es configuración en el
+    admin.
 - **`dispatch_orders`** (proceso `orders.dispatch_orders`): pedidos creados
   desde `since`, sin despachar ni borrar ni cumplidos (`FULFILLED`). **No
   tiene interruptores** (se quitaron el 2026-10-11): se enciende creando su
@@ -693,11 +707,20 @@ guía del canal.
     `MarketplaceOrder`, porque en Shopify va al cliente fijo), con la cédula
     del destinatario (`identificationNumber`: tienda web la del pedido,
     Madecentro la del comprador; algunas transportadoras la exigen, caso
-    #20598). Peso (kg) y
-    medidas (cm) del paquete se editan en el panel (`parse_package`: cada
-    valor mayor que 0, sin tope; por defecto 1 kg 10×10×10); el panel manda
-    en la generación el mismo paquete que cotizó, y el despacho guarda en
-    `label_package` el paquete con que se generó (lo que se cobró). Deshabilitado en la tienda web cuando la bodega
+    #20598). Las cajas se editan en el panel (`parse_packages`, desde
+    2026-10-19): filas de peso (kg), medidas (cm) y cantidad de cajas
+    iguales ("+ Agregar paquete"), cada medida mayor que 0 sin tope,
+    cantidad de 1 a 50, hasta 20 filas; por defecto una caja de 1 kg
+    10×10×10. Van **todas en una sola guía** (envío multipieza, decisión del
+    usuario: no una guía por caja): cada fila es un paquete de Envía con
+    `amount` = cantidad, y el valor declarado se reparte por igual entre las
+    cajas. Con varias cajas no todas cotizan (Inter Rapidísimo respondió
+    "Internal error" en la prueba del 2026-10-19; se salta). Qué número y
+    rótulos devuelve cada transportadora al generar varias cajas no está
+    verificado: se guarda el número único que responde Envía y el PDF. El
+    panel manda en la generación las mismas cajas que cotizó, y el despacho
+    las guarda en `label_package` (lo que se cobró; las guías anteriores
+    guardan un solo paquete sin lista). Deshabilitado en la tienda web cuando la bodega
     crea su guía. La guía generada queda en
     el despacho (`label_source="envia"`, `label_url` y el PDF en
     `label_pdf`) y no se repite; se descarga con "Descargar guía"

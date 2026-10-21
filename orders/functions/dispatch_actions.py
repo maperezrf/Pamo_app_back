@@ -1,4 +1,5 @@
 import hashlib
+import re
 from decimal import Decimal, InvalidOperation
 
 from django.utils import timezone
@@ -17,9 +18,12 @@ from .shopify_order_marketplace import SHOPIFY_CHANNEL
 from .sodimac_rpa import MAX_PDF_BYTES
 
 # Paquete de la guía (kg y cm) cuando el panel no manda peso y medidas: el de
-# referencia de pamo-one-engineering (1 kg, 10×10×10 cm).
-DEFAULT_PACKAGE = {"weight": 1, "length": 10, "width": 10, "height": 10}
+# referencia de pamo-one-engineering (1 kg, 10×10×10 cm), una caja.
+DEFAULT_PACKAGE = {"weight": 1, "length": 10, "width": 10, "height": 10, "quantity": 1}
 PACKAGE_FIELDS = {"weight": "El peso (kg)", "length": "El largo (cm)", "width": "El ancho (cm)", "height": "El alto (cm)"}
+# Filas de paquetes (la API de Envía acepta hasta 20) y cajas iguales por fila.
+MAX_PACKAGE_ROWS = 20
+MAX_PACKAGE_QUANTITY = 50
 DISPATCH_EMAIL = "despachos@pamo.co"
 
 
@@ -58,12 +62,8 @@ def dispatch_for_action(order, dispatch_id=None, *, create=True):
 def notify_dispatch_now(dispatch):
     """Botón "Notificar a proveedor": avanza el despacho ya (trae la guía y
     avisa por los canales de la bodega), sin esperar al proceso. Un
-    despacho en gestión manual se vuelve a evaluar."""
-    if dispatch.split:
-        raise DispatchActionError(
-            "Pedido repartido en varias bodegas: el aviso por bodega todavía no está disponible. "
-            "Avisar a la bodega a mano con la guía generada."
-        )
+    despacho en gestión manual se vuelve a evaluar. En un pedido repartido
+    avisa solo a la bodega de este despacho, con sus productos."""
     reopen_manual_dispatch(dispatch)
     process_dispatch(dispatch)
     return dispatch
@@ -88,15 +88,27 @@ def fetch_channel_label_now(dispatch):
     return dispatch
 
 
-def parse_package(data):
-    """Peso y medidas del paquete que manda el panel, `{"weight", "length",
-    "width", "height"}` en kg y cm. Sin datos, `DEFAULT_PACKAGE`. Cada valor
-    tiene que ser un número mayor que 0 (sin tope: lo que se envía es
-    pequeño)."""
+def parse_packages(data):
+    """Cajas del envío que manda el panel: una lista de filas `{"weight",
+    "length", "width", "height", "quantity"}` en kg y cm; `quantity` (por
+    defecto 1) son cajas iguales con esas medidas. Todas van en **una sola
+    guía** (envío multipieza, decisión del usuario del 2026-10-19). Acepta
+    también una sola fila sin lista (el panel anterior). Sin datos,
+    `[DEFAULT_PACKAGE]`."""
     if not data:
-        return dict(DEFAULT_PACKAGE)
+        return [dict(DEFAULT_PACKAGE)]
+    rows = [data] if isinstance(data, dict) else data
+    if not isinstance(rows, list) or not 1 <= len(rows) <= MAX_PACKAGE_ROWS:
+        raise DispatchActionError(f"El envío debe traer entre 1 y {MAX_PACKAGE_ROWS} filas de paquetes.")
+    return [_parse_package(row, index) for index, row in enumerate(rows, start=1)]
+
+
+def _parse_package(data, index):
+    """Una fila: cada medida, un número mayor que 0 (sin tope: lo que se
+    envía es pequeño); la cantidad, un entero de 1 a `MAX_PACKAGE_QUANTITY`."""
+    where = f" (paquete {index})" if index > 1 else ""
     if not isinstance(data, dict):
-        raise DispatchActionError("El paquete debe traer peso, largo, ancho y alto.")
+        raise DispatchActionError(f"El paquete debe traer peso, largo, ancho y alto{where}.")
     package = {}
     for field, label in PACKAGE_FIELDS.items():
         value = data.get(field)
@@ -105,15 +117,22 @@ def parse_package(data):
         except InvalidOperation:
             number = None
         if number is None or not number.is_finite() or number <= 0:
-            raise DispatchActionError(f"{label} debe ser un número mayor que 0.")
+            raise DispatchActionError(f"{label} debe ser un número mayor que 0{where}.")
         package[field] = float(number)
+    quantity = str(data.get("quantity", 1)).strip()
+    if isinstance(data.get("quantity"), bool) or not re.fullmatch(r"\d{1,3}", quantity) or not (
+        1 <= int(quantity) <= MAX_PACKAGE_QUANTITY
+    ):
+        raise DispatchActionError(f"La cantidad debe ser un número entero de 1 a {MAX_PACKAGE_QUANTITY}{where}.")
+    package["quantity"] = int(quantity)
     return package
 
 
-def quote_dispatch_label(dispatch, package=None):
+
+def quote_dispatch_label(dispatch, packages=None):
     """Botón "Generar guía", paso 1 (no cobra): opciones de Envía Shipping
     desde la bodega del despacho hasta la dirección de envío del pedido,
-    con los productos del despacho y el paquete del panel (`parse_package`).
+    con los productos del despacho y las cajas del panel (`parse_packages`).
     Devuelve (opciones, ruta): la ruta es lo que se muestra para revisar
     antes de pagar, `{"origin": {name, city}, "destination": {name, address,
     city, region, phone}}`."""
@@ -130,20 +149,21 @@ def quote_dispatch_label(dispatch, package=None):
             "phone": shipping["phone"] or order.phone,
         },
     }
-    return quote(_shipping_payload(dispatch, shipping, package)), route
+    return quote(_shipping_payload(dispatch, shipping, packages)), route
 
 
-def generate_dispatch_label(dispatch, *, carrier, service, package=None):
+def generate_dispatch_label(dispatch, *, carrier, service, packages=None):
     """Botón "Generar guía", paso 2 (**cobra**): genera la guía de la opción
-    elegida con el paquete cotizado, la baja y la deja en el despacho, con
-    ese paquete en `label_package`. Nunca genera una segunda. Si el
-    resultado es incierto, lo anota en el despacho y no reintenta."""
-    package = package or dict(DEFAULT_PACKAGE)
+    elegida con las cajas cotizadas (una sola guía aunque sean varias), la
+    baja y la deja en el despacho, con las cajas en `label_package`. Nunca
+    genera una segunda. Si el resultado es incierto, lo anota en el
+    despacho y no reintenta."""
+    packages = packages or [dict(DEFAULT_PACKAGE)]
     _check_generation(dispatch)
     option = {"providerPayload": {"carrier": carrier, "service": service, "type": 1}}
     reference = label_reference(dispatch)
     try:
-        result = create_label(_shipping_payload(dispatch, package=package), option, order_reference=reference)
+        result = create_label(_shipping_payload(dispatch, packages=packages), option, order_reference=reference)
     except LabelUnknownResult as error:
         dispatch.note = (
             f"Resultado incierto al generar la guía ({error}). Revisar en Envía si existe una con la referencia "
@@ -157,7 +177,7 @@ def generate_dispatch_label(dispatch, *, carrier, service, package=None):
     dispatch.label_url = result["label_url"]
     dispatch.label_carrier = result["carrier"]
     dispatch.label_service = result["service"]
-    dispatch.label_package = package
+    dispatch.label_package = packages
     dispatch.label_sha256 = hashlib.sha256(pdf).hexdigest()
     dispatch.label_pdf = pdf
     dispatch.label_fetched_at = timezone.now()
@@ -187,7 +207,7 @@ def upload_dispatch_label(dispatch, pdf, *, tracking_number, carrier):
     dispatch.label_url = ""
     dispatch.label_carrier = carrier
     dispatch.label_service = ""
-    dispatch.label_package = {}
+    dispatch.label_package = []
     dispatch.label_sha256 = hashlib.sha256(pdf).hexdigest()
     dispatch.label_pdf = pdf
     dispatch.label_fetched_at = timezone.now()
@@ -219,7 +239,7 @@ def release_envia_label(dispatch):
     dispatch.label_url = ""
     dispatch.label_carrier = ""
     dispatch.label_service = ""
-    dispatch.label_package = {}
+    dispatch.label_package = []
     dispatch.label_sha256 = ""
     dispatch.label_pdf = None
     dispatch.label_fetched_at = None
@@ -268,10 +288,12 @@ def _check_generation(dispatch):
         )
 
 
-def _shipping_payload(dispatch, shipping=None, package=None):
+def _shipping_payload(dispatch, shipping=None, packages=None):
     """Envío de la guía: desde la bodega del despacho, con sus productos, en
-    un paquete (`parse_package`; por defecto `DEFAULT_PACKAGE`)."""
-    package = package or DEFAULT_PACKAGE
+    las cajas del panel (`parse_packages`; por defecto una `DEFAULT_PACKAGE`).
+    Cada fila es un paquete de Envía con `amount` = cantidad; el valor
+    declarado del despacho se reparte por igual entre todas las cajas."""
+    packages = packages or [DEFAULT_PACKAGE]
     order = dispatch.shopify_order
     location = dispatch.location
     if not location.origin_address or not location.origin_phone:
@@ -281,6 +303,8 @@ def _shipping_payload(dispatch, shipping=None, package=None):
     destination_city = resolve_colombia_city(shipping["city"], shipping["province_code"])
     lines = dispatch_lines(dispatch)
     names = ", ".join(line["name"] for line in lines if line["name"])
+    declared = Decimal(str((lines_total(lines) if dispatch.split else order.total) or 0))
+    per_box = float((declared / sum(package["quantity"] for package in packages)).quantize(Decimal("0.01")))
     return {
         "origin": {
             "name": location.name, "company": "Pamo", "phone": location.origin_phone, "email": DISPATCH_EMAIL,
@@ -299,11 +323,12 @@ def _shipping_payload(dispatch, shipping=None, package=None):
             {
                 "type": "box",
                 "content": (names or f"Pedido {order.name}")[:180],
-                "amount": 1,
-                "declaredValue": float((lines_total(lines) if dispatch.split else order.total) or 0),
+                "amount": package["quantity"],
+                "declaredValue": per_box,
                 "weight": package["weight"],
                 "dimensions": {dimension: package[dimension] for dimension in ("length", "width", "height")},
             }
+            for package in packages
         ],
     }
 

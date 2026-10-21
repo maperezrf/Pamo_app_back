@@ -528,7 +528,9 @@ class DispatchActionAPITests(TestCase):
         self.assertEqual(payload["destination"]["street"], "Calle 9")
         self.assertEqual(payload["destination"]["identificationNumber"], "80196785")  # la exigen algunas (#20598)
         self.assertEqual(payload["packages"][0]["weight"], 1)
-        self.assertEqual(response.json()["package"], {"weight": 1, "length": 10, "width": 10, "height": 10})
+        self.assertEqual(
+            response.json()["packages"], [{"weight": 1, "length": 10, "width": 10, "height": 10, "quantity": 1}]
+        )
 
     @patch(f"{A}.quote", return_value=[QUOTE_OPTION])
     @patch(f"{A}.resolve_colombia_city", return_value={"city": "11001000", "state": "DC"})
@@ -540,8 +542,9 @@ class DispatchActionAPITests(TestCase):
         response = self._post(order, "label/quote/", {"package": package})
 
         self.assertEqual(response.status_code, 200)
-        expected = {"weight": 2.5, "length": 30.0, "width": 20.0, "height": 15.0}
-        self.assertEqual(response.json()["package"], expected)
+        # `package` (una sola caja, el panel anterior) sigue sirviendo.
+        expected = [{"weight": 2.5, "length": 30.0, "width": 20.0, "height": 15.0, "quantity": 1}]
+        self.assertEqual(response.json()["packages"], expected)
         sent = quote.call_args.args[0]["packages"][0]
         self.assertEqual((sent["weight"], sent["dimensions"]), (2.5, {"length": 30, "width": 20, "height": 15}))
 
@@ -554,6 +557,56 @@ class DispatchActionAPITests(TestCase):
         self.assertEqual(create_label.call_args.args[0]["packages"][0]["weight"], 2.5)
         self.assertEqual(Dispatch.objects.get(shopify_order=order).label_package, expected)
         self.assertEqual(response.json()["dispatch"]["label_package"], expected)
+
+    @patch(f"{A}.quote", return_value=[QUOTE_OPTION])
+    @patch(f"{A}.resolve_colombia_city", return_value={"city": "11001000", "state": "DC"})
+    @patch(f"{A}.get_order_shipping_address", return_value=WEB_SHIPPING)
+    def test_several_boxes_go_in_one_label_with_their_quantities(self, shipping, city, quote):
+        order = self._web_order()  # total 78249
+        packages = [
+            {"weight": "2", "length": 30, "width": 20, "height": 15, "quantity": "3"},
+            {"weight": 10, "length": 60, "width": 40, "height": 40},
+        ]
+
+        response = self._post(order, "label/quote/", {"packages": packages})
+
+        self.assertEqual(response.status_code, 200)
+        sent = quote.call_args.args[0]["packages"]
+        self.assertEqual([(box["amount"], box["weight"]) for box in sent], [(3, 2.0), (1, 10.0)])
+        self.assertEqual([box["declaredValue"] for box in sent], [19562.25, 19562.25])  # 78249 / 4 cajas
+        self.assertEqual([row["quantity"] for row in response.json()["packages"]], [3, 1])
+
+        with patch(f"{A}.create_label", return_value=GENERATED) as create_label, patch(
+            f"{A}.download_label", return_value=PDF
+        ):
+            response = self._post(order, "label/", {"carrier": "tcc", "service": "mensajeria", "packages": packages})
+
+        self.assertEqual(response.status_code, 200)
+        create_label.assert_called_once()  # una sola guía
+        self.assertEqual(len(create_label.call_args.args[0]["packages"]), 2)
+        self.assertEqual([row["quantity"] for row in response.json()["dispatch"]["label_package"]], [3, 1])
+
+    def test_a_label_generated_with_one_package_is_listed_as_a_list(self):
+        order = self._web_order()
+        Dispatch.objects.filter(shopify_order=order).update(
+            label_source="envia", tracking_number="1", label_package={"weight": 0.5, "length": 10, "width": 10, "height": 5}
+        )
+        response = self.client.get("/api/orders/")
+        dispatch = next(o for o in response.json()["orders"] if o["shopify_order_id"] == order.shopify_id)["dispatches"][0]
+        self.assertEqual(dispatch["label_package"], [{"weight": 0.5, "length": 10, "width": 10, "height": 5, "quantity": 1}])
+
+    @patch(f"{A}.quote")
+    @patch(f"{A}.create_label")
+    def test_an_invalid_quantity_or_too_many_rows_is_400(self, create_label, quote):
+        order = self._web_order()
+        box = {"weight": 1, "length": 10, "width": 10, "height": 10}
+        for packages in ([{**box, "quantity": 0}], [{**box, "quantity": "1.5"}], [{**box, "quantity": 51}], [box] * 21):
+            response = self._post(order, "label/quote/", {"packages": packages})
+            self.assertEqual(response.status_code, 400, packages)
+        response = self._post(order, "label/quote/", {"packages": [box, {**box, "weight": 0}]})
+        self.assertIn("(paquete 2)", response.json()["detail"])
+        quote.assert_not_called()
+        create_label.assert_not_called()
 
     @patch(f"{A}.quote")
     @patch(f"{A}.create_label")
@@ -1285,14 +1338,79 @@ class SplitDispatchTests(TestCase):
 
         self.assertEqual(self._post("label/quote/", {"dispatch_id": other.pk}).status_code, 404)
 
-    def test_notify_is_not_available_yet_for_a_split_dispatch(self, shipping, city):
+    @override_settings(**EMAIL_SETTINGS)
+    @patch(f"{F}.notify_dispatch.product_image_urls", return_value={})
+    @patch(f"{F}.notify_dispatch.get_order_shipping_address", return_value={**WEB_SHIPPING, "province_code": "DC"})
+    @patch(f"{F}.notify_dispatch.resolve_colombia_state", return_value="DC")
+    @patch(f"{F}.notify_dispatch.find_variant_ids", return_value={"I001": {"variant_id": 215359, "ecart_id": "1", "available": {}}})
+    @patch(f"{F}.notify_dispatch.create_order", return_value={"order_id": 50100001, "identifier": "x", "warehouse_status": "PENDING"})
+    @patch(f"{F}.notify_dispatch.find_order", return_value=None)
+    @patch(f"{S}.create_fulfillment", return_value="900")
+    @patch(f"{S}.move_fulfillment_order")
+    @patch(f"{S}.get_fulfillment_orders")
+    def test_each_warehouse_is_notified_and_fulfilled_with_only_its_part(
+        self, get_fos, move, create_fulfillment, find_order, create_order, variants, state, envia_shipping, images,
+        shipping, city,
+    ):
+        DispatchLocation.objects.filter(pk=self.baru.pk).update(notify_email=True, emails=["baru@pamo.co"])
+        DispatchLocation.objects.filter(pk=self.envia.pk).update(envia_warehouse_id="311")
+        ShopifyOrder.objects.filter(pk=self.order.pk).update(email="ana@example.com")  # Envía exige correo
         ensure_dispatches(self.order)
+        for location, tracking in ((self.baru, "111"), (self.envia, "222")):
+            Dispatch.objects.filter(shopify_order=self.order, location=location).update(
+                label_source="envia", tracking_number=tracking, label_carrier="tcc", label_pdf=PDF,
+            )
+        get_fos.return_value = [
+            {**_fulfillment_order(BARU, gid="gid://shopify/FulfillmentOrder/1")},
+            {**_fulfillment_order(ENVIA_LOCATION, gid="gid://shopify/FulfillmentOrder/2")},
+        ]
+        baru, envia = self._dispatch(self.baru), self._dispatch(self.envia)
 
-        response = self._post("notify/", {"dispatch_id": self._dispatch(self.envia).pk})
+        self.assertEqual(self._post("notify/", {"dispatch_id": baru.pk}).status_code, 200)
 
-        self.assertEqual(response.status_code, 400)
-        self.assertEqual(process_order_dispatch(self.order), Dispatch.Status.WAITING_LABEL)  # el proceso tampoco avisa
-        self.assertFalse(DispatchNotification.objects.exists())
+        [message] = mail.outbox  # solo Baru, solo con sus productos
+        self.assertEqual(message.to, ["baru@pamo.co"])
+        self.assertIn("CB8080L", message.body)
+        self.assertNotIn("I001", message.body)
+        create_order.assert_not_called()  # Bodega Envia todavía no
+        create_fulfillment.assert_called_once_with("gid://shopify/FulfillmentOrder/1", tracking_number="111", tracking_company="tcc")
+
+        self.assertEqual(self._post("notify/", {"dispatch_id": envia.pk}).status_code, 200)
+
+        # Envía: orden propia solo con su parte; nunca la importada completa (número de Shopify).
+        self.assertEqual([c.args[0] for c in find_order.call_args_list], [f"20577-{envia.pk}"])
+        notification = DispatchNotification.objects.get(dispatch=envia)
+        self.assertEqual(notification.status, "enviado", notification.error_description)
+        kwargs = create_order.call_args.kwargs
+        self.assertEqual((kwargs["identifier"], kwargs["products"]), (
+            f"20577-{envia.pk}", [{"variant_id": 215359, "quantity": 1, "price": "78249.00"}],
+        ))
+        self.assertEqual(create_fulfillment.call_args.args[0], "gid://shopify/FulfillmentOrder/2")
+        move.assert_not_called()  # cada parte se cumple en su bodega, sin mover nada
+        self.assertEqual(
+            [(d.status, bool(d.shopify_fulfilled_at)) for d in (self._dispatch(self.baru), self._dispatch(self.envia))],
+            [(Dispatch.Status.NOTIFIED, True), (Dispatch.Status.NOTIFIED, True)],
+        )
+
+    @patch(f"{S}.create_fulfillment")
+    @patch(f"{S}.get_fulfillment_orders")
+    def test_a_split_part_already_fulfilled_with_its_guide_is_marked_done(self, get_fos, create_fulfillment, shipping, city):
+        from .functions.shopify_fulfillment import fulfill_in_shopify
+
+        ensure_dispatches(self.order)
+        Dispatch.objects.filter(location=self.baru).update(tracking_number="111", location=self.baru)
+        get_fos.return_value = [
+            _fulfillment_order(BARU, status="CLOSED", tracking_numbers=["111"]),
+            _fulfillment_order(ENVIA_LOCATION, gid="gid://shopify/FulfillmentOrder/2"),
+        ]
+
+        self.assertTrue(fulfill_in_shopify(self._dispatch(self.baru)))
+        create_fulfillment.assert_not_called()
+
+        get_fos.return_value = [_fulfillment_order(BARU, status="CLOSED", tracking_numbers=["999"])]
+        Dispatch.objects.filter(location=self.baru).update(shopify_fulfilled_at=None)
+        self.assertFalse(fulfill_in_shopify(self._dispatch(self.baru)))
+        self.assertIn("nada abierto por cumplir en Baru", self._dispatch(self.baru).shopify_fulfillment_error)
 
     def test_the_listing_shows_both_dispatches(self, shipping, city):
         ensure_dispatches(self.order)

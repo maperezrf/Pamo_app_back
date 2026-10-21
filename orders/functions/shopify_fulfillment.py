@@ -31,6 +31,8 @@ def fulfill_in_shopify(dispatch):
       del despacho y lo cumple.
     - Ninguno abierto pero ya cumplido con esta guía (p. ej. a mano): lo
       marca como hecho.
+    - Despacho de un pedido repartido (`split`): solo el fulfillment order
+      abierto en su bodega, sin mover nada (`_fulfill_split`).
     - Cualquier otro caso (varias bodegas, cumplido con otra guía, Shopify
       lo rechaza) queda en `shopify_fulfillment_error` y no rompe el aviso.
 
@@ -58,6 +60,8 @@ class FulfillmentNotPossible(Exception):
 def _fulfill(dispatch):
     tracking = dispatch.tracking_number
     fulfillment_orders = get_fulfillment_orders(dispatch.shopify_order.shopify_id)
+    if dispatch.split:
+        return _fulfill_split(dispatch, fulfillment_orders)
     open_orders = [item for item in fulfillment_orders if item["status"] not in CLOSED_STATUSES]
     if not open_orders:
         if any(tracking in item["tracking_numbers"] for item in fulfillment_orders):
@@ -76,6 +80,27 @@ def _fulfill(dispatch):
     if fulfillment_order["location_id"] != target_location:
         fulfillment_order_id = move_fulfillment_order(fulfillment_order_id, target_location)
     create_fulfillment(fulfillment_order_id, tracking_number=tracking, tracking_company=tracking_company(dispatch))
+
+
+def _fulfill_split(dispatch, fulfillment_orders):
+    """Despacho de un pedido repartido: cumple solo el fulfillment order
+    abierto en la bodega del despacho, sin mover nada (la otra parte es de
+    otra bodega y tiene su propio despacho)."""
+    tracking = dispatch.tracking_number
+    location_id = dispatch.location.shopify_location_id
+    here = [item for item in fulfillment_orders if item["location_id"] == location_id]
+    open_here = [item for item in here if item["status"] not in CLOSED_STATUSES]
+    if not open_here:
+        if any(tracking in item["tracking_numbers"] for item in here):
+            return  # ya cumplido con esta guía (a mano o en un intento anterior)
+        raise FulfillmentNotPossible(
+            f"En Shopify no hay nada abierto por cumplir en {dispatch.location.name} para este pedido."
+        )
+    if len(open_here) > 1:
+        raise FulfillmentNotPossible(
+            f"En Shopify hay {len(open_here)} partes abiertas en {dispatch.location.name}: cumplir a mano."
+        )
+    create_fulfillment(open_here[0]["id"], tracking_number=tracking, tracking_company=tracking_company(dispatch))
 
 
 def tracking_company(dispatch):

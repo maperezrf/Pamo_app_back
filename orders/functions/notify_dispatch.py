@@ -38,7 +38,7 @@ def notify(channel, *, dispatch, details, label):
     aviso.
     """ 
     if channel == Channel.API:
-        return _notify_envia(dispatch.location, details, label, dispatch.shopify_order)
+        return _notify_envia(dispatch, details, label)
     if channel == Channel.WHATSAPP:
         return _notify_whatsapp(dispatch, details, label)
     return _notify_email(dispatch, details, label)
@@ -143,8 +143,8 @@ def _list_entry(details, label, guide_url, images):
     }
 
 
-def _notify_envia(location, details, label, order):
-    """Orden en Envía Fulfillment para la bodega `location`.
+def _notify_envia(dispatch, details, label):
+    """Orden en Envía Fulfillment para la bodega del despacho.
 
     1. Si Envía ya la tiene (con nuestro identificador o con el número de
        Shopify, que es como la importa la tienda de Shopify conectada), se
@@ -152,10 +152,21 @@ def _notify_envia(location, details, label, order):
        (`add_order_tracking`). Nunca se crea una segunda.
     2. Si no, se crea (`create_order`) con el `variantId` de cada SKU, la
        dirección de entrega y la guía.
+
+    Despacho de un pedido repartido (`split`): la orden que importa la
+    tienda conectada trae el pedido **completo**, y Envía no la despacha si
+    le falta algo (los productos de la otra bodega). Entonces solo se busca
+    nuestro identificador con sufijo (`<número>-<despacho>`) y, si no está,
+    se crea una orden solo con los productos de esta bodega. La importada
+    queda sin despachar; operaciones decide si la cancela (decisión del
+    usuario, 2026-10-21).
     """
+    location, order = dispatch.location, dispatch.shopify_order
+    identifier = dispatch_envia_identifier(dispatch, details)
     since = order.shopify_created_at or order.synced_at
-    for identifier in dict.fromkeys([_envia_identifier(details), str(order.name).lstrip("#")]):
-        existing = find_order(identifier, since=since)
+    candidates = [identifier] if dispatch.split else [identifier, str(order.name).lstrip("#")]
+    for candidate in dict.fromkeys(candidates):
+        existing = find_order(candidate, since=since)
         if existing:
             result = {
                 "recipient": f"Envía bodega {location.envia_warehouse_id} (orden existente de {existing['shop_name'] or 'Envía'})",
@@ -173,7 +184,7 @@ def _notify_envia(location, details, label, order):
     if not email:
         raise DispatchNotificationError("Envía exige correo y el pedido no lo trae (DISPATCH_ENVIA_FALLBACK_EMAIL).")
     created = create_order(
-        identifier=_envia_identifier(details),
+        identifier=identifier,
         warehouse_id=location.envia_warehouse_id,
         products=products,
         shipping_address=address,
@@ -238,6 +249,14 @@ def _envia_address(details, order):
         "phone": phone or buyer["phone"],
         "references": f"Pedido {details['order_name']}",
     }
+
+
+def dispatch_envia_identifier(dispatch, details):
+    """Identificador del despacho en Envía: `_envia_identifier` y, en un
+    pedido repartido, con el id del despacho (`20577-105`), para que cada
+    bodega tenga su orden."""
+    identifier = _envia_identifier(details)
+    return f"{identifier}-{dispatch.pk}" if dispatch.split else identifier
 
 
 def _envia_identifier(details):

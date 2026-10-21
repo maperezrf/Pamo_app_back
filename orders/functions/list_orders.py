@@ -196,7 +196,7 @@ def format_dispatch(dispatch):
         "label_source": dispatch.label_source,
         "label_carrier": dispatch.label_carrier,
         "label_service": dispatch.label_service,
-        "label_package": dispatch.label_package,
+        "label_package": _label_packages(dispatch),
         "shopify_fulfilled_at": _iso(dispatch.shopify_fulfilled_at),
         "shopify_fulfillment_error": dispatch.shopify_fulfillment_error,
         "notifications": [
@@ -215,6 +215,15 @@ def format_dispatch(dispatch):
         ],
         "updated_at": _iso(dispatch.updated_at),
     }
+
+
+def _label_packages(dispatch):
+    """`label_package` como lista de filas. Las guías generadas antes del
+    2026-10-19 guardaban un solo paquete (`{"weight", ...}`, sin cantidad)."""
+    packages = dispatch.label_package
+    if isinstance(packages, dict):
+        return [{**packages, "quantity": 1}] if packages else []
+    return packages or []
 
 
 def _shopify_customer(order):

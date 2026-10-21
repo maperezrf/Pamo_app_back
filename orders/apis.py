@@ -24,7 +24,7 @@ from .functions.dispatch_actions import (
     fetch_channel_label_now,
     generate_dispatch_label,
     notify_dispatch_now,
-    parse_package,
+    parse_packages,
     quote_dispatch_label,
     release_envia_label,
     upload_dispatch_label,
@@ -166,17 +166,19 @@ class DispatchQuoteLabelAPI(DispatchActionAPI):
     (no cobra). Responde {"options": [{"carrier", "carrierLabel",
     "service", "price", "currency", "etaMinDays", "etaMaxDays"}], "route":
     {"origin": {"name", "city"}, "destination": {"name", "address", "city",
-    "region", "phone"}}, "package": {"weight", "length", "width", "height"}}.
-    Cuerpo opcional: `package` con peso (kg) y medidas (cm)."""
+    "region", "phone"}}, "packages": [{"weight", "length", "width", "height",
+    "quantity"}]}. Cuerpo opcional: `packages`, las cajas con peso (kg),
+    medidas (cm) y cantidad, todas en una sola guía (`package`, una sola
+    caja, sigue sirviendo)."""
 
     def run(self, dispatch, request):
         keys = ("carrier", "carrierLabel", "service", "price", "currency", "etaMinDays", "etaMaxDays")
-        package = parse_package(request.data.get("package"))
-        options, route = quote_dispatch_label(dispatch, package)
+        packages = parse_packages(request.data.get("packages") or request.data.get("package"))
+        options, route = quote_dispatch_label(dispatch, packages)
         return Response({
             "options": [{key: option.get(key) for key in keys} for option in options],
             "route": route,
-            "package": package,
+            "packages": packages,
         })
 
 
@@ -190,8 +192,8 @@ class DispatchGenerateLabelAPI(DispatchActionAPI):
         service = str(request.data.get("service") or "").strip()
         if not carrier or not service:
             return Response({"detail": "Falta la opción elegida (carrier y service)."}, status=400)
-        package = parse_package(request.data.get("package"))
-        generate_dispatch_label(dispatch, carrier=carrier, service=service, package=package)
+        packages = parse_packages(request.data.get("packages") or request.data.get("package"))
+        generate_dispatch_label(dispatch, carrier=carrier, service=service, packages=packages)
         return self.dispatch_response(dispatch)
 
 
