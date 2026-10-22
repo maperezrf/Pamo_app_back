@@ -119,6 +119,10 @@ ENVIA_FULFILLMENT_WAREHOUSE_ID = config("ENVIA_FULFILLMENT_WAREHOUSE_ID", defaul
 # los links firmados a las guías que se mandan a las bodegas
 # (orders/functions/label_links.py).
 BACKEND_PUBLIC_URL = config("BACKEND_PUBLIC_URL", default="")
+
+# COTIZACIONES (quotes/): número de ventas para los botones de WhatsApp y
+# teléfono del PDF (con indicativo, sin "+": 57...).
+SALES_PHONE = config("SALES_PHONE", default="")
 # Correo que va en la orden de Envía cuando el canal no da el del
 # comprador (Envía lo exige sin customerId).
 DISPATCH_ENVIA_FALLBACK_EMAIL = config("DISPATCH_ENVIA_FALLBACK_EMAIL", default="")

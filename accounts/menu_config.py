@@ -32,6 +32,14 @@ MENU = [
         "submodulos": [],
     },
     {
+        "key": "quotes",
+        "label": "Cotizaciones",
+        "path": "/quotes",
+        # Mismos roles que `quotes.apis.QUOTES_ROLES` (GET /api/quotes/).
+        "roles": ["Admin", "Operaciones"],
+        "submodulos": [],
+    },
+    {
         "key": "products",
         "label": "Productos",
         "path": "/products",

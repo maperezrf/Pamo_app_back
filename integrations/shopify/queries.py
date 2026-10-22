@@ -429,3 +429,92 @@ mutation CreateFulfillment($fulfillment: FulfillmentInput!) {
   }
 }
 """
+
+
+# Cotizaciones (draft orders, app `quotes`). `LIST_DRAFT_ORDERS` trae las
+# más recientes para el listado; `GET_DRAFT_ORDER` una completa para su PDF
+# (`null` si no existe). En 2024-07 `totalPrice` y `originalUnitPrice` están
+# deprecados: se leen los `*Set`. Costo medido en `QUERIES.md`.
+LIST_DRAFT_ORDERS = """
+query ListDraftOrders($first: Int!, $query: String) {
+  draftOrders(first: $first, query: $query, sortKey: NUMBER, reverse: true) {
+    nodes {
+      id
+      name
+      createdAt
+      tags
+      totalPriceSet {
+        shopMoney {
+          amount
+        }
+      }
+      customer {
+        firstName
+        lastName
+        defaultAddress {
+          company
+        }
+      }
+    }
+  }
+}
+""".strip()
+
+GET_DRAFT_ORDER = """
+query GetDraftOrder($id: ID!) {
+  draftOrder(id: $id) {
+    id
+    name
+    updatedAt
+    email
+    invoiceUrl
+    appliedDiscount {
+      title
+      value
+      valueType
+      amountSet {
+        shopMoney {
+          amount
+        }
+      }
+    }
+    totalPriceSet {
+      shopMoney {
+        amount
+      }
+    }
+    customer {
+      displayName
+      email
+      defaultAddress {
+        phone
+      }
+      document: metafield(namespace: "custom", key: "numero_documento_identificaci_n") {
+        value
+      }
+    }
+    lineItems(first: 250) {
+      nodes {
+        sku
+        title
+        quantity
+        originalUnitPriceSet {
+          shopMoney {
+            amount
+          }
+        }
+        variant {
+          image {
+            url
+          }
+        }
+        product {
+          featuredImage {
+            url
+          }
+        }
+      }
+    }
+  }
+}
+""".strip()

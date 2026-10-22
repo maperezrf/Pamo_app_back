@@ -53,6 +53,7 @@ contrasta y, si aplica, se incorpora a la documentación versionada.
 | Directorio de clientes de Shopify | `customers/` | Tabla local sincronizada con Shopify (webhook + reconciliación); resuelve "¿existe este cliente?" por cédula. | [`apps/customers.md`](apps/customers.md) |
 | Importación de pedidos de marketplace | `orders/` | Trae pedidos de marketplaces (Falabella y Madecentro por lote, Mercado Libre por webhook) y los crea en Shopify. El webhook de Madecentro está en captura. Mantiene una copia local de los pedidos de Shopify (webhook + reconciliación) y expone el listado de ventas al frontend (`GET /api/orders/`) desde esa copia. | [`apps/orders.md`](apps/orders.md) |
 | Catálogo de productos | `products/` | Productos, kits y equivalencias de SKU por marketplace; API JSON de carga y descarga para el Excel del frontend. | [`apps/products.md`](apps/products.md) |
+| Cotizaciones | `quotes/` | Draft orders de Shopify (en vivo, sin modelos) y su PDF, con link público firmado para el cliente (`GET /api/quotes/`). | [`apps/quotes.md`](apps/quotes.md) |
 | Contabilidad | `accounting/` | Área de negocio contable. | Pendiente |
 | Facturación | `invoicing/` | Facturas en Siigo de pedidos de marketplace (hoy Sodimac), con sus reglas de cálculo; expone el listado al frontend (`GET /api/invoicing/`). | [`apps/invoicing.md`](apps/invoicing.md) |
 | Logística | `logistics/` | Área de negocio logística. | Pendiente |

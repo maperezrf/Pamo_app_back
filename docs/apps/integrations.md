@@ -59,6 +59,11 @@ seller id; es estado de conexión, no información de clientes o facturas.
   - `get_fulfillment_order_order_id(id) → str`: pedido (sin `gid://`) de
     un fulfillment order; `""` si no existe. Lo usa el webhook de pedidos
     con los avisos `fulfillment_orders/*`.
+  - `list_draft_orders(*, first=250, query="") → [cotización]` y
+    `get_draft_order(id) → cotización | None` (con líneas, imagen de
+    variante o producto, y NIT del metafield
+    `custom.numero_documento_identificaci_n`): draft orders normalizadas.
+    Las consume `quotes`.
   - Los webhooks de Shopify se suscriben desde el admin, no por API (ver
     [`orders.md`](orders.md)).
 - `falabella/`: cliente REST firmado y funciones de pedidos.

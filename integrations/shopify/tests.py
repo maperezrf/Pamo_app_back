@@ -21,7 +21,9 @@ from .functions.download_image import DownloadImageError, download_image
 from .functions.get_variant_images_by_skus import get_variant_images_by_skus
 from .functions.get_variants_by_skus import get_variants_by_skus
 from .functions.list_customers_page import list_customers_page
+from .functions.list_draft_orders import list_draft_orders
 from .functions.get_fulfillment_order_order_id import get_fulfillment_order_order_id
+from .functions.get_draft_order import get_draft_order
 from .functions.get_order import get_order
 from .functions.list_orders_page import list_orders_page
 from .functions.update_customer_address import update_customer_address
@@ -743,3 +745,68 @@ class GetFulfillmentOrderOrderIdTests(SimpleTestCase):
         mock_post.return_value.json.return_value = {"data": {"fulfillmentOrder": None}}
 
         self.assertEqual(get_fulfillment_order_order_id("7"), "")
+
+
+class ListDraftOrdersTests(SimpleTestCase):
+    @patch("integrations.shopify.client.requests.post")
+    def test_normalizes_the_real_response_shape(self, mock_post):
+        mock_post.return_value.raise_for_status.return_value = None
+        mock_post.return_value.json.return_value = {"data": {"draftOrders": {"nodes": [
+            {
+                "id": "gid://shopify/DraftOrder/1331250200853", "name": "#D7318",
+                "createdAt": "2026-10-22T03:25:07Z", "tags": ["andrea", "cotizacion-andrea"],
+                "totalPriceSet": {"shopMoney": {"amount": "945367.82"}},
+                "customer": {"firstName": "HM", "lastName": "Real Estate", "defaultAddress": {"company": None}},
+            },
+            {"id": "gid://shopify/DraftOrder/2", "name": "#D1", "createdAt": "2026-10-01T00:00:00Z", "tags": [],
+             "totalPriceSet": {"shopMoney": {"amount": "10.0"}}, "customer": None},
+        ]}}}
+
+        drafts = list_draft_orders(query="D7318")
+
+        self.assertEqual(drafts[0], {
+            "id": "1331250200853", "name": "#D7318", "created_at": "2026-10-22T03:25:07Z",
+            "tags": ["andrea", "cotizacion-andrea"], "total": "945367.82",
+            "customer": {"first_name": "HM", "last_name": "Real Estate", "company": ""},
+        })
+        self.assertIsNone(drafts[1]["customer"])
+        self.assertEqual(mock_post.call_args.kwargs["json"]["variables"], {"first": 250, "query": "D7318"})
+
+
+class GetDraftOrderTests(SimpleTestCase):
+    @patch("integrations.shopify.client.requests.post")
+    def test_normalizes_the_real_response_shape(self, mock_post):
+        mock_post.return_value.raise_for_status.return_value = None
+        mock_post.return_value.json.return_value = {"data": {"draftOrder": {
+            "id": "gid://shopify/DraftOrder/9", "name": "#D7318", "updatedAt": "2026-10-22T03:25:07Z",
+            "email": "draft@x.co", "invoiceUrl": "https://www.pamo.co/1/invoices/abc",
+            "appliedDiscount": {"title": "PAMO5", "value": 5.0, "valueType": "PERCENTAGE",
+                                "amountSet": {"shopMoney": {"amount": "57135.0"}}},
+            "totalPriceSet": {"shopMoney": {"amount": "945367.82"}},
+            "customer": {"displayName": "HM Real Estate", "email": None, "defaultAddress": {"phone": "+573001112233"},
+                         "document": {"value": "CC [123]"}},
+            "lineItems": {"nodes": [
+                {"sku": "FS019", "title": "Grifería", "quantity": 2,
+                 "originalUnitPriceSet": {"shopMoney": {"amount": "487303.0"}},
+                 "variant": {"image": None}, "product": {"featuredImage": {"url": "https://cdn.shopify.com/p.png"}}},
+            ]},
+        }}}
+
+        draft = get_draft_order("9")
+
+        self.assertEqual(mock_post.call_args.kwargs["json"]["variables"], {"id": "gid://shopify/DraftOrder/9"})
+        self.assertEqual(draft["customer"], {
+            "display_name": "HM Real Estate", "email": "draft@x.co", "phone": "+573001112233", "document": "CC [123]",
+        })
+        self.assertEqual(draft["discount"], {"title": "PAMO5", "value": 5.0, "value_type": "PERCENTAGE", "amount": "57135.0"})
+        self.assertEqual(draft["line_items"], [{
+            "sku": "FS019", "title": "Grifería", "quantity": 2, "unit_price": "487303.0",
+            "image_url": "https://cdn.shopify.com/p.png",
+        }])
+
+    @patch("integrations.shopify.client.requests.post")
+    def test_missing_draft_order_is_none(self, mock_post):
+        mock_post.return_value.raise_for_status.return_value = None
+        mock_post.return_value.json.return_value = {"data": {"draftOrder": None}}
+
+        self.assertIsNone(get_draft_order("9"))
