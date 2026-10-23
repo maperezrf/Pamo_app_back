@@ -322,7 +322,8 @@ def _shipping_payload(dispatch, shipping=None, packages=None):
         "packages": [
             {
                 "type": "box",
-                "content": (names or f"Pedido {order.name}")[:180],
+                # Servientrega rechaza más de 50 caracteres (`Des_DiceContener`).
+                "content": (names or f"Pedido {order.name}")[:50],
                 "amount": package["quantity"],
                 "declaredValue": per_box,
                 "weight": package["weight"],
