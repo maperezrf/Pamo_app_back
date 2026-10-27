@@ -103,6 +103,21 @@ def unregister_schedule(schedule_id):
         _scheduler.remove_job(job_id)
 
 
+def get_next_run_time(schedule_id):
+    """Próximo disparo de una programación, o None si no tiene job (inactiva,
+    fecha única ya disparada o scheduler sin arrancar en este proceso)."""
+    job = _scheduler.get_job(_job_id(schedule_id))
+    return getattr(job, "next_run_time", None) if job else None
+
+
+def is_valid_cron(expression):
+    try:
+        CronTrigger.from_crontab(expression)
+    except ValueError:
+        return False
+    return True
+
+
 def start_scheduler():
     global _started
     if _started:

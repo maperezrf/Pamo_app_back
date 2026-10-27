@@ -47,4 +47,12 @@ MENU = [
         "roles": ["Admin"],
         "submodulos": [],
     },
+    {
+        "key": "processes",
+        "label": "Procesos",
+        "path": "/processes",
+        # Mismos roles que `orchestrator.apis.ALLOWED_ROLES`.
+        "roles": ["Admin", "Operaciones"],
+        "submodulos": [],
+    },
 ]

@@ -275,8 +275,10 @@ Filtros (query params, combinables):
 
 ?status=EJECUTANDO
 ?process_type=orders.import_falabella
+?schedule=12   (id de la programación que la disparó)
 
-Respuesta 200 (lista de objetos, ver estructura completa en 5.4).
+Paginado (20 por página, `?page=`, `?page_size=` hasta 50), más reciente primero.
+Respuesta 200: { "count", "next", "previous", "results": [ ...objetos de 5.4 ] }.
 5.4. Detalle de una ejecución (polling)
 GET /api/orchestrator/executions/{id}/
 Permiso: RoleRequiredMixin, allowed_roles = ["Admin", "Operaciones"]
@@ -285,7 +287,9 @@ Respuesta 200:
   "id": 123,
   "process_type": 1,
   "process_type_code": "orders.import_falabella",
+  "process_type_name": "Importar pedidos Falabella a Shopify",
   "user": 7,
+  "user_email": "operador@pamo.co",   (null si la lanzó una programación o un webhook)
   "status": "EJECUTANDO",
   "started_at": "2026-09-14T15:00:00Z",
   "finished_at": null,
@@ -311,6 +315,14 @@ PATCH  /api/orchestrator/schedules/{id}/
 DELETE /api/orchestrator/schedules/{id}/
 Permiso: RoleRequiredMixin, allowed_roles = ["Admin", "Operaciones"]
 Campos del payload — ver tabla completa en la sección 4. created_by y created_at son de solo lectura (los completa el backend con request.user).
+Validación (`ProcessScheduleConfigSerializer.validate`), 400 con `{campo: [mensaje]}`:
+
+- Los campos obligatorios de cada `schedule_kind` (tabla de la sección 4); los que no usa el tipo se guardan en null.
+- `cron_expression` debe ser una crontab válida para APScheduler; `day_of_month` entre 1 y 31.
+- `ONCE_DATE` debe quedar en el futuro (solo se revisa si cambia la fecha, la hora o el tipo, para poder pausar una ya disparada).
+- El `process_type` debe estar activo.
+
+Campos de solo lectura en la respuesta: `process_type_code`, `process_type_name` y `next_run_at` (próximo disparo según el job de APScheduler en este proceso; null si está pausada, si una `ONCE_DATE` ya disparó o si el scheduler no arrancó). El listado no pagina (son pocas filas) y viene ordenado por nombre del proceso.
 
 6. Estados de una ejecución
 

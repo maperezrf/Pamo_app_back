@@ -37,7 +37,9 @@ from .functions.sodimac_rpa import (
     LabelStoreError,
     RpaControlError,
     RpaEventError,
+    bulk_label_preview,
     process_rpa_event,
+    request_bulk_labels,
     request_label_for_order,
     rpa_continue,
     rpa_kill,
@@ -363,6 +365,30 @@ class SodimacRpaControlAPI(RoleRequiredMixin, APIView):
         except SodimacRpaError as error:
             return Response({"detail": f"No se pudo llamar al RPA: {error}"}, status=502)
         return Response(rpa_panel_status())
+
+
+class SodimacRpaBulkLabelsAPI(RoleRequiredMixin, APIView):
+    """GET/POST /api/orders/sodimac/rpa/bulk-labels/: botón "Generar guías
+    disponibles". GET: vista previa `{"ready", "blocked"}` (OC que esperan
+    guía, separadas por si la bodega de la plataforma coincide con la de
+    Shopify). POST: la recalcula y manda al RPA solo las `ready`, en un
+    lote; 200 con la vista previa y `sent`; 400 si no hay ninguna; 409 el
+    RPA ya está corriendo; 502 el RPA no responde o no está configurado."""
+
+    allowed_roles = ORDERS_LIST_ROLES
+
+    def get(self, request):
+        return Response(bulk_label_preview())
+
+    def post(self, request):
+        try:
+            return Response(request_bulk_labels())
+        except LabelRequestError as error:
+            return Response({"detail": str(error)}, status=400)
+        except SodimacRpaBusy:
+            return Response({"detail": "El RPA ya está generando guías; intenta cuando termine."}, status=409)
+        except SodimacRpaError as error:
+            return Response({"detail": f"No se pudo llamar al RPA: {error}"}, status=502)
 
 
 class SodimacRpaStockDispatchAPI(BearerTokenRequiredMixin, APIView):

@@ -13,8 +13,9 @@ from integrations.sodimac_rpa.client import SodimacRpaBusy, SodimacRpaError
 from integrations.sodimac_rpa.functions.run_control import continue_run, get_status, kill_run, viewer_url
 from integrations.sodimac_rpa.functions.trigger_labels import trigger_labels
 
-from ..models import Dispatch, MarketplaceLabel, MarketplaceOrder
+from ..models import Dispatch, MarketplaceLabel, MarketplaceOrder, ShopifyOrder
 from .assign_dispatch_location import ASSIGNED_STATUSES
+from .dispatch_orders import shopify_location_ids
 from .read_label_tracking import read_label_tracking
 
 logger = logging.getLogger(__name__)
@@ -27,10 +28,28 @@ Result = MarketplaceOrder.LabelRequestResult
 # reinició, falló el webhook...) y se vuelve a pedir.
 STALE_REQUEST = timedelta(hours=6)
 MAX_PDF_BYTES = 5 * 1024 * 1024
+# Sodimac no deja despachar una OC desde dos bodegas: con el pedido repartido
+# en Shopify no se pide guía (ni en lote ni con el botón del pedido).
+SPLIT_IN_SHOPIFY = "Shopify reparte el pedido en varias bodegas y Sodimac no permite despachar desde dos."
+# Ubicaciones de Shopify que no son una bodega de despacho válida para el RPA
+# (decisión del usuario, 2026-10-26): un pedido asignado ahí es novedad.
+INVALID_LOCATIONS = {"proveedores"}
+
+
+def _invalid_location(name):
+    return (name or "").strip().lower() in INVALID_LOCATIONS
 
 
 class RpaEventError(Exception):
     """El evento del RPA no se puede procesar (payload inválido)."""
+
+
+def _requestable():
+    """Solicitud que se puede (re)enviar: nunca pedida, fallida o perdida
+    (`STALE_REQUEST`). Las de revisión manual no."""
+    return Q(label_request_status__in=["", Request.ERROR]) | Q(
+        label_request_status=Request.REQUESTED, label_requested_at__lt=timezone.now() - STALE_REQUEST
+    )
 
 
 def request_sodimac_labels(purchase_orders=None):
@@ -64,11 +83,7 @@ def request_sodimac_labels(purchase_orders=None):
     else:
         if not SODIMAC_RPA_URL:
             return []
-        stale = timezone.now() - STALE_REQUEST
-        candidates = candidates.exclude(marketplace_status=FINAL_STATUS).filter(
-            Q(label_request_status__in=["", Request.ERROR])
-            | Q(label_request_status=Request.REQUESTED, label_requested_at__lt=stale)
-        )
+        candidates = candidates.exclude(marketplace_status=FINAL_STATUS).filter(_requestable())
     pending = list(candidates.values_list("marketplace_order_id", flat=True))
     if not pending:
         return []
@@ -98,7 +113,9 @@ def request_label_for_order(order):
     """Botón "Generar guía (RPA)" del panel: pide al RPA la guía de la OC de
     Sodimac del pedido de Shopify `order`, sin esperar al sync. Una persona
     lo pide, así que se manda aunque la solicitud anterior esté en error o
-    en revisión manual. `SodimacRpaBusy` / `SodimacRpaError` se propagan."""
+    en revisión manual; nunca si la bodega no es válida
+    (`INVALID_LOCATIONS`) o Shopify reparte el pedido en varias bodegas
+    (`SPLIT_IN_SHOPIFY`). `SodimacRpaBusy` / `SodimacRpaError` se propagan."""
     row = (
         MarketplaceOrder.objects.filter(marketplace=SODIMAC, shopify_order_id=order.shopify_id)
         .order_by("id")
@@ -110,10 +127,89 @@ def request_label_for_order(order):
         raise LabelRequestError("La OC ya tiene guía: descargarla en el recuadro de la guía.")
     if row.fulfillment_status not in ASSIGNED_STATUSES or not row.fulfillment_location_name:
         raise LabelRequestError(f"La OC no tiene bodega: {row.fulfillment_note or 'sin asignar'}.")
+    if _invalid_location(row.fulfillment_location_name):
+        raise LabelRequestError(f"La bodega {row.fulfillment_location_name} no es válida para generar guía.")
+    if len(shopify_location_ids(order)) > 1:
+        raise LabelRequestError(SPLIT_IN_SHOPIFY)
     if not request_sodimac_labels([row.marketplace_order_id]):
         raise LabelRequestError("La OC no se pudo pedir al RPA (revisar que tenga orden en Shopify).")
     row.refresh_from_db()
     return row
+
+
+def bulk_label_preview():
+    """Botón "Generar guías disponibles": las OC de Sodimac que esperan guía
+    (orden en Shopify, sin guía, abiertas, solicitud nunca hecha, fallida o
+    perdida; las de revisión manual no), separadas en:
+
+    - `ready`: la bodega de la plataforma (`fulfillment_location_id`, la que
+      el RPA usa en el portal) es la única bodega abierta del pedido en
+      Shopify (copia local de sus fulfillment orders).
+    - `blocked`: no coinciden, o falta alguna de las dos; `reason` dice por
+      qué. No se mandan al RPA: una guía desde la bodega equivocada no se
+      puede usar (decisión del usuario, 2026-10-26).
+    """
+    rows = list(
+        MarketplaceOrder.objects.filter(
+            marketplace=SODIMAC, status=MarketplaceOrder.Status.CREATED, label__isnull=True
+        )
+        .exclude(shopify_order_id="")
+        .exclude(marketplace_status=FINAL_STATUS)
+        .filter(_requestable())
+        .order_by("created_at")
+    )
+    orders = {
+        order.shopify_id: order
+        for order in ShopifyOrder.objects.filter(shopify_id__in=[row.shopify_order_id for row in rows]).prefetch_related(
+            "fulfillment_orders"
+        )
+    }
+    ready, blocked = [], []
+    for row in rows:
+        order = orders.get(row.shopify_order_id)
+        location_ids = shopify_location_ids(order) if order else []
+        names = {item.location_id: item.location_name for item in order.fulfillment_orders.all()} if order else {}
+        item = {
+            "shopify_order_id": row.shopify_order_id,
+            "order_name": order.name if order else "",
+            "purchase_order": row.marketplace_order_id,
+            "platform_location": row.fulfillment_location_name if row.fulfillment_status in ASSIGNED_STATUSES else "",
+            "shopify_location": ", ".join(names.get(location_id) or location_id for location_id in location_ids),
+            "reason": _location_mismatch(row, order, location_ids),
+        }
+        (blocked if item["reason"] else ready).append(item)
+    return {"ready": ready, "blocked": blocked}
+
+
+def _location_mismatch(row, order, location_ids):
+    if row.fulfillment_status not in ASSIGNED_STATUSES or not row.fulfillment_location_id:
+        return f"Sin bodega en la plataforma: {row.fulfillment_note or 'sin asignar'}."
+    if _invalid_location(row.fulfillment_location_name):
+        return f"La bodega {row.fulfillment_location_name} no es válida para generar guía."
+    if order is None:
+        return "El pedido no está en la copia local de Shopify."
+    if order.deleted_at or order.cancelled_at:
+        return "El pedido está cancelado o borrado en Shopify."
+    if not location_ids:
+        return "El pedido no tiene bodega abierta en Shopify."
+    if len(location_ids) > 1:
+        return SPLIT_IN_SHOPIFY
+    if location_ids[0] != row.fulfillment_location_id:
+        return "La bodega de Shopify es distinta a la de la plataforma."
+    return ""
+
+
+def request_bulk_labels():
+    """Confirmación de "Generar guías disponibles": vuelve a calcular la
+    vista previa (pudo cambiar desde que se mostró) y manda al RPA, en un
+    solo lote, solo las `ready`. Devuelve la vista previa con `sent` (las OC
+    enviadas). `LabelRequestError` si no hay ninguna; `SodimacRpaBusy` /
+    `SodimacRpaError` se propagan."""
+    preview = bulk_label_preview()
+    purchase_orders = [item["purchase_order"] for item in preview["ready"]]
+    if not purchase_orders:
+        raise LabelRequestError("No hay OC disponibles para generar guía.")
+    return {**preview, "sent": request_sodimac_labels(purchase_orders)}
 
 
 def rpa_panel_status():

@@ -6,6 +6,7 @@ Todos protegidos con `RoleRequiredMixin` (ver `docs/patterns/AUTHORIZATION.md`).
 
 from rest_framework import viewsets
 from rest_framework.decorators import action
+from rest_framework.pagination import PageNumberPagination
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
@@ -52,24 +53,36 @@ class LaunchProcessView(RoleRequiredMixin, APIView):
         )
 
 
-class ProcessExecutionViewSet(RoleRequiredMixin, viewsets.ReadOnlyModelViewSet):
-    """GET /executions/ y /executions/<id>/ — listado y detalle para polling.
+class ExecutionPagination(PageNumberPagination):
+    page_size = 20
+    page_size_query_param = "page_size"
+    max_page_size = 50
 
-    Filtros opcionales por query param: `status`, `process_type` (code).
+
+class ProcessExecutionViewSet(RoleRequiredMixin, viewsets.ReadOnlyModelViewSet):
+    """GET /executions/ y /executions/<id>/ — listado paginado y detalle para
+    polling.
+
+    Filtros opcionales por query param: `status`, `process_type` (code),
+    `schedule` (id de la programación que la disparó).
     """
 
     allowed_roles = ALLOWED_ROLES
     serializer_class = ProcessExecutionSerializer
-    queryset = ProcessExecution.objects.all()
+    pagination_class = ExecutionPagination
+    queryset = ProcessExecution.objects.select_related("process_type", "user")
 
     def get_queryset(self):
         queryset = super().get_queryset()
         status_param = self.request.query_params.get("status")
         process_type = self.request.query_params.get("process_type")
+        schedule = self.request.query_params.get("schedule")
         if status_param:
             queryset = queryset.filter(status=status_param)
         if process_type:
             queryset = queryset.filter(process_type__code=process_type)
+        if schedule and schedule.isdigit():
+            queryset = queryset.filter(triggered_by_schedule_id=schedule)
         return queryset
 
     @action(detail=True, methods=["post"])
@@ -85,7 +98,9 @@ class ProcessScheduleConfigViewSet(RoleRequiredMixin, viewsets.ModelViewSet):
 
     allowed_roles = ALLOWED_ROLES
     serializer_class = ProcessScheduleConfigSerializer
-    queryset = ProcessScheduleConfig.objects.all()
+    queryset = ProcessScheduleConfig.objects.select_related("process_type").order_by(
+        "process_type__name", "id"
+    )
 
     def perform_create(self, serializer):
         from .core.scheduler import register_schedule

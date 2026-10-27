@@ -395,6 +395,31 @@ class RequestLabelButtonTests(TestCase):
         self.assertIn("ya tiene guía", response.json()["detail"])
         trigger.assert_not_called()
 
+    def test_an_order_split_in_two_warehouses_in_shopify_is_refused(self, trigger):
+        from .models import ShopifyFulfillmentOrder, ShopifyOrder
+
+        order = ShopifyOrder.objects.get(shopify_id="s16206245")
+        for position, location_id in enumerate([ENVIA_LOCATION, "98784313621"]):
+            ShopifyFulfillmentOrder.objects.create(
+                order=order, position=position, shopify_id=f"fo{position}", status="OPEN", location_id=location_id
+            )
+
+        response = self.client.post(self.URL.format("s16206245"))
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("varias bodegas", response.json()["detail"])
+        trigger.assert_not_called()
+
+    def test_the_proveedores_location_is_not_valid(self, trigger):
+        self.row.fulfillment_location_name = "Proveedores"
+        self.row.save()
+
+        response = self.client.post(self.URL.format("s16206245"))
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("no es válida", response.json()["detail"])
+        trigger.assert_not_called()
+
     def test_busy_or_unreachable_rpa(self, trigger):
         from integrations.sodimac_rpa.client import SodimacRpaBusy, SodimacRpaError
 
@@ -536,3 +561,108 @@ class RpaPanelTests(TestCase):
         self.assertEqual(self.client.get("/api/orders/sodimac/rpa/status/").status_code, 403)
         self.assertEqual(self.client.post("/api/orders/sodimac/rpa/kill/").status_code, 403)
         kill_run.assert_not_called()
+
+
+@patch(f"{R}.trigger_labels", return_value={"started": True})
+class BulkLabelsButtonTests(TestCase):
+    """Botón "Generar guías disponibles": solo van al RPA las OC cuya bodega
+    en la plataforma es la misma que tiene el pedido en Shopify."""
+
+    URL = "/api/orders/sodimac/rpa/bulk-labels/"
+    BARU = "98784313621"
+
+    def setUp(self):
+        user = User.objects.create_user("ops", password="x")
+        user.groups.add(Group.objects.get_or_create(name="Operaciones")[0])
+        self.client.force_login(user)
+
+    def _order(self, oc, *locations, **fields):
+        from .models import ShopifyFulfillmentOrder, ShopifyOrder
+
+        order = ShopifyOrder.objects.create(shopify_id=f"s{oc}", name=f"#{oc}", marketplace="sodimac", **fields)
+        for position, (location_id, name, status) in enumerate(locations):
+            ShopifyFulfillmentOrder.objects.create(
+                order=order, position=position, shopify_id=f"fo{oc}{position}", status=status,
+                location_id=location_id, location_name=name,
+            )
+        return order
+
+    def _scenario(self):
+        _oc("1")
+        self._order("1", (ENVIA_LOCATION, "Bodega Envia", "OPEN"))
+        _oc("2", label_request_status=Request.ERROR)
+        # Un fulfillment order cerrado en otra bodega no cuenta.
+        self._order("2", (self.BARU, "Baru", "CLOSED"), (ENVIA_LOCATION, "Bodega Envia", "OPEN"))
+        _oc("3")
+        self._order("3", (self.BARU, "Baru", "OPEN"))
+        _oc("4")
+        self._order("4", (ENVIA_LOCATION, "Bodega Envia", "OPEN"), (self.BARU, "Baru", "OPEN"))
+        _oc("5")
+        self._order("5")
+        _oc("6", fulfillment_status=MarketplaceOrder.FulfillmentStatus.NOVEDAD, fulfillment_note="sin stock")
+        self._order("6", (ENVIA_LOCATION, "Bodega Envia", "OPEN"))
+        _oc("7")
+        _oc("8")
+        self._order("8", (ENVIA_LOCATION, "Bodega Envia", "OPEN"), cancelled_at=timezone.now())
+        # "Proveedores" no es bodega válida aunque coincida con Shopify.
+        _oc("12", fulfillment_location_id="94018535701", fulfillment_location_name="Proveedores")
+        self._order("12", ("94018535701", "Proveedores", "OPEN"))
+        # Fuera de la lista: ya pedida hace poco, revisión manual, con guía.
+        _oc("9", label_request_status=Request.REQUESTED, label_requested_at=timezone.now())
+        _oc("10", label_request_status=Request.MANUAL)
+        MarketplaceLabel.objects.create(order=_oc("11"), tracking_number="1", label_pdf=ROTULO, relation_pdf=RELACION)
+
+    def test_the_preview_splits_matching_and_mismatched_warehouses(self, trigger):
+        self._scenario()
+
+        body = self.client.get(self.URL).json()
+
+        self.assertEqual([item["purchase_order"] for item in body["ready"]], ["1", "2"])
+        self.assertEqual(body["ready"][0], {
+            "shopify_order_id": "s1", "order_name": "#1", "purchase_order": "1",
+            "platform_location": "Bodega Envia", "shopify_location": "Bodega Envia", "reason": "",
+        })
+        reasons = {item["purchase_order"]: item["reason"] for item in body["blocked"]}
+        self.assertEqual(sorted(reasons, key=int), ["3", "4", "5", "6", "7", "8", "12"])
+        self.assertIn("distinta", reasons["3"])
+        self.assertIn("varias bodegas", reasons["4"])
+        self.assertIn("no tiene bodega abierta", reasons["5"])
+        self.assertIn("sin stock", reasons["6"])
+        self.assertIn("copia local", reasons["7"])
+        self.assertIn("cancelado", reasons["8"])
+        self.assertIn("Proveedores no es válida", reasons["12"])
+        self.assertEqual(body["blocked"][0]["shopify_location"], "Baru")
+        trigger.assert_not_called()
+
+    def test_confirming_sends_only_the_matching_ocs_in_one_batch(self, trigger):
+        self._scenario()
+
+        response = self.client.post(self.URL)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(sorted(trigger.call_args.args[0]), ["1", "2"])
+        self.assertEqual(sorted(response.json()["sent"]), ["1", "2"])
+        self.assertEqual(len(response.json()["blocked"]), 7)
+        requested = MarketplaceOrder.objects.filter(label_request_status=Request.REQUESTED)
+        self.assertEqual(sorted(requested.values_list("marketplace_order_id", flat=True)), ["1", "2", "9"])
+
+    def test_nothing_available_or_a_busy_rpa(self, trigger):
+        _oc("3")
+        self._order("3", (self.BARU, "Baru", "OPEN"))
+        response = self.client.post(self.URL)
+        self.assertEqual(response.status_code, 400)
+        trigger.assert_not_called()
+
+        from integrations.sodimac_rpa.client import SodimacRpaBusy
+
+        _oc("1")
+        self._order("1", (ENVIA_LOCATION, "Bodega Envia", "OPEN"))
+        trigger.side_effect = SodimacRpaBusy("ocupado")
+        self.assertEqual(self.client.post(self.URL).status_code, 409)
+        self.assertEqual(MarketplaceOrder.objects.get(marketplace_order_id="1").label_request_status, "")
+
+    def test_users_without_the_role_are_refused(self, trigger):
+        self.client.force_login(User.objects.create_user("otro", password="x"))
+        self.assertEqual(self.client.get(self.URL).status_code, 403)
+        self.assertEqual(self.client.post(self.URL).status_code, 403)
+        trigger.assert_not_called()

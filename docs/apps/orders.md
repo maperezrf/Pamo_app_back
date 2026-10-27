@@ -257,6 +257,23 @@ antiguas (convivencia, abajo).
      Sodimac" con las OC elegidas, o en el panel el botón "Generar guía
      (RPA)" de cada pedido (`request_label_for_order`; sirven también para
      reintentar una en revisión manual).
+     **En lote** (desde 2026-10-26), botón "Generar guías disponibles" del
+     recuadro del RPA (`bulk_label_preview` / `request_bulk_labels`): las
+     OC que el sync pediría (mismo filtro, `_requestable`) más las que no
+     tienen bodega, en dos listas. Solo van al RPA, en un lote, las que
+     tienen bodega en la plataforma (`fulfillment_location_id`) igual a
+     la **única** bodega abierta del pedido en Shopify (copia local de los
+     fulfillment orders, `shopify_location_ids`). Las demás salen "con
+     novedad" y no se mandan (regla del usuario: si no coinciden, no se
+     genera guía): sin bodega en la plataforma, pedido sin copia local o
+     cancelado/borrado, sin bodega abierta en Shopify, repartido en varias
+     o bodega distinta. Al confirmar se recalcula la lista.
+     Dos reglas valen también para el botón "Generar guía (RPA)" de cada
+     pedido (2026-10-26, del usuario): Sodimac no deja despachar una OC
+     desde dos bodegas, así que un pedido repartido en Shopify no se pide
+     (`SPLIT_IN_SHOPIFY`); y la ubicación **Proveedores** no es una bodega
+     válida (`INVALID_LOCATIONS`, por nombre): una OC asignada ahí es
+     novedad.
   2. Por cada OC, el RPA consulta la bodega
      (`GET /api/orders/sodimac/rpa/orders/<oc>/stock-dispatch/`): responde
      `fulfillment_location_name`, el nombre de la ubicación de Shopify. El

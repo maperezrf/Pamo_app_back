@@ -11,7 +11,11 @@ lanza. Guía operativa completa en
 - `ProcessType`: catálogo declarativo de qué procesos existen (`code`,
   `allow_concurrent`, `max_concurrent_global`, `is_active`).
 - `ProcessExecution`: una fila por cada corrida (manual o programada), con
-  estado, progreso y error.
+  estado, progreso y error. Tiene un campo `logs` (y `append_log`) que hoy
+  ningún proceso escribe ni la API expone: el historial visible de una
+  corrida es su estado, `current_step`, `error_message` y `params`. La
+  pantalla `/processes` del frontend muestra ese historial y administra las
+  programaciones.
 - `ProcessScheduleConfig`: programaciones (`ONCE_DATE`, `DAILY`, `WEEKLY`,
   `MONTHLY`, `CRON`) traducidas a triggers de APScheduler
   (`orchestrator/core/scheduler.py`).
@@ -116,5 +120,7 @@ hoy: `Admin` u `Operaciones`. Detalle completo de endpoints en la guía de uso.
 ## Pruebas
 
 `orchestrator/tests/` prueba concurrencia/cola, cancelación, recuperación de
-huérfanos, y camino feliz + rechazo de permisos de los endpoints. Sin red ni
+huérfanos, y camino feliz + rechazo de permisos de los endpoints (incluidos
+el listado paginado de ejecuciones y la validación del CRUD de
+programaciones, en `test_schedules_and_executions_api.py`). Sin red ni
 hilos reales (se mockea `ThreadProcessRunner.start`).

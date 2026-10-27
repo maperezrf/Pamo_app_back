@@ -12,6 +12,7 @@ from .apis import (
     OrderChannelLabelRequestAPI,
     OrderChannelLabelUploadAPI,
     OrderListAPI,
+    SodimacRpaBulkLabelsAPI,
     SodimacRpaCallbackAPI,
     SodimacRpaControlAPI,
     SodimacRpaStatusAPI,
@@ -25,6 +26,7 @@ urlpatterns = [
     path("labels/<str:token>/", DispatchLabelLinkAPI.as_view(), name="orders-dispatch-label-link"),
     path("sodimac/rpa/callback/", SodimacRpaCallbackAPI.as_view(), name="orders-sodimac-rpa-callback"),
     path("sodimac/rpa/status/", SodimacRpaStatusAPI.as_view(), name="orders-sodimac-rpa-status"),
+    path("sodimac/rpa/bulk-labels/", SodimacRpaBulkLabelsAPI.as_view(), name="orders-sodimac-rpa-bulk-labels"),
     path(
         "sodimac/rpa/continue/",
         SodimacRpaControlAPI.as_view(action=rpa_continue),
