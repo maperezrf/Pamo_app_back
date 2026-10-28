@@ -39,9 +39,17 @@ def notify(channel, *, dispatch, details, label):
     """ 
     if channel == Channel.API:
         return _notify_envia(dispatch, details, label)
+    return notify_list(channel, dispatch.location, [(dispatch, details, label)])
+
+
+def notify_list(channel, location, entries):
+    """Un solo correo o WhatsApp a `location` con varios pedidos (aviso
+    masivo por bodega): `entries` es [(dispatch, details, label)], todos de
+    esa bodega. Envía no va aquí: es una orden por pedido (`notify`).
+    Misma respuesta y errores que `notify`."""
     if channel == Channel.WHATSAPP:
-        return _notify_whatsapp(dispatch, details, label)
-    return _notify_email(dispatch, details, label)
+        return _notify_whatsapp(location, entries)
+    return _notify_email(location, entries)
 
 
 def email_configured():
@@ -50,7 +58,7 @@ def email_configured():
     return bool(settings.DEFAULT_FROM_EMAIL and (settings.GMAIL_REFRESH_TOKEN or settings.EMAIL_HOST))
 
 
-def _notify_email(dispatch, details, label):
+def _notify_email(location, entries):
     """Correo con la misma tabla del listado en HTML (destinatario por
     pedido, imágenes enlazadas al CDN de Shopify, link firmado a la guía) y
     el texto plano de respaldo. La
@@ -60,35 +68,44 @@ def _notify_email(dispatch, details, label):
         raise DispatchNotificationError(
             "Correo no configurado (DEFAULT_FROM_EMAIL y GMAIL_REFRESH_TOKEN o EMAIL_HOST)."
         )
-    location = dispatch.location
-    tracking_number = label["tracking_number"] if label else ""
-    try:
-        guide_url = label_link(dispatch) if label else ""
-    except LabelLinkError:
-        guide_url = ""
-    images = product_image_urls([item["sku"] for item in details["items"]])
+    images = product_image_urls([item["sku"] for _, details, _ in entries for item in details["items"]])
+    rows = []
+    for dispatch, details, label in entries:
+        try:
+            guide_url = label_link(dispatch) if label else ""
+        except LabelLinkError:
+            guide_url = ""
+        rows.append(_list_entry(details, label, guide_url, images))
     html = render_to_string("orders/email/dispatch_list.html", {
         "location_name": location.name,
-        "orders": [_list_entry(details, label, guide_url, images)],
-        "links_expire_on": links_expire_on() if guide_url else "",
+        "orders": rows,
+        "links_expire_on": links_expire_on() if any(row["label_url"] for row in rows) else "",
     })
+    first = entries[0][1]["order_name"]
     message = EmailMultiAlternatives(
-        subject=f"Despacho pedido {details['order_name']} - {location.name}",
-        body=dispatch_text(details, location, tracking_number),
+        subject=(
+            f"Despacho pedido {first} - {location.name}"
+            if len(entries) == 1
+            else f"Despacho de {len(entries)} pedidos - {location.name}"
+        ),
+        body="\n\n----------\n\n".join(
+            dispatch_text(details, location, label["tracking_number"] if label else "") for _, details, label in entries
+        ),
         from_email=settings.DEFAULT_FROM_EMAIL,
         to=list(location.emails),
     )
     message.attach_alternative(html, "text/html")
-    if label:
-        message.attach(f"guia-{details['order_name']}.pdf", label["pdf"], "application/pdf")
-        if label.get("relation_pdf"):
-            message.attach(f"relacion-{details['order_name']}.pdf", label["relation_pdf"], "application/pdf")
+    for _, details, label in entries:
+        if label:
+            message.attach(f"guia-{details['order_name']}.pdf", label["pdf"], "application/pdf")
+            if label.get("relation_pdf"):
+                message.attach(f"relacion-{details['order_name']}.pdf", label["relation_pdf"], "application/pdf")
     message.send(fail_silently=False)
     return {"recipient": ", ".join(location.emails), "external_id": ""}
 
 
-def _notify_whatsapp(dispatch, details, label):
-    """Plantilla `despacho_bodega` con el listado en PDF (un pedido) en el
+def _notify_whatsapp(location, entries):
+    """Plantilla `despacho_bodega` con el listado en PDF (uno o varios pedidos) en el
     encabezado: la guía no va adjunta sino como link firmado en la tabla.
     El PDF se sube una vez a Zernio y lo usan todos los números."""
     # Un mensaje que inicia la empresa exige plantilla aprobada en Meta.
@@ -97,16 +114,21 @@ def _notify_whatsapp(dispatch, details, label):
         raise DispatchNotificationError(
             "Plantilla de WhatsApp sin nombre ('despacho_bodega' en orders/whatsapp_templates.py)."
         )
-    location = dispatch.location
-    try:
-        guide_url = label_link(dispatch) if label else ""
-    except LabelLinkError as error:
-        raise DispatchNotificationError(str(error)) from error
-    images = product_images([item["sku"] for item in details["items"]])
-    pdf = dispatch_list_pdf(location.name, [_list_entry(details, label, guide_url, images)])
-    filename = f"despacho-{str(details['order_name']).lstrip('#')}.pdf"
+    guide_urls = []
+    for dispatch, _, label in entries:
+        try:
+            guide_urls.append(label_link(dispatch) if label else "")
+        except LabelLinkError as error:
+            raise DispatchNotificationError(str(error)) from error
+    images = product_images([item["sku"] for _, details, _ in entries for item in details["items"]])
+    pdf = dispatch_list_pdf(
+        location.name,
+        [_list_entry(details, label, url, images) for (_, details, label), url in zip(entries, guide_urls)],
+    )
+    first = str(entries[0][1]["order_name"]).lstrip("#")
+    filename = f"despacho-{first}.pdf" if len(entries) == 1 else f"despacho-{first}-y-{len(entries) - 1}-mas.pdf"
     document_url = upload_media(pdf, filename)
-    body = [location.name, "1"]
+    body = [location.name, str(len(entries))]
     # Se envía a todos antes de fallar: si uno falla, el error dice a
     # quiénes sí llegó (un reintento les volvería a escribir).
     sent, failed = [], []

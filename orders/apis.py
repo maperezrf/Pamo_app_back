@@ -15,6 +15,7 @@ from integrations.envia.functions.create_label import LabelUnknownResult
 from integrations.envia_fulfillment.client import EnviaFulfillmentAPIError
 from integrations.sodimac_rpa.client import SodimacRpaBusy, SodimacRpaError
 
+from .functions.bulk_notify import BulkNotifyError, bulk_notify_preview, notify_location
 from .functions.channel_label_file import ChannelLabelFileNotFound, channel_label_file
 from .functions.dispatch_actions import (
     DispatchActionError,
@@ -152,6 +153,26 @@ class DispatchNotifyAPI(DispatchActionAPI):
     def run(self, dispatch, request):
         notify_dispatch_now(dispatch)
         return self.dispatch_response(dispatch)
+
+
+class DispatchBulkNotifyAPI(RoleRequiredMixin, APIView):
+    """GET/POST /api/orders/dispatch/bulk-notify/: botón "Notificar
+    bodegas". GET: pedidos que esperan aviso agrupados por bodega
+    (`bulk_notify_preview`). POST `{"location_id"}`: avisa en un solo
+    mensaje por canal los pedidos listos de esa bodega; 200 `{"location",
+    "notified", "failed", "waiting"}`; 400 bodega desconocida o sin
+    pedidos listos."""
+
+    allowed_roles = ORDERS_LIST_ROLES
+
+    def get(self, request):
+        return Response(bulk_notify_preview())
+
+    def post(self, request):
+        try:
+            return Response(notify_location(request.data.get("location_id")))
+        except BulkNotifyError as error:
+            return Response({"detail": str(error)}, status=400)
 
 
 class DispatchFetchLabelAPI(DispatchActionAPI):
@@ -371,7 +392,8 @@ class SodimacRpaBulkLabelsAPI(RoleRequiredMixin, APIView):
     """GET/POST /api/orders/sodimac/rpa/bulk-labels/: botón "Generar guías
     disponibles". GET: vista previa `{"ready", "blocked"}` (OC que esperan
     guía, separadas por si la bodega de la plataforma coincide con la de
-    Shopify). POST: la recalcula y manda al RPA solo las `ready`, en un
+    Shopify). POST `{"purchase_orders"}` opcional (las marcadas; sin él,
+    todas): la recalcula y manda al RPA solo las `ready` elegidas, en un
     lote; 200 con la vista previa y `sent`; 400 si no hay ninguna; 409 el
     RPA ya está corriendo; 502 el RPA no responde o no está configurado."""
 
@@ -381,8 +403,11 @@ class SodimacRpaBulkLabelsAPI(RoleRequiredMixin, APIView):
         return Response(bulk_label_preview())
 
     def post(self, request):
+        purchase_orders = request.data.get("purchase_orders")
+        if purchase_orders is not None and not isinstance(purchase_orders, list):
+            return Response({"detail": "purchase_orders debe ser una lista de OC."}, status=400)
         try:
-            return Response(request_bulk_labels())
+            return Response(request_bulk_labels(purchase_orders))
         except LabelRequestError as error:
             return Response({"detail": str(error)}, status=400)
         except SodimacRpaBusy:

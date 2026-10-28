@@ -1,5 +1,6 @@
 from django.urls import path
 from .apis import (
+    DispatchBulkNotifyAPI,
     DispatchFetchLabelAPI,
     DispatchLabelFileAPI,
     DispatchLabelLinkAPI,
@@ -53,6 +54,7 @@ urlpatterns = [
         OrderChannelLabelFileAPI.as_view(),
         name="orders-channel-label-file",
     ),
+    path("dispatch/bulk-notify/", DispatchBulkNotifyAPI.as_view(), name="orders-dispatch-bulk-notify"),
     path("<str:shopify_order_id>/dispatch/notify/", DispatchNotifyAPI.as_view(), name="orders-dispatch-notify"),
     path("<str:shopify_order_id>/dispatch/label/fetch/", DispatchFetchLabelAPI.as_view(), name="orders-dispatch-label-fetch"),
     path("<str:shopify_order_id>/dispatch/label/quote/", DispatchQuoteLabelAPI.as_view(), name="orders-dispatch-label-quote"),

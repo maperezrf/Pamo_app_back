@@ -9,7 +9,7 @@ from integrations.envia.functions.download_label import download_label
 
 from .assign_dispatch_location import assign_dispatch_location
 from .dispatch_details import dispatch_details
-from .fetch_dispatch_label import fetch_dispatch_label
+from .fetch_dispatch_label import CHANNEL_LABELS, fetch_dispatch_label
 from .notify_dispatch import notify
 from .order_listing_format import day_range
 from .shopify_fulfillment import CLOSED_STATUSES, fulfill_in_shopify
@@ -107,24 +107,50 @@ def process_dispatch(dispatch):
     if not location.channels():
         return _save(dispatch, Dispatch.Status.MANUAL, f"{location.name} no tiene canales de aviso configurados.")
 
-    label = None
-    if dispatch.label_source in STORED_LABEL_SOURCES and (dispatch.label_pdf or dispatch.label_url):
-        # Guía generada en Envía o cargada a mano: la guardada (o se baja), nunca se genera otra.
-        label = {"pdf": stored_envia_label(dispatch), "tracking_number": dispatch.tracking_number}
-    elif location.creates_own_label and order.marketplace == SHOPIFY_CHANNEL:
-        pass  # tienda web: la bodega genera la guía (le llega por la tienda conectada); se avisa sin guía
-    elif location.requires_label:
-        label, reason = fetch_dispatch_label(order)
-        if label is None:
-            return _save(dispatch, Dispatch.Status.WAITING_LABEL, reason)
-        dispatch.tracking_number = label["tracking_number"]
-        dispatch.label_source = Dispatch.LabelSource.CHANNEL
-        dispatch.label_pdf = label["pdf"]
-        dispatch.label_sha256 = hashlib.sha256(label["pdf"]).hexdigest()
-        dispatch.label_fetched_at = timezone.now()
+    label, reason = dispatch_label(dispatch)
+    if reason:
+        return _save(dispatch, Dispatch.Status.WAITING_LABEL, reason)
 
     details = dispatch_details(dispatch)
     results = [_notify_channel(dispatch, channel, details, label) for channel in location.channels()]
+    return finish_dispatch(dispatch, results)
+
+
+def dispatch_label(dispatch):
+    """Guía con la que se avisa el despacho: (label o None, motivo). Con
+    motivo, todavía no se puede avisar (falta la guía); sin motivo y sin
+    guía, se avisa sin guía (la bodega no la exige o la crea ella). Una guía
+    del canal recién traída queda en el despacho (se guarda al guardarlo)."""
+    order, location = dispatch.shopify_order, dispatch.location
+    if dispatch.label_source in STORED_LABEL_SOURCES and (dispatch.label_pdf or dispatch.label_url):
+        # Guía generada en Envía o cargada a mano: la guardada (o se baja), nunca se genera otra.
+        return {"pdf": stored_envia_label(dispatch), "tracking_number": dispatch.tracking_number}, ""
+    if not needs_label(order, location):
+        return None, ""
+    label, reason = fetch_dispatch_label(order)
+    if label is None:
+        return None, reason
+    dispatch.tracking_number = label["tracking_number"]
+    dispatch.label_source = Dispatch.LabelSource.CHANNEL
+    dispatch.label_pdf = label["pdf"]
+    dispatch.label_sha256 = hashlib.sha256(label["pdf"]).hexdigest()
+    dispatch.label_fetched_at = timezone.now()
+    return label, ""
+
+
+def needs_label(order, location):
+    """Si el aviso lleva guía (decisión del usuario, 2026-10-26): Sodimac,
+    Mercado Libre y Falabella siempre, la de su canal, en cualquier bodega;
+    la tienda web y Madecentro solo si la bodega la exige y no la crea ella
+    (`requires_label`, `creates_own_label`)."""
+    if order.marketplace in CHANNEL_LABELS:
+        return True
+    return location.requires_label and not location.creates_own_label
+
+
+def finish_dispatch(dispatch, results):
+    """Cierra el despacho con el estado de sus avisos (uno por canal):
+    todos enviados → `notificado` y la guía en Shopify; si no, `error`."""
     if all(status == DispatchNotification.Status.SENT for status in results):
         _save(dispatch, Dispatch.Status.NOTIFIED, "")
         # Después del aviso, no antes: el proceso salta los pedidos ya
@@ -325,26 +351,41 @@ def _create_split(order, location_ids):
 
 
 def _notify_channel(dispatch, channel, details, label):
+    notification, status = claim_notification(dispatch, channel)
+    if notification is None:
+        return status
+    try:
+        result = notify(channel, dispatch=dispatch, details=details, label=label)
+    except Exception as error:  # noqa: BLE001 -- queda registrado en el aviso
+        return record_notification([notification.pk], error=error)
+    return record_notification([notification.pk], result=result)
+
+
+def claim_notification(dispatch, channel):
+    """Reclamo atómico del aviso del despacho por `channel`: solo una corrida
+    pasa de pendiente/error a procesando. Devuelve (aviso, None) si se
+    reclamó, o (None, estado actual) si ya lo tiene otra o ya salió."""
     notification, _ = DispatchNotification.objects.get_or_create(dispatch=dispatch, channel=channel)
-    # Reclamo atómico: solo una corrida pasa de pendiente/error a procesando.
     claimed = DispatchNotification.objects.filter(
         pk=notification.pk, status__in=RETRYABLE_NOTIFICATIONS
     ).update(status=DispatchNotification.Status.PROCESSING, updated_at=timezone.now())
     if not claimed:
         notification.refresh_from_db(fields=["status"])
-        return notification.status
+        return None, notification.status
+    return notification, None
 
-    try:
-        result = notify(channel, dispatch=dispatch, details=details, label=label)
-    except Exception as error:  # noqa: BLE001 -- queda registrado en el aviso
-        DispatchNotification.objects.filter(pk=notification.pk).update(
+
+def record_notification(pks, *, result=None, error=None):
+    """Guarda el resultado de un envío en los avisos reclamados `pks` (uno,
+    o varios si un solo mensaje avisó varios pedidos). Devuelve su estado."""
+    if error is not None:
+        DispatchNotification.objects.filter(pk__in=pks).update(
             status=DispatchNotification.Status.ERROR,
             error_description=f"{type(error).__name__}: {error}"[:2000],
             updated_at=timezone.now(),
         )
         return DispatchNotification.Status.ERROR
-
-    DispatchNotification.objects.filter(pk=notification.pk).update(
+    DispatchNotification.objects.filter(pk__in=pks).update(
         status=DispatchNotification.Status.SENT,
         recipient=result["recipient"][:255],
         external_id=result["external_id"][:128],

@@ -473,7 +473,9 @@ class DispatchActionAPITests(TestCase):
         self.assertEqual(len(mail.outbox), 1)
 
     @override_settings(**EMAIL_SETTINGS)
-    def test_notify_reopens_a_manual_dispatch_once_the_cause_is_fixed(self):
+    @patch(f"{F}.fetch_dispatch_label.get_shipment_label", return_value=PDF)
+    @patch(f"{F}.fetch_dispatch_label.get_shipment", return_value=ML_SHIPMENT)
+    def test_notify_reopens_a_manual_dispatch_once_the_cause_is_fixed(self, *_):
         # Se le dio al botón antes de sincronizar bodegas: quedó manual.
         order = _order(shopify_id="9101", name="20482")
         _marketplace_row(order, location_id=BOCCHERINI)
@@ -974,13 +976,14 @@ RELATION = b"%PDF-1.4 relacion %%EOF"
 
 @override_settings(**EMAIL_SETTINGS)
 class SodimacAndMadecentroDispatchTests(TestCase):
-    """2026-10-11: Sodimac espera la guía del RPA; Madecentro, una generada
-    en Envía (aunque la bodega cree las de la tienda web)."""
+    """2026-10-11: Sodimac espera la guía del RPA. Madecentro, desde
+    2026-10-26, como la tienda web: sin guía en la bodega que crea la suya;
+    en las demás, una generada en Envía."""
 
     def _location(self, **overrides):
         return _location(
             shopify_location_id=ENVIA_LOCATION, name="Bodega Envia", notify_email=True, emails=["b@example.com"],
-            creates_own_label=True, **overrides,
+            **{"creates_own_label": True, **overrides},
         )
 
     def test_sodimac_waits_for_the_uploaded_label_then_sends_both_pdfs(self):
@@ -1011,13 +1014,29 @@ class SodimacAndMadecentroDispatchTests(TestCase):
         self.assertEqual(dispatch_orders(SINCE), {"notificado": 1})
         self.assertEqual([name for name, _, _ in mail.outbox[0].attachments], ["guia-20400.pdf"])
 
-    def test_madecentro_waits_for_a_generated_label_even_where_the_warehouse_creates_web_labels(self):
+    def test_madecentro_is_notified_without_label_where_the_warehouse_creates_its_own(self):
         self._location()
+        order = _order(marketplace="madecentro")
+        _marketplace_row(order, marketplace="madecentro", location_id=ENVIA_LOCATION, shipment_id="")
+
+        self.assertEqual(dispatch_orders(SINCE), {"notificado": 1})
+        self.assertEqual(mail.outbox[0].attachments, [])
+
+    def test_madecentro_waits_for_a_generated_label_elsewhere(self):
+        self._location(creates_own_label=False)
         order = _order(marketplace="madecentro")
         _marketplace_row(order, marketplace="madecentro", location_id=ENVIA_LOCATION, shipment_id="")
 
         self.assertEqual(dispatch_orders(SINCE), {"esperando_guia": 1})
         self.assertIn("Generar guía", Dispatch.objects.get().note)
+        self.assertEqual(len(mail.outbox), 0)
+
+    def test_sodimac_waits_for_its_label_even_where_the_warehouse_does_not_require_one(self):
+        self._location(creates_own_label=False, requires_label=False)
+        _marketplace_row(_order(marketplace="sodimac"), **SODIMAC_ROW)
+
+        self.assertEqual(dispatch_orders(SINCE), {"esperando_guia": 1})
+        self.assertIn("RPA", Dispatch.objects.get().note)
         self.assertEqual(len(mail.outbox), 0)
 
     @patch(f"{A}.quote", return_value=[QUOTE_OPTION])

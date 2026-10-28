@@ -258,9 +258,17 @@ antiguas (convivencia, abajo).
      (RPA)" de cada pedido (`request_label_for_order`; sirven también para
      reintentar una en revisión manual).
      **En lote** (desde 2026-10-26), botón "Generar guías disponibles" del
-     recuadro del RPA (`bulk_label_preview` / `request_bulk_labels`): las
-     OC que el sync pediría (mismo filtro, `_requestable`) más las que no
-     tienen bodega, en dos listas. Solo van al RPA, en un lote, las que
+     recuadro del RPA (`bulk_label_preview` / `request_bulk_labels`): todas
+     las OC abiertas sin guía, en cualquier estado de solicitud (una que el
+     RPA no pudo generar sigue a la vista hasta tener guía), en dos listas.
+     Las que están en revisión manual van disponibles para reintentarlas en
+     el lote, con lo que dijo el RPA (`note`, columna "Novedad"). Una
+     `solicitada` sin respuesta va disponible si el RPA responde que no
+     está corriendo (se cortó sin avisar el fin del lote, como el
+     2026-10-26 con 4 OC: el navegador se cerró tras la primera); si corre o
+     no responde, va "con novedad" para no mandarla dos veces. No aparecen
+     los pedidos ya cumplidos en Shopify (guía hecha por otro lado). La persona marca cuáles mandar (todas por
+     defecto). Solo van al RPA, en un lote, las marcadas que
      tienen bodega en la plataforma (`fulfillment_location_id`) igual a
      la **única** bodega abierta del pedido en Shopify (copia local de los
      fulfillment orders, `shopify_location_ids`). Las demás salen "con
@@ -309,6 +317,7 @@ antiguas (convivencia, abajo).
     | `bodega_desconocida` | El RPA no conoce la bodega respondida. |
     | `consulta_bodega_fallida` | Falló la consulta de bodega al backend. |
     | `tiempo_agotado` | `TimeoutException` en el portal. |
+    | `error_portal` | Cualquier otro error del navegador en esa OC (clic interceptado, elemento obsoleto...); el RPA sigue con las demás. |
     | `sin_respuesta` | Lote exitoso sin `orden_procesada` de la OC. |
     | `login_fallido` | El RPA no inició sesión. |
 
@@ -537,7 +546,7 @@ guía del canal.
   nunca toca canales ni contactos; una bodega quitada de Shopify queda
   inactiva). Se configuran en el admin de Django. `creates_own_label`
   ("La bodega crea su guía"): sus pedidos de la **tienda web** (y Addi,
-  cotizaciones) se avisan sin guía y no se generan guías en Envía para
+  cotizaciones) y, desde 2026-10-26, los de **Madecentro** se avisan sin guía y no se generan guías en Envía para
   ellos; los de marketplace siguen con su guía (del canal, del RPA o
   generada, ver el paso 2). Operaciones (2026-10-08 y 2026-10-11): así
   trabaja Bodega Envia, probablemente también Boccherini; las demás bodegas
@@ -615,13 +624,18 @@ guía del canal.
      registro local, bodega sin registrar) o sin canales → `manual` con el
      motivo en `note`. Desde el 2026-10-11 todos los canales entran, también
      Madecentro y Sodimac.
-  2. Guía, según el canal (si la bodega la exige, `requires_label`):
+  2. Guía, según el canal (`needs_label`, regla del usuario del
+     2026-10-26): Sodimac, Mercado Libre y Falabella **siempre** llevan la
+     de su canal, en cualquier bodega; la tienda web y Madecentro solo si la
+     bodega la exige (`requires_label`) y no la crea ella
+     (`creates_own_label`). Antes `requires_label=False` dejaba avisar un
+     Sodimac sin guía (Bodega Envia está así).
 
      | Canal | Guía |
      | --- | --- |
      | Mercado Libre, Falabella | Del canal por API (`fetch_dispatch_label`): `get_shipment_label` (solo en estados imprimibles) o `get_package_items` + `get_shipping_document`. En Mercado Libre, descargar una guía sin imprimir la deja impresa. |
      | Sodimac | La que carga el RPA (`MarketplaceLabel`): rótulo + relación. |
-     | Madecentro | Generada en Envía con el botón "Generar guía", siempre. |
+     | Madecentro | Como la tienda web: sin guía en una bodega que la crea o no la exige (Bodega Envia); en las demás, generada en Envía con el botón "Generar guía". |
      | Tienda web (Addi, cotizaciones) | Bodega con `creates_own_label` (Bodega Envia): ninguna, se avisa sin guía y la bodega la crea. Otras bodegas: generada con el botón "Generar guía". |
 
      Sin guía todavía → `esperando_guia` con el motivo, y se reintenta en la
@@ -679,8 +693,8 @@ guía del canal.
     canal), destinatario (nombre, dirección, ciudad, teléfono) y la guía
     como **link firmado** (`label_links`, vence a los 10 días) van
     combinados por pedido, para que con varios pedidos cada destinatario y
-    guía quede junto a sus productos. La guía ya no va adjunta. Hoy el
-    listado lleva un pedido; el aviso masivo usará la misma plantilla. Las
+    guía quede junto a sus productos. La guía ya no va adjunta. Lleva un
+    pedido, o todos los de la bodega en "Notificar bodegas". Las
     imágenes salen de Shopify (`product_images`: imagen de la variante o
     del producto, bajada del CDN a 240 px); si fallan, esa fila va sin
     imagen y el aviso sigue. El PDF se sube una vez a Zernio (URL pública
@@ -709,6 +723,34 @@ guía del canal.
   probar el flujo de forma controlada mientras no se automatiza:
   - "Notificar a proveedor": `process_order_dispatch(order)`, lo mismo que
     hace el proceso, para un pedido y sin esperar a la próxima corrida.
+  - **"Notificar bodegas"** (aviso masivo, desde 2026-10-26;
+    `orders/functions/bulk_notify.py`). Decisión del usuario: **un solo
+    mensaje por bodega** con todos sus pedidos.
+    - Vista previa (`bulk_notify_preview`, no escribe ni llama a
+      proveedores): despachos sin avisar (`esperando_guia`, `listo`,
+      `error`) o `manual`, y pedidos de marketplace aún sin despacho
+      creados desde el 2026-10-11 (`MARKETPLACE_SINCE`), sin cancelados,
+      borrados ni cumplidos. Agrupados por bodega en `ready` y `blocked`
+      (con motivo), más `unassigned` (sin bodega). Novedad: gestión manual,
+      bodega sin canales, Shopify con el pedido en otra bodega o repartido
+      (nunca se avisa a otra bodega), o falta la guía en una bodega que la
+      exige (Sodimac sin guía del RPA; Madecentro y tienda web sin guía
+      generada o cargada). Mercado Libre y Falabella cuentan como listos:
+      su guía se trae al avisar (en Mercado Libre, eso la marca impresa).
+      Sin guía: solo tienda web y Madecentro en una bodega que no la exige
+      o la crea (`needs_label`); Sodimac, Mercado Libre y Falabella siempre
+      llevan la de su canal.
+    - Aviso de una bodega (`notify_location`): recalcula su grupo, crea el
+      despacho si falta (`ensure_dispatches`), trae la guía como el aviso
+      por pedido (`dispatch_label`; si no llega, `esperando_guia` y queda
+      fuera) y manda **un** correo y **un** WhatsApp (`notify_list`, mismo
+      listado HTML/PDF; WhatsApp con `{{2}}` = cuántos pedidos). Por API de
+      Envía sigue una orden por pedido. Cada despacho conserva su aviso por
+      canal: se reclaman todos antes de enviar (`claim_notification`) y el
+      resultado del mensaje se guarda en todos (`record_notification`); un
+      correo fallido deja todos en `error` y se reintentan juntos. Cada
+      pedido termina como en el aviso por pedido (`finish_dispatch`:
+      `notificado` y la guía en Shopify, o `error`).
   - Los botones reabren un despacho en `manual` (`reopen_manual_dispatch`):
     recalculan la bodega si falta y siguen; si el motivo sigue vigente,
     vuelve a `manual` con el motivo actual. El proceso automático no los

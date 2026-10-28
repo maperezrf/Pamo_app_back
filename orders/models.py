@@ -112,6 +112,7 @@ class MarketplaceOrder(models.Model):
         UNKNOWN_WAREHOUSE = "bodega_desconocida", "Bodega desconocida para el RPA"
         WAREHOUSE_LOOKUP_FAILED = "consulta_bodega_fallida", "Falló la consulta de bodega"
         TIMEOUT = "tiempo_agotado", "Tiempo agotado en el portal"
+        PORTAL_ERROR = "error_portal", "Error del navegador en el portal"
         NO_RESPONSE = "sin_respuesta", "El RPA no respondió por la OC"
         LOGIN_FAILED = "login_fallido", "El RPA no pudo iniciar sesión"
 

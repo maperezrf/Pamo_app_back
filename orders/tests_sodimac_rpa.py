@@ -224,6 +224,11 @@ class RpaCallbackAPITests(TestCase):
         self.assertEqual((self._refresh().label_request_status, self.order.label_request_result), (Request.ERROR, Result.TIMEOUT))
         self.assertIn("Timeout", self.order.label_request_note)
 
+    def test_a_browser_error_in_one_order_is_asked_again_later(self):
+        self._processed(guia_generada=False, mensaje="ElementClickInterceptedException: ...", resultado="error_portal")
+
+        self.assertEqual((self._refresh().label_request_status, self.order.label_request_result), (Request.ERROR, Result.PORTAL_ERROR))
+
     def test_already_generated_without_pdfs_goes_to_manual_review(self):
         self._processed(rotulo_pdf_base64=None, relacion_pdf_base64=None, mensaje="botón deshabilitado",
                         resultado="guia_ya_generada")
@@ -563,6 +568,7 @@ class RpaPanelTests(TestCase):
         kill_run.assert_not_called()
 
 
+@patch(f"{R}.get_status", return_value={"running": True})
 @patch(f"{R}.trigger_labels", return_value={"started": True})
 class BulkLabelsButtonTests(TestCase):
     """Botón "Generar guías disponibles": solo van al RPA las OC cuya bodega
@@ -607,23 +613,28 @@ class BulkLabelsButtonTests(TestCase):
         # "Proveedores" no es bodega válida aunque coincida con Shopify.
         _oc("12", fulfillment_location_id="94018535701", fulfillment_location_name="Proveedores")
         self._order("12", ("94018535701", "Proveedores", "OPEN"))
-        # Fuera de la lista: ya pedida hace poco, revisión manual, con guía.
+        # Siguen a la vista hasta tener guía: la de revisión manual (el RPA no
+        # pudo) disponible con su novedad; la pedida hace poco, como novedad.
+        # Fuera: con guía.
         _oc("9", label_request_status=Request.REQUESTED, label_requested_at=timezone.now())
-        _oc("10", label_request_status=Request.MANUAL)
+        self._order("9", (ENVIA_LOCATION, "Bodega Envia", "OPEN"))
+        _oc("10", label_request_status=Request.MANUAL, label_request_note="Guía ya generada en el portal.")
+        self._order("10", (ENVIA_LOCATION, "Bodega Envia", "OPEN"))
         MarketplaceLabel.objects.create(order=_oc("11"), tracking_number="1", label_pdf=ROTULO, relation_pdf=RELACION)
 
-    def test_the_preview_splits_matching_and_mismatched_warehouses(self, trigger):
+    def test_the_preview_splits_matching_and_mismatched_warehouses(self, trigger, *_):
         self._scenario()
 
         body = self.client.get(self.URL).json()
 
-        self.assertEqual([item["purchase_order"] for item in body["ready"]], ["1", "2"])
+        self.assertEqual([item["purchase_order"] for item in body["ready"]], ["1", "2", "10"])
+        self.assertIn("Guía ya generada en el portal", body["ready"][2]["note"])
         self.assertEqual(body["ready"][0], {
             "shopify_order_id": "s1", "order_name": "#1", "purchase_order": "1",
-            "platform_location": "Bodega Envia", "shopify_location": "Bodega Envia", "reason": "",
+            "platform_location": "Bodega Envia", "shopify_location": "Bodega Envia", "reason": "", "note": "",
         })
         reasons = {item["purchase_order"]: item["reason"] for item in body["blocked"]}
-        self.assertEqual(sorted(reasons, key=int), ["3", "4", "5", "6", "7", "8", "12"])
+        self.assertEqual(sorted(reasons, key=int), ["3", "4", "5", "6", "7", "8", "9", "12"])
         self.assertIn("distinta", reasons["3"])
         self.assertIn("varias bodegas", reasons["4"])
         self.assertIn("no tiene bodega abierta", reasons["5"])
@@ -631,22 +642,35 @@ class BulkLabelsButtonTests(TestCase):
         self.assertIn("copia local", reasons["7"])
         self.assertIn("cancelado", reasons["8"])
         self.assertIn("Proveedores no es válida", reasons["12"])
+        self.assertIn("esperando respuesta", reasons["9"])
         self.assertEqual(body["blocked"][0]["shopify_location"], "Baru")
         trigger.assert_not_called()
 
-    def test_confirming_sends_only_the_matching_ocs_in_one_batch(self, trigger):
+    def test_confirming_sends_only_the_matching_ocs_in_one_batch(self, trigger, *_):
         self._scenario()
 
         response = self.client.post(self.URL)
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(sorted(trigger.call_args.args[0]), ["1", "2"])
-        self.assertEqual(sorted(response.json()["sent"]), ["1", "2"])
-        self.assertEqual(len(response.json()["blocked"]), 7)
+        self.assertEqual(sorted(trigger.call_args.args[0]), ["1", "10", "2"])
+        self.assertEqual(sorted(response.json()["sent"]), ["1", "10", "2"])
+        self.assertEqual(len(response.json()["blocked"]), 8)
         requested = MarketplaceOrder.objects.filter(label_request_status=Request.REQUESTED)
-        self.assertEqual(sorted(requested.values_list("marketplace_order_id", flat=True)), ["1", "2", "9"])
+        self.assertEqual(sorted(requested.values_list("marketplace_order_id", flat=True)), ["1", "10", "2", "9"])
 
-    def test_nothing_available_or_a_busy_rpa(self, trigger):
+    def test_only_the_chosen_ocs_go_and_never_a_blocked_one(self, trigger, *_):
+        self._scenario()
+
+        response = self.client.post(self.URL, {"purchase_orders": ["2", "3"]}, content_type="application/json")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(trigger.call_args.args[0], ["2"])  # la 3 tiene novedad de bodega
+        self.assertEqual(response.json()["sent"], ["2"])
+        self.assertEqual(
+            self.client.post(self.URL, {"purchase_orders": "2"}, content_type="application/json").status_code, 400
+        )
+
+    def test_nothing_available_or_a_busy_rpa(self, trigger, *_):
         _oc("3")
         self._order("3", (self.BARU, "Baru", "OPEN"))
         response = self.client.post(self.URL)
@@ -661,7 +685,21 @@ class BulkLabelsButtonTests(TestCase):
         self.assertEqual(self.client.post(self.URL).status_code, 409)
         self.assertEqual(MarketplaceOrder.objects.get(marketplace_order_id="1").label_request_status, "")
 
-    def test_users_without_the_role_are_refused(self, trigger):
+    def test_a_request_the_rpa_left_unanswered_is_available_again(self, trigger, get_status):
+        _oc("9", label_request_status=Request.REQUESTED, label_requested_at=timezone.now())
+        self._order("9", (ENVIA_LOCATION, "Bodega Envia", "OPEN"))
+        # Ya despachado por otro lado: no aparece.
+        _oc("13")
+        self._order("13", (ENVIA_LOCATION, "Bodega Envia", "CLOSED"), fulfillment_status="FULFILLED")
+        get_status.return_value = {"running": False}
+
+        body = self.client.get(self.URL).json()
+
+        self.assertEqual([item["purchase_order"] for item in body["ready"]], ["9"])
+        self.assertIn("sin responder", body["ready"][0]["note"])
+        self.assertEqual(body["blocked"], [])
+
+    def test_users_without_the_role_are_refused(self, trigger, *_):
         self.client.force_login(User.objects.create_user("otro", password="x"))
         self.assertEqual(self.client.get(self.URL).status_code, 403)
         self.assertEqual(self.client.post(self.URL).status_code, 403)

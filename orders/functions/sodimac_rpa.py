@@ -138,16 +138,27 @@ def request_label_for_order(order):
 
 
 def bulk_label_preview():
-    """Botón "Generar guías disponibles": las OC de Sodimac que esperan guía
-    (orden en Shopify, sin guía, abiertas, solicitud nunca hecha, fallida o
-    perdida; las de revisión manual no), separadas en:
+    """Botón "Generar guías disponibles": todas las OC de Sodimac que no
+    tienen guía todavía (orden en Shopify, abiertas en Sodimac), en
+    cualquier estado de solicitud: una que el RPA no pudo generar sigue a
+    la vista hasta tener guía (decisión del usuario, 2026-10-26). Separadas
+    en:
 
     - `ready`: la bodega de la plataforma (`fulfillment_location_id`, la que
       el RPA usa en el portal) es la única bodega abierta del pedido en
       Shopify (copia local de sus fulfillment orders).
-    - `blocked`: no coinciden, o falta alguna de las dos; `reason` dice por
-      qué. No se mandan al RPA: una guía desde la bodega equivocada no se
-      puede usar (decisión del usuario, 2026-10-26).
+      Una en revisión manual (el RPA no pudo) también va aquí, para
+      reintentarla, con lo que dijo el RPA en `note`; igual una pedida que
+      el RPA dejó sin respuesta (ya no está corriendo: se cortó sin avisar
+      el fin del lote).
+    - `blocked`: no coinciden, o falta alguna de las dos; o pedida y sin
+      respuesta mientras el RPA corre o no responde (para no mandarla dos
+      veces).
+
+    Los pedidos ya cumplidos en Shopify no aparecen: su guía salió por otro
+    lado.
+      `reason` dice por qué. No se mandan al RPA en el lote: una guía desde
+      la bodega equivocada no se puede usar.
     """
     rows = list(
         MarketplaceOrder.objects.filter(
@@ -155,8 +166,11 @@ def bulk_label_preview():
         )
         .exclude(shopify_order_id="")
         .exclude(marketplace_status=FINAL_STATUS)
-        .filter(_requestable())
         .order_by("created_at")
+    )
+    rpa_idle = _rpa_idle()
+    requestable = set(
+        MarketplaceOrder.objects.filter(pk__in=[row.pk for row in rows]).filter(_requestable()).values_list("pk", flat=True)
     )
     orders = {
         order.shopify_id: order
@@ -167,6 +181,9 @@ def bulk_label_preview():
     ready, blocked = [], []
     for row in rows:
         order = orders.get(row.shopify_order_id)
+        if order is not None and order.fulfillment_status == "FULFILLED":
+            continue
+        lost = row.label_request_status == Request.REQUESTED and rpa_idle
         location_ids = shopify_location_ids(order) if order else []
         names = {item.location_id: item.location_name for item in order.fulfillment_orders.all()} if order else {}
         item = {
@@ -175,10 +192,30 @@ def bulk_label_preview():
             "purchase_order": row.marketplace_order_id,
             "platform_location": row.fulfillment_location_name if row.fulfillment_status in ASSIGNED_STATUSES else "",
             "shopify_location": ", ".join(names.get(location_id) or location_id for location_id in location_ids),
-            "reason": _location_mismatch(row, order, location_ids),
+            "reason": _location_mismatch(row, order, location_ids)
+            or ("" if row.pk in requestable or lost or row.label_request_status == Request.MANUAL else _WAITING_RPA),
+            "note": "El RPA terminó sin responder por esta OC." if lost else _manual_note(row),
         }
         (blocked if item["reason"] else ready).append(item)
     return {"ready": ready, "blocked": blocked}
+
+
+_WAITING_RPA = "Pedida al RPA, esperando respuesta."
+
+
+def _rpa_idle():
+    """El RPA responde y no tiene corrida: una OC que sigue `solicitada` ya
+    no la va a contestar. Si no responde, no se sabe (se asume que corre)."""
+    try:
+        return not get_status().get("running")
+    except SodimacRpaError:
+        return False
+
+
+def _manual_note(row):
+    if row.label_request_status != Request.MANUAL:
+        return ""
+    return f"El RPA no pudo generar la guía: {row.label_request_note or 'revisión manual'}"
 
 
 def _location_mismatch(row, order, location_ids):
@@ -199,14 +236,18 @@ def _location_mismatch(row, order, location_ids):
     return ""
 
 
-def request_bulk_labels():
+def request_bulk_labels(purchase_orders=None):
     """Confirmación de "Generar guías disponibles": vuelve a calcular la
     vista previa (pudo cambiar desde que se mostró) y manda al RPA, en un
-    solo lote, solo las `ready`. Devuelve la vista previa con `sent` (las OC
-    enviadas). `LabelRequestError` si no hay ninguna; `SodimacRpaBusy` /
-    `SodimacRpaError` se propagan."""
+    solo lote, las `ready`; con `purchase_orders` (las que la persona dejó
+    marcadas), solo esas de entre las `ready`. Devuelve la vista previa con
+    `sent` (las OC enviadas). `LabelRequestError` si no queda ninguna;
+    `SodimacRpaBusy` / `SodimacRpaError` se propagan."""
     preview = bulk_label_preview()
-    purchase_orders = [item["purchase_order"] for item in preview["ready"]]
+    chosen = None if purchase_orders is None else {str(oc) for oc in purchase_orders}
+    purchase_orders = [
+        item["purchase_order"] for item in preview["ready"] if chosen is None or item["purchase_order"] in chosen
+    ]
     if not purchase_orders:
         raise LabelRequestError("No hay OC disponibles para generar guía.")
     return {**preview, "sent": request_sodimac_labels(purchase_orders)}
