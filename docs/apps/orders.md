@@ -223,6 +223,14 @@ antiguas (convivencia, abajo).
      Sodimac paga a crédito: **es el único canal que no queda `PAID`**.
   4. Llama a `pamo_web` (`integrations.pamo_web.run_sodimac_invoicing`)
      mientras dure la convivencia (ver abajo).
+  - Las OC en `error_creando_orden` (p. ej. SKU sin equivalencia) se
+    reintentan en cada corrida. **Reintentar ya** (desde 2026-10-28,
+    decisión del usuario): se corrige la equivalencia en Productos y se usa
+    el botón "Reintentar" del pedido no creado
+    (`POST /api/orders/not-created/<id>/retry/`,
+    `retry_marketplace_order`). Usa el mismo `create_sodimac_order` del
+    paso 3 (reclamo atómico, así que nunca choca con un sync en curso).
+    Una OC en `procesando` no se reintenta (`409`). Solo Sodimac por ahora.
   - `params={"limit": N}` limita las OC creadas en Shopify, no la lectura.
   - Un fallo puntual no detiene el resto; al final la ejecución termina en
     error con el resumen (incluye OC con error de Shopify).

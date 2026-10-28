@@ -33,6 +33,12 @@ from .functions.dispatch_actions import (
 from .functions.label_links import LabelLinkExpired, LabelLinkInvalid, label_from_link
 from .functions.list_orders import channel_label_for_order, filter_orders, format_dispatch, format_dispatches, format_orders
 from .functions.list_orders_not_created import list_orders_not_created
+from .functions.retry_marketplace_order import (
+    RetryOrderBusy,
+    RetryOrderError,
+    RetryOrderNotFound,
+    retry_marketplace_order,
+)
 from .functions.sodimac_rpa import (
     LabelRequestError,
     LabelStoreError,
@@ -415,6 +421,42 @@ class SodimacRpaBulkLabelsAPI(RoleRequiredMixin, APIView):
             return Response({"detail": "El RPA ya está generando guías; intenta cuando termine."}, status=409)
         except SodimacRpaError as error:
             return Response({"detail": f"No se pudo llamar al RPA: {error}"}, status=502)
+
+
+class OrderNotCreatedRetryAPI(RoleRequiredMixin, APIView):
+    """POST /api/orders/not-created/<id>/retry/: botón "Reintentar" de un
+    pedido no creado en Shopify (`orders_not_created[].id`), por ahora solo
+    Sodimac. 200 `{"created", "order": {id, status, error,
+    shopify_order_id, shopify_order_name}}` (`created` falso si sigue
+    fallando, con el motivo en `error`); 400 no aplica; 404 no existe; 409
+    en proceso; 502 Shopify falló (la OC queda en `procesando`)."""
+
+    allowed_roles = ORDERS_LIST_ROLES
+
+    def post(self, request, order_id):
+        try:
+            row = retry_marketplace_order(order_id)
+        except RetryOrderNotFound:
+            raise Http404
+        except RetryOrderError as error:
+            return Response({"detail": str(error)}, status=400)
+        except RetryOrderBusy as error:
+            return Response({"detail": str(error)}, status=409)
+        except Exception as error:  # noqa: BLE001 -- la OC queda en `procesando` para revisión manual
+            return Response(
+                {"detail": f"Shopify falló ({type(error).__name__}: {error}); la OC quedó en proceso: revisar en Shopify."},
+                status=502,
+            )
+        return Response({
+            "created": row.status == row.Status.CREATED,
+            "order": {
+                "id": row.pk,
+                "status": row.status,
+                "error": row.error_description,
+                "shopify_order_id": row.shopify_order_id,
+                "shopify_order_name": row.shopify_order_name,
+            },
+        })
 
 
 class SodimacRpaRunsAPI(RoleRequiredMixin, APIView):

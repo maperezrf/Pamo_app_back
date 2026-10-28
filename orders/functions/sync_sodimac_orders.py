@@ -249,6 +249,21 @@ def _parse_transmitted_at(value):
     return parsed
 
 
+def create_sodimac_order(purchase_order, customer_id):
+    """Crea en Shopify la OC (reclamo atómico + `process_shipment`). La usan
+    el paso 3 del sync y el botón "Reintentar" del panel
+    (`retry_marketplace_order`). Devuelve la fila con el resultado
+    (`orden_creada` o `error_creando_orden` con el motivo), o None si no se
+    pudo reclamar (otro proceso la tomó o ya no es reintentable). Un fallo
+    de Shopify se propaga y la OC queda en `procesando` (revisión manual)."""
+    claimed = claim_orders(SODIMAC, [purchase_order])
+    if not claimed:
+        return None
+    process_shipment(claimed, customer_id, financial_status=FINANCIAL_STATUS)
+    claimed[0].refresh_from_db(fields=["status", "error_description", "shopify_order_id", "shopify_order_name"])
+    return claimed[0]
+
+
 def _create_shopify_orders(customer_id, limit, failures, progress_callback, cancellation_token):
     pending = list(
         MarketplaceOrder.objects.filter(marketplace=SODIMAC, shopify_order_id="", status__in=RETRYABLE_STATUSES)
@@ -262,17 +277,14 @@ def _create_shopify_orders(customer_id, limit, failures, progress_callback, canc
     for index, purchase_order in enumerate(pending):
         if cancellation_token:
             cancellation_token.raise_if_cancelled()
-        claimed = claim_orders(SODIMAC, [purchase_order])
-        if claimed:
-            try:
-                process_shipment(claimed, customer_id, financial_status=FINANCIAL_STATUS)
-            except Exception as error:  # queda en `procesando`: revisión manual
-                failures.append(f"Shopify {purchase_order} ({type(error).__name__}: {error})")
-            else:
-                claimed[0].refresh_from_db(fields=["status", "error_description"])
-                if claimed[0].status == MarketplaceOrder.Status.CREATED:
-                    created += 1
-                else:
-                    failures.append(f"Shopify {purchase_order}: {claimed[0].error_description}")
+        try:
+            row = create_sodimac_order(purchase_order, customer_id)
+        except Exception as error:  # queda en `procesando`: revisión manual
+            failures.append(f"Shopify {purchase_order} ({type(error).__name__}: {error})")
+        else:
+            if row is not None and row.status == MarketplaceOrder.Status.CREATED:
+                created += 1
+            elif row is not None:
+                failures.append(f"Shopify {purchase_order}: {row.error_description}")
         progress_callback(50 + int(40 * (index + 1) / total), f"OC {purchase_order}")
     return created

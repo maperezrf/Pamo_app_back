@@ -13,6 +13,7 @@ from .apis import (
     OrderChannelLabelRequestAPI,
     OrderChannelLabelUploadAPI,
     OrderListAPI,
+    OrderNotCreatedRetryAPI,
     SodimacRpaBulkLabelsAPI,
     SodimacRpaCallbackAPI,
     SodimacRpaControlAPI,
@@ -30,6 +31,7 @@ urlpatterns = [
     path("sodimac/rpa/status/", SodimacRpaStatusAPI.as_view(), name="orders-sodimac-rpa-status"),
     path("sodimac/rpa/bulk-labels/", SodimacRpaBulkLabelsAPI.as_view(), name="orders-sodimac-rpa-bulk-labels"),
     path("sodimac/rpa/runs/", SodimacRpaRunsAPI.as_view(), name="orders-sodimac-rpa-runs"),
+    path("not-created/<int:order_id>/retry/", OrderNotCreatedRetryAPI.as_view(), name="orders-not-created-retry"),
     path(
         "sodimac/rpa/continue/",
         SodimacRpaControlAPI.as_view(action=rpa_continue),
