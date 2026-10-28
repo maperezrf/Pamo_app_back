@@ -1,5 +1,6 @@
 import re
 
+from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.db import models
 
@@ -185,6 +186,71 @@ class MarketplaceLabel(models.Model):
     def __str__(self):
         return f"{self.order} guía {self.tracking_number}"
 
+
+class SodimacRpaRun(models.Model):
+    """Una corrida (lote) del RPA de guías de Sodimac: qué OC se le mandaron,
+    quién y desde dónde, y cómo terminó. Es el historial que el estado por
+    OC (`MarketplaceOrder.label_request_*`, solo el último) no guarda. Ver
+    docs/apps/orders.md, "Historial del RPA"."""
+
+    class Source(models.TextChoices):
+        BULK = "lote", "Generar guías disponibles"
+        ORDER = "pedido", "Botón del pedido"
+        ADMIN = "admin", "Admin"
+        SYNC = "sync", "Sync de Sodimac"
+
+    class Status(models.TextChoices):
+        RUNNING = "corriendo", "Corriendo"
+        FINISHED = "terminada", "Terminada"
+        LOGIN_FAILED = "login_fallido", "No inició sesión"
+        # Empezó otra sin que esta avisara el fin (el RPA se cortó).
+        INTERRUPTED = "interrumpida", "Interrumpida"
+
+    source = models.CharField(max_length=12, choices=Source.choices)
+    requested_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="+"
+    )
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.RUNNING)
+    started_at = models.DateTimeField(auto_now_add=True)
+    finished_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        verbose_name = "Corrida del RPA de Sodimac"
+        verbose_name_plural = "Corridas del RPA de Sodimac"
+        ordering = ["-started_at", "-id"]
+
+    def __str__(self):
+        return f"Corrida {self.pk} ({self.status})"
+
+
+class SodimacRpaRunItem(models.Model):
+    """Una OC de una corrida y lo que pasó con ella: el estado y el
+    resultado que dejó el RPA en esa corrida (no cambian si la OC se vuelve
+    a pedir en otra)."""
+
+    run = models.ForeignKey(SodimacRpaRun, related_name="items", on_delete=models.CASCADE)
+    order = models.ForeignKey(MarketplaceOrder, related_name="rpa_items", on_delete=models.CASCADE)
+    purchase_order = models.CharField(max_length=64)
+    status = models.CharField(
+        max_length=12, choices=MarketplaceOrder.LabelRequestStatus.choices,
+        default=MarketplaceOrder.LabelRequestStatus.REQUESTED,
+    )
+    result = models.CharField(max_length=32, choices=MarketplaceOrder.LabelRequestResult.choices, blank=True)
+    note = models.TextField(blank=True)
+    tracking_number = models.CharField(max_length=64, blank=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "OC de una corrida del RPA"
+        verbose_name_plural = "OC de corridas del RPA"
+        ordering = ["id"]
+        constraints = [
+            models.UniqueConstraint(fields=["run", "purchase_order"], name="unique_rpa_run_purchase_order"),
+        ]
+
+    def __str__(self):
+        return f"{self.purchase_order} ({self.status})"
+
 class ShopifyOrder(models.Model):
     """Copia local de un pedido de Shopify (todos los canales, también la
     tienda web), para que el listado del frontend no dependa de Shopify en
@@ -349,10 +415,10 @@ class DispatchLocation(models.Model):
     # No avisar hasta tener la guía del canal (Mercado Libre, Falabella).
     requires_label = models.BooleanField("Exige guía", default=True)
     # La bodega genera la guía de los pedidos que no traen una del canal
-    # (tienda web, Addi, cotizaciones): se le avisa sin guía y no se genera en
-    # Envía. Operaciones (2026-10-08): así trabaja Bodega Envia (y
-    # probablemente Boccherini). Mercado Libre y Falabella siguen con la guía
-    # del canal.
+    # (tienda web, Addi, cotizaciones, Madecentro): se le avisa sin guía y no
+    # se genera en Envía. Así trabajan Bodega Envia y Boccherini (2026-10-27).
+    # Sodimac, Mercado Libre y Falabella siguen con la guía del canal
+    # (`needs_label`).
     creates_own_label = models.BooleanField(
         "La bodega crea su guía", default=False,
         help_text="Pedidos sin guía del canal se avisan sin guía; no se generan guías en Envía para esta bodega.",

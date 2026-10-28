@@ -45,11 +45,12 @@ from .functions.sodimac_rpa import (
     rpa_continue,
     rpa_kill,
     rpa_panel_status,
+    rpa_run_history,
     stock_dispatch,
     upload_label_for_order,
 )
 from .models import ShopifyOrder, ShopifyOrderSyncState
-from .serializers import OrderListQuerySerializer
+from .serializers import OrderListQuerySerializer, SodimacRpaRunSerializer, SodimacRpaRunsQuerySerializer
 
 # Supuesto de diseño (docs/apps/orders.md, "Listado"): los mismos roles del
 # orquestador. Cambiar aquí si el negocio define otro.
@@ -306,7 +307,7 @@ class OrderChannelLabelRequestAPI(RoleRequiredMixin, APIView):
     def post(self, request, shopify_order_id):
         order = get_object_or_404(ShopifyOrder, shopify_id=str(shopify_order_id), deleted_at__isnull=True)
         try:
-            request_label_for_order(order)
+            request_label_for_order(order, requested_by=request.user)
         except LabelRequestError as error:
             return Response({"detail": str(error)}, status=400)
         except SodimacRpaBusy:
@@ -407,13 +408,27 @@ class SodimacRpaBulkLabelsAPI(RoleRequiredMixin, APIView):
         if purchase_orders is not None and not isinstance(purchase_orders, list):
             return Response({"detail": "purchase_orders debe ser una lista de OC."}, status=400)
         try:
-            return Response(request_bulk_labels(purchase_orders))
+            return Response(request_bulk_labels(purchase_orders, requested_by=request.user))
         except LabelRequestError as error:
             return Response({"detail": str(error)}, status=400)
         except SodimacRpaBusy:
             return Response({"detail": "El RPA ya está generando guías; intenta cuando termine."}, status=409)
         except SodimacRpaError as error:
             return Response({"detail": f"No se pudo llamar al RPA: {error}"}, status=502)
+
+
+class SodimacRpaRunsAPI(RoleRequiredMixin, APIView):
+    """GET /api/orders/sodimac/rpa/runs/?limit=20: historial del RPA de
+    guías, las últimas corridas (1 a 100) con sus OC, lo que pasó con cada
+    una y el conteo por estado."""
+
+    allowed_roles = ORDERS_LIST_ROLES
+
+    def get(self, request):
+        query = SodimacRpaRunsQuerySerializer(data=request.query_params)
+        query.is_valid(raise_exception=True)
+        runs = rpa_run_history(query.validated_data["limit"])
+        return Response({"runs": SodimacRpaRunSerializer(runs, many=True).data})
 
 
 class SodimacRpaStockDispatchAPI(BearerTokenRequiredMixin, APIView):

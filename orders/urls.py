@@ -16,6 +16,7 @@ from .apis import (
     SodimacRpaBulkLabelsAPI,
     SodimacRpaCallbackAPI,
     SodimacRpaControlAPI,
+    SodimacRpaRunsAPI,
     SodimacRpaStatusAPI,
     SodimacRpaStockDispatchAPI,
 )
@@ -28,6 +29,7 @@ urlpatterns = [
     path("sodimac/rpa/callback/", SodimacRpaCallbackAPI.as_view(), name="orders-sodimac-rpa-callback"),
     path("sodimac/rpa/status/", SodimacRpaStatusAPI.as_view(), name="orders-sodimac-rpa-status"),
     path("sodimac/rpa/bulk-labels/", SodimacRpaBulkLabelsAPI.as_view(), name="orders-sodimac-rpa-bulk-labels"),
+    path("sodimac/rpa/runs/", SodimacRpaRunsAPI.as_view(), name="orders-sodimac-rpa-runs"),
     path(
         "sodimac/rpa/continue/",
         SodimacRpaControlAPI.as_view(action=rpa_continue),

@@ -13,7 +13,36 @@ from .functions.sodimac_rpa import request_sodimac_labels
 from .functions.sync_dispatch_locations import sync_dispatch_locations
 from .models import (
     Dispatch, DispatchLocation, DispatchNotification, MarketplaceLabel, MarketplaceOrder, MarketplaceOrderItem,
+    SodimacRpaRun, SodimacRpaRunItem,
 )
+
+
+class SodimacRpaRunItemInline(admin.TabularInline):
+    model = SodimacRpaRunItem
+    extra = 0
+    can_delete = False
+    fields = readonly_fields = ("purchase_order", "status", "result", "tracking_number", "note", "updated_at")
+
+    def has_add_permission(self, request, obj=None):
+        return False
+
+
+@admin.register(SodimacRpaRun)
+class SodimacRpaRunAdmin(admin.ModelAdmin):
+    """Historial del RPA de guías: solo lectura (lo escriben el envío al RPA
+    y su webhook)."""
+
+    list_display = ("id", "started_at", "source", "requested_by", "status", "finished_at")
+    list_filter = ("status", "source")
+    search_fields = ("items__purchase_order",)
+    readonly_fields = ("source", "requested_by", "status", "started_at", "finished_at")
+    inlines = [SodimacRpaRunItemInline]
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
 
 
 class MarketplaceOrderItemInline(admin.TabularInline):
@@ -50,7 +79,9 @@ class MarketplaceOrderAdmin(admin.ModelAdmin):
     @admin.action(description="Pedir la guía al RPA de Sodimac (genera guías reales en el portal)")
     def request_rpa_label(self, request, queryset):
         try:
-            sent = request_sodimac_labels(list(queryset.values_list("marketplace_order_id", flat=True)))
+            sent = request_sodimac_labels(
+                list(queryset.values_list("marketplace_order_id", flat=True)), requested_by=request.user
+            )
         except SodimacRpaBusy:
             self.message_user(request, "El RPA ya está corriendo; intenta cuando termine.", messages.WARNING)
             return

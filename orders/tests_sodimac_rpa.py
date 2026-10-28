@@ -699,8 +699,123 @@ class BulkLabelsButtonTests(TestCase):
         self.assertIn("sin responder", body["ready"][0]["note"])
         self.assertEqual(body["blocked"], [])
 
+    def test_ocs_before_the_cutoff_date_are_left_out(self, trigger, *_):
+        from datetime import datetime
+
+        from .functions.sodimac_rpa import BULK_LABELS_SINCE
+
+        # Anteriores al corte: las gestionó operaciones por otro lado.
+        _oc("20", marketplace_created_at=timezone.make_aware(datetime(2026, 10, 26)))
+        self._order("20", (ENVIA_LOCATION, "Bodega Envia", "OPEN"))
+        _oc("21", marketplace_created_at=BULK_LABELS_SINCE)
+        self._order("21", (ENVIA_LOCATION, "Bodega Envia", "OPEN"))
+
+        body = self.client.get(self.URL).json()
+
+        self.assertEqual([item["purchase_order"] for item in body["ready"]], ["21"])
+        self.assertEqual(body["blocked"], [])
+        self.client.post(self.URL, {"purchase_orders": ["20", "21"]}, content_type="application/json")
+        self.assertEqual(trigger.call_args.args[0], ["21"])
+
     def test_users_without_the_role_are_refused(self, trigger, *_):
         self.client.force_login(User.objects.create_user("otro", password="x"))
         self.assertEqual(self.client.get(self.URL).status_code, 403)
         self.assertEqual(self.client.post(self.URL).status_code, 403)
         trigger.assert_not_called()
+
+
+@patch("orders.apis.SodimacRpaCallbackAPI.bearer_token", TOKEN)
+@patch(f"{R}.trigger_labels", return_value={"started": True})
+class RpaRunHistoryTests(TestCase):
+    """Historial del RPA: cada envío es una corrida con sus OC, que el
+    webhook va llenando y el fin del lote cierra."""
+
+    URL = "/api/orders/sodimac/rpa/runs/"
+
+    def setUp(self):
+        self.user = User.objects.create_user("ops", email="ops@example.com", password="x")
+        self.user.groups.add(Group.objects.get_or_create(name="Operaciones")[0])
+        self.client.force_login(self.user)
+        _oc("16200704")
+        _oc("16200705")
+
+    def _callback(self, payload):
+        return self.client.post(
+            "/api/orders/sodimac/rpa/callback/", payload, content_type="application/json",
+            HTTP_AUTHORIZATION=f"Bearer {TOKEN}",
+        )
+
+    def _send(self, *ocs):
+        from .functions.sodimac_rpa import request_sodimac_labels
+        from .models import SodimacRpaRun
+
+        return request_sodimac_labels(list(ocs), source=SodimacRpaRun.Source.BULK, requested_by=self.user)
+
+    def test_a_run_records_each_oc_and_closes_with_the_batch(self, trigger):
+        self._send("16200704", "16200705")
+        self._callback({
+            "evento": "orden_procesada", "numero_orden": "16200704", "guia_generada": True,
+            "resultado": "guia_generada", "rotulo_pdf_base64": _b64(ROTULO), "relacion_pdf_base64": _b64(RELACION),
+        })
+        self._callback({"evento": "proceso_finalizado", "proceso_exitoso": True, "ordenes_procesadas": ["16200704"]})
+
+        response = self.client.get(self.URL)
+
+        self.assertEqual(response.status_code, 200)
+        [run] = response.json()["runs"]
+        self.assertEqual(
+            (run["source"], run["requested_by"], run["status"]), ("lote", "ops@example.com", "terminada")
+        )
+        self.assertIsNotNone(run["finished_at"])
+        self.assertEqual(run["summary"], {"total": 2, "solicitada": 0, "recibida": 1, "error": 1, "manual": 0})
+        received, lost = run["items"]
+        self.assertEqual(
+            (received["purchase_order"], received["status"], received["result"], received["tracking_number"]),
+            ("16200704", "recibida", "guia_generada", "473402021"),
+        )
+        self.assertEqual((lost["purchase_order"], lost["status"], lost["result"]), ("16200705", "error", "sin_respuesta"))
+
+    def test_each_run_keeps_its_own_outcome(self, trigger):
+        from .models import SodimacRpaRun
+
+        self._send("16200704")
+        self._callback({
+            "evento": "orden_procesada", "numero_orden": "16200704", "guia_generada": False,
+            "mensaje": "Timeout", "resultado": "tiempo_agotado",
+        })
+        # El RPA se cortó sin avisar el fin; la siguiente corrida cierra la anterior.
+        self._send("16200704", "16200705")
+        self._callback({"evento": "proceso_finalizado", "proceso_exitoso": False, "ordenes_procesadas": []})
+
+        older, newer = SodimacRpaRun.objects.order_by("id")
+        self.assertEqual(older.status, SodimacRpaRun.Status.INTERRUPTED)
+        self.assertEqual(older.items.get().result, Result.TIMEOUT)
+        self.assertEqual(newer.status, SodimacRpaRun.Status.LOGIN_FAILED)
+        self.assertEqual(set(newer.items.values_list("result", flat=True)), {Result.LOGIN_FAILED})
+
+    def test_a_busy_rpa_leaves_no_run(self, trigger):
+        from integrations.sodimac_rpa.client import SodimacRpaBusy
+
+        from .models import SodimacRpaRun
+
+        trigger.side_effect = SodimacRpaBusy("ocupado")
+        with self.assertRaises(SodimacRpaBusy):
+            self._send("16200704")
+        self.assertFalse(SodimacRpaRun.objects.exists())
+
+    def test_the_order_button_is_recorded_with_who_asked(self, trigger):
+        from .models import ShopifyOrder, SodimacRpaRun
+
+        ShopifyOrder.objects.create(shopify_id="s16200704", name="20482", marketplace="sodimac")
+        self.client.post("/api/orders/s16200704/channel-label/request/")
+
+        run = SodimacRpaRun.objects.get()
+        self.assertEqual((run.source, run.requested_by), (SodimacRpaRun.Source.ORDER, self.user))
+
+    def test_the_history_needs_the_role(self, trigger):
+        self.client.force_login(User.objects.create_user("otro", password="x"))
+        self.assertEqual(self.client.get(self.URL).status_code, 403)
+        self.client.logout()
+        self.assertIn(self.client.get(self.URL).status_code, (401, 403))
+        self.client.force_login(self.user)
+        self.assertEqual(self.client.get(self.URL, {"limit": 0}).status_code, 400)

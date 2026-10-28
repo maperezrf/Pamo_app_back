@@ -267,7 +267,11 @@ antiguas (convivencia, abajo).
      está corriendo (se cortó sin avisar el fin del lote, como el
      2026-10-26 con 4 OC: el navegador se cerró tras la primera); si corre o
      no responde, va "con novedad" para no mandarla dos veces. No aparecen
-     los pedidos ya cumplidos en Shopify (guía hecha por otro lado). La persona marca cuáles mandar (todas por
+     los pedidos ya cumplidos en Shopify (guía hecha por otro lado), ni las
+     OC con fecha en Sodimac anterior al 2026-10-27 (`BULK_LABELS_SINCE`,
+     sin fecha cuenta la de importación): esas las gestionó operaciones por
+     otro lado (decisión del usuario). El botón de cada pedido no tiene
+     ese corte. La persona marca cuáles mandar (todas por
      defecto). Solo van al RPA, en un lote, las marcadas que
      tienen bodega en la plataforma (`fulfillment_location_id`) igual a
      la **única** bodega abierta del pedido en Shopify (copia local de los
@@ -335,6 +339,21 @@ antiguas (convivencia, abajo).
     RPA: `RPA_ORDERS_API_URL_TEMPLATE` =
     `<backend>/api/orders/sodimac/rpa/orders/{numero_orden}/stock-dispatch/`
     y `RPA_CALLBACK_URL` = `<backend>/api/orders/sodimac/rpa/callback/`.
+  - **Historial del RPA** (desde 2026-10-27, `SodimacRpaRun` y
+    `SodimacRpaRunItem`; pedido del usuario: ver en un resumen qué OC se
+    procesaron y cómo terminó cada corrida). `request_sodimac_labels` abre
+    una corrida **antes** del `/trigger` (el RPA puede responder por la
+    primera OC antes de que termine), con `source` (`lote`, `pedido`,
+    `admin`, `sync`), quién la lanzó y una fila por OC en `solicitada`; si
+    el RPA está ocupado o falla, la borra. Cada `orden_procesada` anota en
+    la corrida abierta más reciente de la OC el estado, el resultado, el
+    motivo y el número de guía (`_log_item`). `proceso_finalizado` cierra la
+    abierta más reciente (`terminada` o `login_fallido`) y deja sus OC sin
+    respuesta en `error`. Al abrir una corrida, las anteriores que siguen
+    abiertas pasan a `interrumpida` (el RPA corre un lote a la vez) y sus
+    OC sin respuesta quedan `sin_respuesta`. La carga manual de la guía no
+    entra al historial. Se ve en el admin (solo lectura) y en
+    `GET /api/orders/sodimac/rpa/runs/` (`rpa_run_history`).
   - Panel: el listado trae `channel_label` (estado, resultado, número,
     motivo, si tiene relación) y los
     PDF se descargan por `GET /api/orders/<id>/channel-label/<rotulo|relacion>/`
@@ -548,8 +567,10 @@ guía del canal.
   ("La bodega crea su guía"): sus pedidos de la **tienda web** (y Addi,
   cotizaciones) y, desde 2026-10-26, los de **Madecentro** se avisan sin guía y no se generan guías en Envía para
   ellos; los de marketplace siguen con su guía (del canal, del RPA o
-  generada, ver el paso 2). Operaciones (2026-10-08 y 2026-10-11): así
-  trabaja Bodega Envia, probablemente también Boccherini; las demás bodegas
+  generada, ver el paso 2). Así trabajan Bodega Envia (operaciones,
+  2026-10-08 y 2026-10-11) y Boccherini (confirmado por el usuario el
+  2026-10-27): crean la guía solo de la tienda web y Madecentro; Sodimac y
+  los demás marketplaces les llegan con la suya. Las demás bodegas
   necesitan que se les genere la guía. La primera sincronización
   se lanza por la API del orquestador
   (`POST /api/orchestrator/process-types/orders.sync_dispatch_locations/launch/`):
@@ -629,7 +650,9 @@ guía del canal.
      de su canal, en cualquier bodega; la tienda web y Madecentro solo si la
      bodega la exige (`requires_label`) y no la crea ella
      (`creates_own_label`). Antes `requires_label=False` dejaba avisar un
-     Sodimac sin guía (Bodega Envia está así).
+     Sodimac sin guía (Bodega Envia está así): con esa regla, el 26 y 27 de
+     octubre se avisaron sin guía a Envía #20810, #20845, #20864, #20867 y
+     #20904, aunque el RPA ya la tenía.
 
      | Canal | Guía |
      | --- | --- |
